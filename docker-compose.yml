@@ -59,16 +59,17 @@ services:
     container_name: energy-spark-master
     restart: unless-stopped
 
-    environment:
-      - SPARK_MODE=master
+    command:
+      - /opt/spark/bin/spark-class
+      - org.apache.spark.deploy.master.Master
 
     ports:
       - "7077:7077"
       - "8080:8080"
 
     volumes:
-      - ./spark/jobs:/opt/bitnami/spark/jobs
-      - ./spark/conf:/opt/bitnami/spark/conf
+      - ./spark/jobs:/opt/spark/jobs
+      - ./spark/conf:/opt/spark/conf
 
     networks:
       - lakehouse-network
@@ -88,18 +89,21 @@ services:
     container_name: energy-spark-worker
     restart: unless-stopped
 
-    environment:
-      - SPARK_MODE=worker
-      - SPARK_MASTER_URL=spark://spark-master:7077
-      - SPARK_WORKER_MEMORY=2G
-      - SPARK_WORKER_CORES=2
+    command:
+      - /opt/spark/bin/spark-class
+      - org.apache.spark.deploy.worker.Worker
+      - spark://spark-master:7077
+      - --cores
+      - "2"
+      - --memory
+      - 2G
 
     ports:
       - "8081:8081"
 
     volumes:
-      - ./spark/jobs:/opt/bitnami/spark/jobs
-      - ./spark/conf:/opt/bitnami/spark/conf
+      - ./spark/jobs:/opt/spark/jobs
+      - ./spark/conf:/opt/spark/conf
 
     networks:
       - lakehouse-network
@@ -129,6 +133,165 @@ services:
         condition: service_healthy
       minio:
         condition: service_started
+
+  airflow-init:
+    build:
+      context: .
+      dockerfile: docker/airflow/Dockerfile
+    image: energy-airflow:2.10.5
+    container_name: energy-airflow-init
+
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow
+
+    command:
+      - bash
+      - -c
+      - |
+        airflow db migrate &&
+        airflow users create \
+          --username "${AIRFLOW_ADMIN_USER}" \
+          --password "${AIRFLOW_ADMIN_PASSWORD}" \
+          --firstname "${AIRFLOW_ADMIN_FIRSTNAME}" \
+          --lastname "${AIRFLOW_ADMIN_LASTNAME}" \
+          --role Admin \
+          --email "${AIRFLOW_ADMIN_EMAIL}" || true
+
+    networks:
+      - lakehouse-network
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+
+  airflow-webserver:
+    build:
+      context: .
+      dockerfile: docker/airflow/Dockerfile
+    image: energy-airflow:2.10.5
+    container_name: energy-airflow-webserver
+    restart: unless-stopped
+
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow
+
+    command: webserver
+
+    ports:
+      - "8083:8080"
+
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+      - ./spark/jobs:/opt/spark/jobs
+
+    networks:
+      - lakehouse-network
+
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+
+  airflow-scheduler:
+    build:
+      context: .
+      dockerfile: docker/airflow/Dockerfile
+    image: energy-airflow:2.10.5
+    container_name: energy-airflow-scheduler
+    restart: unless-stopped
+
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow
+
+    command: scheduler
+
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+      - ./spark/jobs:/opt/spark/jobs
+
+    networks:
+      - lakehouse-network
+
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  superset-init:
+    build:
+      context: .
+      dockerfile: docker/superset/Dockerfile
+    image: energy-superset:latest
+    container_name: energy-superset-init
+
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
+
+    command:
+      - /bin/sh
+      - -c
+      - |
+        superset db upgrade &&
+        superset fab create-admin \
+          --username "${SUPERSET_ADMIN_USER}" \
+          --firstname "${SUPERSET_ADMIN_FIRSTNAME}" \
+          --lastname "${SUPERSET_ADMIN_LASTNAME}" \
+          --email "${SUPERSET_ADMIN_EMAIL}" \
+          --password "${SUPERSET_ADMIN_PASSWORD}" || true &&
+        superset init
+
+    networks:
+      - lakehouse-network
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+
+  superset:
+    build:
+      context: .
+      dockerfile: docker/superset/Dockerfile
+    image: energy-superset:latest
+    container_name: energy-superset
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
+
+    command:
+      - /bin/sh
+      - -c
+      - |
+        gunicorn \
+          --bind 0.0.0.0:8088 \
+          --workers 2 \
+          --timeout 120 \
+          "superset.app:create_app()"
+
+    ports:
+      - "8088:8088"
+
+    networks:
+      - lakehouse-network
+
+    depends_on:
+      superset-init:
+        condition: service_completed_successfully
 
 networks:
   lakehouse-network:

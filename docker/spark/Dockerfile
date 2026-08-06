@@ -13,13 +13,12 @@ RUN curl -fsSL \
     -o /tmp/postgresql.jar \
     "https://repo1.maven.org/maven2/org/postgresql/postgresql/${POSTGRES_JDBC_VERSION}/postgresql-${POSTGRES_JDBC_VERSION}.jar"
 
-
-FROM bitnami/spark:3.5
+FROM apache/spark:3.5.9-scala2.12-java17-python3-ubuntu
 
 USER root
 
-COPY --from=downloader /tmp/iceberg-spark-runtime.jar /opt/bitnami/spark/jars/
-COPY --from=downloader /tmp/iceberg-aws-bundle.jar /opt/bitnami/spark/jars/
-COPY --from=downloader /tmp/postgresql.jar /opt/bitnami/spark/jars/
+COPY --from=downloader /tmp/iceberg-spark-runtime.jar /opt/spark/jars/
+COPY --from=downloader /tmp/iceberg-aws-bundle.jar /opt/spark/jars/
+COPY --from=downloader /tmp/postgresql.jar /opt/spark/jars/
 
-USER 1001
+USER spark

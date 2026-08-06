@@ -52,7 +52,10 @@ services:
         condition: service_healthy
 
   spark-master:
-    image: bitnami/spark:3.5
+    build:
+      context: .
+      dockerfile: docker/spark/Dockerfile
+    image: energy-spark:3.5
     container_name: energy-spark-master
     restart: unless-stopped
 
@@ -66,7 +69,6 @@ services:
     volumes:
       - ./spark/jobs:/opt/bitnami/spark/jobs
       - ./spark/conf:/opt/bitnami/spark/conf
-      - ./spark/jars:/opt/bitnami/spark/jars
 
     networks:
       - lakehouse-network
@@ -79,7 +81,10 @@ services:
 
 
   spark-worker:
-    image: bitnami/spark:3.5
+    build:
+      context: .
+      dockerfile: docker/spark/Dockerfile
+    image: energy-spark:3.5
     container_name: energy-spark-worker
     restart: unless-stopped
 
@@ -95,13 +100,34 @@ services:
     volumes:
       - ./spark/jobs:/opt/bitnami/spark/jobs
       - ./spark/conf:/opt/bitnami/spark/conf
-      - ./spark/jars:/opt/bitnami/spark/jars
 
     networks:
       - lakehouse-network
 
     depends_on:
       spark-master:
+        condition: service_started
+
+
+  trino:
+    image: trinodb/trino:483
+    container_name: energy-trino
+    restart: unless-stopped
+
+    ports:
+      - "8082:8080"
+
+    volumes:
+      - ./docker/trino:/etc/trino
+      - trino_data:/data/trino
+
+    networks:
+      - lakehouse-network
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
         condition: service_started
 
 networks:
@@ -112,3 +138,4 @@ networks:
 volumes:
   postgres_data:
   minio_data:
+  trino_data:

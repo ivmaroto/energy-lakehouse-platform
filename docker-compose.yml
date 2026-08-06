@@ -1,0 +1,114 @@
+services:
+
+  postgres:
+    image: postgres:17
+    container_name: energy-postgres
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d
+
+    networks:
+      - lakehouse-network
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: energy-minio
+    restart: unless-stopped
+
+    command: server /data --console-address ":9001"
+
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+    volumes:
+      - minio_data:/data
+
+    networks:
+      - lakehouse-network
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  spark-master:
+    image: bitnami/spark:3.5
+    container_name: energy-spark-master
+    restart: unless-stopped
+
+    environment:
+      - SPARK_MODE=master
+
+    ports:
+      - "7077:7077"
+      - "8080:8080"
+
+    volumes:
+      - ./spark/jobs:/opt/bitnami/spark/jobs
+      - ./spark/conf:/opt/bitnami/spark/conf
+      - ./spark/jars:/opt/bitnami/spark/jars
+
+    networks:
+      - lakehouse-network
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+
+
+  spark-worker:
+    image: bitnami/spark:3.5
+    container_name: energy-spark-worker
+    restart: unless-stopped
+
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_WORKER_MEMORY=2G
+      - SPARK_WORKER_CORES=2
+
+    ports:
+      - "8081:8081"
+
+    volumes:
+      - ./spark/jobs:/opt/bitnami/spark/jobs
+      - ./spark/conf:/opt/bitnami/spark/conf
+      - ./spark/jars:/opt/bitnami/spark/jars
+
+    networks:
+      - lakehouse-network
+
+    depends_on:
+      spark-master:
+        condition: service_started
+
+networks:
+  lakehouse-network:
+    driver: bridge
+
+
+volumes:
+  postgres_data:
+  minio_data:

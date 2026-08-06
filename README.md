@@ -50,3 +50,12 @@ The project focuses on Data Engineering concepts, using a real-world use case ba
 ## 📜 License
 
 MIT License
+
+## 🚧 Project Status
+
+The project is currently under development.
+
+Current phase:
+
+- ✅ Phase 0 – Project Organization
+- 🔄 Phase 1 – Architecture Design

@@ -216,3 +216,24 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ============================================================
+# Energy Lakehouse Platform - generated files
+# ============================================================
+
+# Python generated files
+__pycache__/
+*.py[cod]
+
+# Application logs
+*.log
+logs/
+airflow/logs/
+
+# Local Lakehouse data
+data/bronze/
+data/silver/
+data/gold/
+
+# Local environment
+.env

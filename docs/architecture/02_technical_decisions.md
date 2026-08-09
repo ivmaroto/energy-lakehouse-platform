@@ -57,7 +57,22 @@ Within the platform, Apache Spark is responsible for:
 - Standardizing data from different sources.
 - Integrating meteorological and energy datasets.
 - Writing Apache Iceberg tables.
-- Providing SQL-based analytical access through Spark SQL.
+- Supporting SQL-based transformations and processing through Spark SQL.
+
+### Spark SQL
+
+Spark SQL is used as part of the Apache Spark processing layer.
+
+It provides SQL capabilities within Spark jobs and allows transformations to be expressed using SQL when appropriate. This complements the PySpark DataFrame API and provides flexibility when implementing transformations between the Bronze, Silver, and Gold layers.
+
+Unlike the initial architecture design, Spark SQL is not used as the primary interactive analytical query layer. This responsibility is assigned to Trino, allowing processing workloads and analytical query workloads to remain separated.
+
+Within the platform, Spark SQL is responsible for:
+
+- Supporting SQL-based data transformations.
+- Querying intermediate datasets during processing.
+- Complementing PySpark processing workflows.
+- Working with Apache Iceberg tables from the Spark processing layer.
 
 ### Apache Iceberg
 
@@ -67,6 +82,8 @@ Iceberg provides advanced table management capabilities that overcome many of th
 
 Using Iceberg also separates the logical representation of the data from the underlying storage, allowing the platform to manage datasets efficiently while maintaining consistency and scalability.
 
+The use of Iceberg also enables different processing and query engines, such as Apache Spark and Trino, to operate over the same Lakehouse tables.
+
 Within the project, Apache Iceberg is responsible for:
 
 - Storing structured datasets in the Lakehouse.
@@ -74,12 +91,13 @@ Within the project, Apache Iceberg is responsible for:
 - Supporting schema evolution.
 - Enabling efficient partition management.
 - Providing reliable and consistent analytical tables.
+- Providing a common table layer accessible from Spark and Trino.
 
 ### MinIO
 
 MinIO has been selected as the object storage solution for the Lakehouse.
 
-As an S3-compatible object storage system, MinIO provides a lightweight and efficient platform for storing analytical datasets while maintaining full compatibility with modern Data Lake and Lakehouse technologies. Its compatibility with the Amazon S3 API allows seamless integration with Apache Spark and Apache Iceberg.
+As an S3-compatible object storage system, MinIO provides a lightweight and efficient platform for storing analytical datasets while maintaining compatibility with modern Data Lake and Lakehouse technologies. Its compatibility with the Amazon S3 API allows integration with Apache Spark, Apache Iceberg, and Trino.
 
 Using MinIO also enables the entire platform to run locally without relying on external cloud storage services, making the project fully reproducible and independent of proprietary infrastructure.
 
@@ -94,15 +112,16 @@ Within the platform, MinIO is responsible for:
 
 PostgreSQL has been selected as the relational database management system for storing platform metadata.
 
-Rather than storing analytical data, PostgreSQL supports the internal operation of the platform by managing metadata required by different services. It provides a reliable, lightweight, and widely adopted solution that integrates seamlessly with Apache Airflow and Apache Iceberg.
+Rather than storing the main analytical datasets, PostgreSQL supports the internal operation of the platform by managing metadata required by different services. It provides a reliable, lightweight, and widely adopted solution that integrates with the components of the architecture.
 
 Its robustness, Open Source nature, and broad ecosystem make it an appropriate choice for local deployments while remaining suitable for production environments.
 
 Within the platform, PostgreSQL is responsible for:
 
 - Storing Apache Airflow metadata.
-- Managing the Apache Iceberg catalog.
+- Supporting the Apache Iceberg JDBC catalog.
 - Providing persistent metadata storage for platform services.
+- Supporting metadata required by Apache Superset.
 
 ### Apache Airflow
 
@@ -121,20 +140,25 @@ Within the platform, Apache Airflow is responsible for:
 - Logging workflow execution.
 - Monitoring pipeline status.
 
-### Spark SQL
+### Trino
 
-Spark SQL has been selected as the analytical query engine for the platform.
+Trino has been selected as the distributed SQL query engine for the analytical layer of the platform.
 
-It provides a standard SQL interface to query Apache Iceberg tables stored in the Lakehouse, allowing analytical workloads to be executed efficiently without requiring additional query engines. Since Spark is already responsible for data processing, using Spark SQL simplifies the overall architecture while maintaining a consistent technology stack.
+The incorporation of Trino introduces a dedicated query layer between the Lakehouse storage and the visualization layer. This separates data processing workloads from interactive analytical workloads.
 
-Spark SQL also integrates seamlessly with Apache Superset, enabling the creation of interactive dashboards and analytical reports directly from the Lakehouse.
+Apache Spark remains responsible for distributed data processing and transformations, while Trino provides SQL access to the analytical datasets stored as Apache Iceberg tables.
 
-Within the platform, Spark SQL is responsible for:
+This separation of responsibilities improves the modularity of the architecture and prevents the Business Intelligence layer from depending directly on the Spark processing engine.
 
-- Querying Apache Iceberg tables.
-- Providing SQL-based access to analytical datasets.
-- Serving as the data source for Apache Superset.
+Trino also provides a standard SQL interface that can be consumed by analytical tools such as Apache Superset.
+
+Within the platform, Trino is responsible for:
+
+- Providing distributed SQL access to Apache Iceberg tables.
+- Querying analytical datasets stored in the Lakehouse.
+- Serving as the SQL access layer between the Lakehouse and Apache Superset.
 - Supporting interactive analytical queries.
+- Decoupling analytical query workloads from Spark processing workloads.
 
 ### Apache Superset
 
@@ -142,7 +166,9 @@ Apache Superset has been selected as the Business Intelligence platform for the 
 
 Superset provides a web-based environment for exploring data, building interactive dashboards, and creating visualizations without requiring proprietary software. As an Open Source solution, it aligns with the project's objective of building a complete Lakehouse platform using freely available technologies.
 
-Through its integration with Spark SQL, Superset enables users to analyze the processed datasets and explore relationships between meteorological and energy variables using charts, maps, filters, and time-series visualizations.
+Through its integration with Trino, Superset enables users to analyze the processed datasets and explore relationships between meteorological and energy variables using charts, maps, filters, and time-series visualizations.
+
+This architecture prevents Superset from querying the Spark processing engine directly and provides a dedicated analytical SQL layer through Trino.
 
 Within the platform, Apache Superset is responsible for:
 
@@ -160,6 +186,8 @@ It allows all infrastructure components to be defined and managed from a single 
 
 Using Docker Compose also isolates the different platform services while providing a shared network and persistent storage configuration. This approach simplifies local development and avoids the need to install and configure each technology directly on the host operating system.
 
+Custom Docker images are used where additional dependencies or configuration are required, including Apache Spark, Apache Airflow, and Apache Superset.
+
 Within the platform, Docker Compose is responsible for:
 
 - Defining all platform services.
@@ -168,12 +196,30 @@ Within the platform, Docker Compose is responsible for:
 - Configuring persistent volumes.
 - Exposing the required service ports.
 - Injecting environment variables and configuration values.
+- Building the custom platform images.
 - Reproducing the complete platform on another compatible machine.
 
 ## 3. Overall Architecture Rationale
 
 The selected technology stack provides a complete Open Source solution for designing and implementing a modern Lakehouse platform.
 
-Each component has a well-defined responsibility within the architecture: Python handles data ingestion, Apache Spark performs distributed data processing, Apache Iceberg manages analytical tables, MinIO provides object storage, PostgreSQL stores platform metadata, Apache Airflow orchestrates workflows, Spark SQL enables analytical queries, and Apache Superset delivers data visualization.
+Each component has a well-defined responsibility within the architecture:
 
-This separation of responsibilities results in a modular, maintainable, and scalable architecture while keeping the platform simple enough to be deployed locally using Docker Compose. The selected technologies are widely adopted in modern Data Engineering and provide a solid foundation for future extensions without requiring significant architectural changes.
+- Python handles data ingestion and API integration.
+- Apache Spark performs distributed data processing.
+- Spark SQL supports SQL-based transformations within the Spark processing layer.
+- Apache Iceberg provides the Lakehouse table format.
+- MinIO provides S3-compatible object storage.
+- PostgreSQL stores platform metadata and supports the Iceberg catalog.
+- Apache Airflow orchestrates data workflows.
+- Trino provides distributed SQL access to the Lakehouse.
+- Apache Superset provides analytical visualization and Business Intelligence.
+- Docker Compose provides reproducible local infrastructure deployment.
+
+A key architectural decision is the separation between **data processing** and **interactive analytical querying**.
+
+Apache Spark and Spark SQL are responsible for processing and transforming the datasets across the Bronze, Silver, and Gold layers. Trino is responsible for exposing the resulting analytical datasets through SQL, while Apache Superset consumes this query layer to provide dashboards and visualizations.
+
+This separation of responsibilities results in a modular, maintainable, and scalable architecture while keeping the platform deployable locally using Docker Compose.
+
+The selected technologies are widely adopted in modern Data Engineering environments and provide a solid foundation for future extensions without requiring significant architectural changes.

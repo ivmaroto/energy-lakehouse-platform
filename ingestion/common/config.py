@@ -22,3 +22,8 @@ ESIOS_BASE_URL = "https://api.esios.ree.es"
 # HTTP configuration
 HTTP_TIMEOUT = 30
 HTTP_MAX_RETRIES = 3
+
+# Historical ingestion chunk sizes (days)
+AEMET_HISTORICAL_CHUNK_DAYS = 31
+OPEN_METEO_HISTORICAL_CHUNK_DAYS = 31
+ESIOS_HISTORICAL_CHUNK_DAYS = 31

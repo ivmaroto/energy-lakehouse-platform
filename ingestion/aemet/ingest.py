@@ -9,7 +9,10 @@ from ingestion.aemet.client import AemetClient
 from ingestion.common.config import AEMET_HISTORICAL_CHUNK_DAYS
 from ingestion.common.date_utils import split_date_range
 from ingestion.common.logger import get_logger
-from ingestion.common.storage import LocalBronzeStorage
+from ingestion.common.storage import (
+    LocalBronzeStorage,
+    MinIOBronzeStorage,
+)
 
 
 logger = get_logger(__name__)
@@ -24,12 +27,12 @@ class AemetIngestion:
     DATASET = "daily_climatological_values"
 
     def __init__(
-        self,
-        client: AemetClient | None = None,
-        storage: LocalBronzeStorage | None = None,
+            self,
+            client: AemetClient | None = None,
+            storage: LocalBronzeStorage | MinIOBronzeStorage | None = None,
     ) -> None:
         self.client = client or AemetClient()
-        self.storage = storage or LocalBronzeStorage()
+        self.storage = storage or MinIOBronzeStorage()
 
     def ingest_historical(
         self,
@@ -37,7 +40,7 @@ class AemetIngestion:
         start_date: date,
         end_date: date,
         station_id: str,
-    ) -> list[Path]:
+    ) -> list[Path | str]:
         """
         Retrieve historical daily climatological observations
         in chunks and persist each chunk independently in Bronze.
@@ -58,7 +61,7 @@ class AemetIngestion:
             len(chunks),
         )
 
-        output_paths: list[Path] = []
+        output_paths: list[Path | str] = []
 
         for chunk_number, (chunk_start, chunk_end) in enumerate(
             chunks,
@@ -103,7 +106,7 @@ class AemetIngestion:
         start_date: date,
         end_date: date,
         station_id: str,
-    ) -> Path:
+    ) -> Path | str:
         """
         Retrieve a new AEMET temporal window and persist it in Bronze.
 

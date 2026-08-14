@@ -8,7 +8,10 @@ from pathlib import Path
 from ingestion.common.config import OPEN_METEO_HISTORICAL_CHUNK_DAYS
 from ingestion.common.date_utils import split_date_range
 from ingestion.common.logger import get_logger
-from ingestion.common.storage import LocalBronzeStorage
+from ingestion.common.storage import (
+    LocalBronzeStorage,
+    MinIOBronzeStorage,
+)
 from ingestion.open_meteo.client import OpenMeteoClient
 
 
@@ -34,12 +37,12 @@ class OpenMeteoIngestion:
     DATASET = "weather"
 
     def __init__(
-        self,
-        client: OpenMeteoClient | None = None,
-        storage: LocalBronzeStorage | None = None,
+            self,
+            client: OpenMeteoClient | None = None,
+            storage: LocalBronzeStorage | MinIOBronzeStorage | None = None,
     ) -> None:
         self.client = client or OpenMeteoClient()
-        self.storage = storage or LocalBronzeStorage()
+        self.storage = storage or MinIOBronzeStorage()
 
     def ingest_historical(
         self,
@@ -50,7 +53,7 @@ class OpenMeteoIngestion:
         end_date: date,
         hourly_variables: list[str] | None = None,
         timezone: str = "UTC",
-    ) -> list[Path]:
+    ) -> list[Path | str]:
         """
         Retrieve historical Open-Meteo data in chunks and persist
         every successful chunk independently in Bronze.
@@ -72,7 +75,7 @@ class OpenMeteoIngestion:
             len(chunks),
         )
 
-        output_paths: list[Path] = []
+        output_paths: list[Path | str] = []
 
         for chunk_number, (chunk_start, chunk_end) in enumerate(
             chunks,
@@ -121,7 +124,7 @@ class OpenMeteoIngestion:
         longitude: float,
         current_variables: list[str] | None = None,
         timezone: str = "UTC",
-    ) -> Path:
+    ) -> Path | str:
         """
         Retrieve current Open-Meteo data and persist it in Bronze.
         """

@@ -8,7 +8,10 @@ from pathlib import Path
 from ingestion.common.config import ESIOS_HISTORICAL_CHUNK_DAYS
 from ingestion.common.date_utils import split_date_range
 from ingestion.common.logger import get_logger
-from ingestion.common.storage import LocalBronzeStorage
+from ingestion.common.storage import (
+    LocalBronzeStorage,
+    MinIOBronzeStorage,
+)
 from ingestion.esios.client import EsiosClient
 
 
@@ -25,10 +28,10 @@ class EsiosIngestion:
     def __init__(
         self,
         client: EsiosClient | None = None,
-        storage: LocalBronzeStorage | None = None,
+        storage: LocalBronzeStorage | MinIOBronzeStorage | None = None,
     ) -> None:
         self.client = client or EsiosClient()
-        self.storage = storage or LocalBronzeStorage()
+        self.storage = storage or MinIOBronzeStorage()
 
     def ingest_historical(
         self,
@@ -42,7 +45,7 @@ class EsiosIngestion:
         geo_ids: list[int] | None = None,
         geo_trunc: str | None = None,
         geo_agg: str | None = None,
-    ) -> list[Path]:
+    ) -> list[Path | str]:
         """
         Retrieve historical values for an ESIOS indicator in chunks
         and persist every chunk independently in Bronze.
@@ -63,7 +66,7 @@ class EsiosIngestion:
             len(chunks),
         )
 
-        output_paths: list[Path] = []
+        output_paths: list[Path | str] = []
 
         for chunk_number, (chunk_start, chunk_end) in enumerate(
             chunks,
@@ -119,7 +122,7 @@ class EsiosIngestion:
         geo_ids: list[int] | None = None,
         geo_trunc: str | None = None,
         geo_agg: str | None = None,
-    ) -> Path:
+    ) -> Path | str:
         """
         Retrieve an incremental temporal window for an ESIOS indicator
         and persist it in Bronze.

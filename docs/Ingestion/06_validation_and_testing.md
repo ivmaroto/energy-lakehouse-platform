@@ -2,20 +2,21 @@
 
 ## 1. Overview
 
-This document defines the validation and testing strategy for the ingestion
+This document describes the validation and testing performed for the ingestion
 layer of the Energy Lakehouse Platform.
 
 The objective is to verify that data can be reliably acquired from the three
 external sources and persisted in the Bronze layer before subsequent Lakehouse
 processing.
 
-The sources covered by the validation process are:
+The validated sources are:
 
 - AEMET OpenData.
 - Open-Meteo.
 - REE / ESIOS.
 
-Testing covers both historical and incremental ingestion.
+Both historical and incremental ingestion have been validated using real API
+requests.
 
 ---
 
@@ -29,71 +30,87 @@ The ingestion validation process covers:
 - API response validation.
 - Historical ingestion.
 - Incremental ingestion.
+- Historical request chunking.
 - Error handling.
 - Local Bronze persistence.
-- Final Bronze persistence.
+- MinIO Bronze persistence.
 - Integration with the platform storage infrastructure.
-- Compatibility with subsequent processing.
+- Unit testing.
 
-The objective is to validate both individual components and the complete
-ingestion flow.
+The validation was performed progressively, starting with isolated components
+and finishing with real end-to-end ingestion into MinIO.
 
 ---
 
 ## 3. Validation Levels
 
-Testing is divided into several levels.
-
 ### 3.1 Configuration validation
 
-Verify that the application correctly obtains the required configuration.
+The application loads configuration from environment variables defined in the
+local `.env` file.
 
-Relevant environment variables include:
+Relevant variables include:
 
 ```text
 AEMET_API_KEY
 ESIOS_API_KEY
+MINIO_ENDPOINT
+MINIO_ROOT_USER
+MINIO_ROOT_PASSWORD
+MINIO_BUCKET
+MINIO_SECURE
 ```
 
-Credentials must be obtained from the execution environment and must not be
-stored directly in source code.
+The `.env` file is excluded from version control.
+
+The `.env.example` file documents the required variables without containing
+real credentials.
+
+Configuration loading from `.env` was successfully validated using
+`python-dotenv`.
+
+**Status: PASSED**
 
 ---
 
 ### 3.2 Connector validation
 
-Each source connector is tested independently.
+Each source connector was tested independently against its real external API.
 
-The objective is to verify:
+Validation covered:
 
 - Request construction.
 - Authentication where required.
 - Parameter handling.
 - HTTP communication.
 - Response parsing.
-- Error detection.
+- Real API connectivity.
+
+**Status: PASSED**
 
 ---
 
 ### 3.3 Ingestion validation
 
-Historical and incremental ingestion logic is validated independently from the
-external API communication where possible.
+Historical and incremental ingestion were validated independently for all three
+data sources.
 
-The objective is to verify:
+Validation covered:
 
 - Date-range handling.
 - Historical execution.
 - Incremental execution.
-- Request-window generation.
-- Re-execution behaviour.
-- Data persistence.
+- Historical request chunking.
+- Bronze metadata generation.
+- Bronze persistence.
+
+**Status: PASSED**
 
 ---
 
 ### 3.4 Integration validation
 
-The final validation verifies the complete ingestion path:
+The complete ingestion path was validated:
 
 ```text
 External API
@@ -108,172 +125,308 @@ Ingestion logic
 Technical validation
      |
      v
-Bronze persistence
+MinIO Bronze layer
 ```
 
-This test confirms that the individual components operate correctly as a single
-pipeline.
+Real data from all three sources was successfully persisted in MinIO.
+
+**Status: PASSED**
 
 ---
 
 ## 4. AEMET Validation
 
-The AEMET connector must be validated against the real AEMET OpenData service.
+AEMET OpenData was validated using real API credentials.
 
-The following tests are required:
+The station inventory endpoint was successfully queried and returned 921
+stations.
+
+The station selected for integration validation was:
+
+```text
+Station ID: 1037Y
+Province: GIPUZKOA
+Station: ZUMARRAGA
+```
+
+Historical validation period:
+
+```text
+2026-08-01 -> 2026-08-03
+```
+
+Incremental validation period:
+
+```text
+2026-08-10 -> 2026-08-12
+```
+
+Validation results:
 
 | Test | Expected result | Status |
 |---|---|---|
-| API authentication | Valid credentials accepted | Pending |
-| HTTP connectivity | Successful connection | Pending |
-| Valid request | Valid API response | Pending |
-| Invalid authentication | Controlled error | Pending |
-| Historical request | Historical data retrieved | Pending |
-| Incremental request | New data retrieved | Pending |
-| Bronze persistence | Data stored correctly | Pending |
+| API authentication | Valid credentials accepted | PASSED |
+| HTTP connectivity | Successful connection | PASSED |
+| Station inventory | Valid station catalogue retrieved | PASSED |
+| Station selection | Station 1037Y retrieved | PASSED |
+| Historical request | Historical data retrieved | PASSED |
+| Incremental request | Incremental data retrieved | PASSED |
+| Local Bronze persistence | Data stored correctly | PASSED |
+| MinIO historical persistence | Bronze object created | PASSED |
+| MinIO incremental persistence | Bronze object created | PASSED |
 
-The exact datasets and endpoints used in the final implementation will be
-recorded after technical validation.
+Example MinIO path:
+
+```text
+bronze/aemet/daily_climatological_values/
+year=2026/month=08/day=14/
+```
+
+**AEMET validation status: PASSED**
 
 ---
 
 ## 5. Open-Meteo Validation
 
-The Open-Meteo connector must be validated against the real service.
+Open-Meteo was validated against the real service.
 
-The following tests are required:
+The coordinates used for integration testing were:
+
+```text
+Latitude: 43.0
+Longitude: -2.5
+```
+
+Historical validation period:
+
+```text
+2026-08-01 -> 2026-08-03
+```
+
+The current weather endpoint was used for incremental ingestion validation.
+
+Validation results:
 
 | Test | Expected result | Status |
 |---|---|---|
-| HTTP connectivity | Successful connection | Pending |
-| Current/recent request | Valid weather response | Pending |
-| Historical request | Historical weather data retrieved | Pending |
-| Date parameters | Requested interval respected | Pending |
-| Geographic parameters | Requested coordinates processed | Pending |
-| Invalid request | Controlled error | Pending |
-| Bronze persistence | Data stored correctly | Pending |
+| HTTP connectivity | Successful connection | PASSED |
+| Current request | Valid weather response | PASSED |
+| Historical request | Historical weather data retrieved | PASSED |
+| Date parameters | Requested interval respected | PASSED |
+| Geographic parameters | Coordinates processed | PASSED |
+| Local Bronze persistence | Data stored correctly | PASSED |
+| MinIO historical persistence | Bronze object created | PASSED |
+| MinIO incremental persistence | Bronze object created | PASSED |
 
 No API credential is required for the Open-Meteo access pattern used by this
 project.
+
+Example MinIO path:
+
+```text
+bronze/open_meteo/weather/
+year=2026/month=08/day=14/
+```
+
+**Open-Meteo validation status: PASSED**
 
 ---
 
 ## 6. REE / ESIOS Validation
 
-The REE / ESIOS connector must be validated using the credentials provided for
-the API.
+REE / ESIOS was validated using real API credentials.
 
-The following tests are required:
+The indicator catalogue endpoint was successfully queried.
+
+The indicator selected for integration validation was:
+
+```text
+Indicator ID: 14
+Name: Generación programada PBF Solar fotovoltaica
+Dataset: solar_photovoltaic_generation
+```
+
+Historical validation period:
+
+```text
+2026-08-01 -> 2026-08-03
+```
+
+Incremental validation period:
+
+```text
+2026-08-10 -> 2026-08-12
+```
+
+Validation results:
 
 | Test | Expected result | Status |
 |---|---|---|
-| API authentication | Valid credentials accepted | Pending |
-| HTTP connectivity | Successful connection | Pending |
-| Indicator request | Valid energy response | Pending |
-| Historical request | Historical data retrieved | Pending |
-| Incremental request | New data retrieved | Pending |
-| Invalid authentication | Controlled error | Pending |
-| Bronze persistence | Data stored correctly | Pending |
+| API authentication | Valid credentials accepted | PASSED |
+| HTTP connectivity | Successful connection | PASSED |
+| Indicator catalogue | Valid catalogue retrieved | PASSED |
+| Indicator request | Indicator 14 response retrieved | PASSED |
+| Historical request | Historical data retrieved | PASSED |
+| Incremental request | Incremental data retrieved | PASSED |
+| Local Bronze persistence | Data stored correctly | PASSED |
+| MinIO historical persistence | Bronze object created | PASSED |
+| MinIO incremental persistence | Bronze object created | PASSED |
 
-The definitive indicators and parameters used by the platform will be recorded
-after testing the real API.
-
----
-
-## 7. Historical Ingestion Tests
-
-Historical ingestion must be validated using controlled date ranges before
-executing the complete initial load.
-
-The test sequence is:
+Example MinIO path:
 
 ```text
-Small historical interval
-          |
-          v
-Validate response
-          |
-          v
-Validate Bronze output
-          |
-          v
-Larger historical interval
-          |
-          v
-Complete historical load
+bronze/esios/solar_photovoltaic_generation/
+year=2026/month=08/day=14/
 ```
 
-This progressive approach reduces the impact of implementation errors during
-large historical executions.
-
-Tests must verify:
-
-- Correct start date.
-- Correct end date.
-- Request chunking where required.
-- Successful acquisition of each interval.
-- Correct Bronze persistence.
-- Controlled recovery from failed intervals.
+**REE / ESIOS validation status: PASSED**
 
 ---
 
-## 8. Incremental Ingestion Tests
+## 7. Historical Ingestion Validation
 
-Incremental ingestion testing must verify that only the required temporal
-windows are requested.
+Historical ingestion was successfully validated for all three data sources.
 
-Tests must include:
+The historical ingestion implementation divides large temporal ranges into
+smaller chunks before requesting data from the external APIs.
 
-- First incremental execution.
-- Consecutive incremental execution.
-- Re-execution of the same period.
-- Overlapping temporal windows where configured.
-- Execution when no new data is available.
-- Recovery after a failed execution.
+Configured chunk sizes:
 
-The process must not require a complete historical reload after an incremental
-failure.
+```text
+AEMET:       31 days
+Open-Meteo:  31 days
+ESIOS:       31 days
+```
+
+The validation confirmed:
+
+- Correct start-date handling.
+- Correct end-date handling.
+- Date-range splitting.
+- Independent processing of chunks.
+- Independent Bronze persistence for every successful chunk.
+- Historical metadata generation.
+- Real API acquisition.
+
+**Status: PASSED**
 
 ---
 
-## 9. Storage Tests
+## 8. Incremental Ingestion Validation
 
-### 9.1 Local storage
+Incremental ingestion was validated against the three real external services.
 
-The local persistence implementation is used to validate ingestion components
-independently from the complete platform infrastructure.
+The validation confirmed that incremental temporal windows can be requested
+without executing a complete historical reload.
 
-Tests include:
+Validated flows:
+
+```text
+Open-Meteo -> Current weather -> MinIO Bronze
+AEMET      -> Temporal window -> MinIO Bronze
+ESIOS      -> Temporal window -> MinIO Bronze
+```
+
+Each execution generated an independent Bronze object.
+
+**Status: PASSED**
+
+---
+
+## 9. Storage Validation
+
+### 9.1 Local Bronze storage
+
+`LocalBronzeStorage` was validated before integration with the complete
+platform.
+
+Unit tests confirmed:
 
 - Directory creation.
-- Source separation.
-- Dataset separation.
-- File creation.
-- Temporal organization.
+- Expected directory structure.
+- JSON file creation.
 - Metadata persistence.
-- Re-execution behaviour.
+- Unique file generation.
+- Valid JSON output.
 
-### 9.2 Platform storage
+**Status: PASSED**
 
-Final integration testing validates persistence using the storage infrastructure
-of the complete platform.
+### 9.2 MinIO Bronze storage
 
-Tests include:
+`MinIOBronzeStorage` was implemented and validated against the MinIO instance
+running in the Docker platform.
 
-- Storage connectivity.
-- Object creation.
-- Correct Bronze paths.
-- Historical persistence.
-- Incremental persistence.
-- Access from the processing environment.
+Bucket:
+
+```text
+energy-lakehouse
+```
+
+Bronze organization:
+
+```text
+energy-lakehouse/
+└── bronze/
+    ├── aemet/
+    ├── open_meteo/
+    └── esios/
+```
+
+A dedicated storage validation object was successfully created before
+performing real API ingestion.
+
+The final validation confirmed successful historical and incremental
+persistence for AEMET, Open-Meteo and ESIOS.
+
+**Status: PASSED**
 
 ---
 
-## 10. Error Handling Tests
+## 10. Unit Tests
 
-The ingestion layer must handle expected failures in a controlled way.
+The ingestion layer includes automated tests implemented with `pytest`.
 
-Relevant scenarios include:
+Test modules:
+
+```text
+tests/ingestion/test_aemet.py
+tests/ingestion/test_date_utils.py
+tests/ingestion/test_esios.py
+tests/ingestion/test_open_meteo.py
+tests/ingestion/test_storage.py
+```
+
+Final execution result:
+
+```text
+31 tests collected
+31 tests passed
+0 tests failed
+```
+
+Coverage by test group:
+
+| Test group | Passed |
+|---|---:|
+| AEMET client | 5 |
+| Date utilities | 7 |
+| ESIOS client | 7 |
+| Open-Meteo client | 7 |
+| Bronze storage | 5 |
+| **Total** | **31** |
+
+The final test suite was executed after MinIO integration to verify that the
+new storage implementation did not break the previously validated ingestion
+components.
+
+**Status: PASSED**
+
+---
+
+## 11. Error Handling
+
+The ingestion layer includes controlled handling for expected failures,
+including:
 
 ```text
 Connection failure
@@ -281,26 +434,23 @@ Timeout
 HTTP error
 Invalid authentication
 Malformed response
-Empty response
 Invalid date range
 Storage failure
 ```
 
-The expected behaviour is:
+Custom ingestion exceptions prevent failures from being silently accepted and
+provide diagnostic information through the logging layer.
 
-1. Detect the failure.
-2. Prevent invalid data from being silently accepted.
-3. Record useful diagnostic information.
-4. Return a controlled application error.
-5. Allow the failed execution to be retried.
+Invalid date ranges and malformed API responses are additionally covered by
+automated tests.
 
 ---
 
-## 11. Credential Security
+## 12. Credential Security
 
-No real API credential must be committed to the Git repository.
+No real API credentials are stored in the Git repository.
 
-The following files may be versioned:
+Versioned configuration:
 
 ```text
 .env.example
@@ -309,121 +459,104 @@ Documentation
 Tests
 ```
 
-The following file must remain outside version control:
+Excluded configuration:
 
 ```text
 .env
 ```
 
-Source code must reference configuration variables rather than containing real
-credentials.
+Real credentials are loaded at execution time using environment variables and
+`python-dotenv`.
 
-Before each relevant Git commit, the repository should be checked to ensure that
-no API credentials have accidentally been introduced.
+The following credentials were successfully validated without being embedded
+in source code:
 
----
-
-## 12. Test Execution Environments
-
-The ingestion architecture supports testing at different levels depending on the
-available development environment.
-
-### Python development environment
-
-The following elements can be developed and validated independently:
-
-- Python module structure.
-- Configuration handling.
-- Connector implementation.
-- Request construction.
-- Date-window logic.
-- Response validation logic.
-- Local persistence.
-- Unit tests.
-
-### Complete platform environment
-
-The following tests require the complete platform infrastructure:
-
-- Final object-storage integration.
-- MinIO persistence.
-- Container-to-container connectivity.
-- Reading Bronze data from Spark.
-- Complete platform integration.
-- End-to-end execution in the deployment environment.
-
-This separation allows ingestion development to progress independently from
-infrastructure availability.
+```text
+AEMET_API_KEY
+ESIOS_API_KEY
+MINIO_ROOT_USER
+MINIO_ROOT_PASSWORD
+```
 
 ---
 
-## 13. End-to-End Validation
+## 13. Validated End-to-End Architecture
 
-The final ingestion validation will execute the complete flow for each source.
+The final validated ingestion architecture is:
 
 ```text
 AEMET -----------+
                  |
-Open-Meteo ------+--> Ingestion --> Bronze --> Processing validation
-                 |
-REE / ESIOS -----+
+Open-Meteo ------+--> Python ingestion
+                 |         |
+REE / ESIOS -----+         v
+                       Validation
+                           |
+                           v
+                    MinIO Object Storage
+                           |
+                           v
+                        Bronze
 ```
 
-The end-to-end test will verify:
+The resulting Bronze organization is:
 
-1. Configuration loading.
-2. Authentication.
-3. External API connectivity.
-4. Data acquisition.
-5. Technical validation.
-6. Bronze persistence.
-7. Availability of the data to the processing layer.
+```text
+energy-lakehouse/
+└── bronze/
+    ├── aemet/
+    │   └── daily_climatological_values/
+    ├── open_meteo/
+    │   └── weather/
+    └── esios/
+        └── solar_photovoltaic_generation/
+```
+
+Historical and incremental executions were successfully validated for every
+source.
 
 ---
 
 ## 14. Validation Evidence
 
-Evidence from the final tests should be recorded for inclusion in the technical
-documentation and TFM report.
+Evidence generated during the validation process includes:
 
-Relevant evidence may include:
+- Real API execution logs.
+- AEMET station catalogue retrieval.
+- ESIOS indicator catalogue retrieval.
+- Historical execution logs.
+- Incremental execution logs.
+- Generated local Bronze JSON files.
+- Generated MinIO Bronze objects.
+- MinIO bucket structure.
+- Successful unit-test execution.
 
-- Execution logs.
-- Number of acquired records.
-- Requested temporal ranges.
-- Execution duration.
-- Generated Bronze objects.
-- Storage screenshots.
-- Successful processing reads.
-- Error-handling examples.
-
-This evidence will also support the final evaluation metrics of the project.
+These results provide technical evidence that the ingestion layer is ready to
+supply data to the subsequent Lakehouse processing stages.
 
 ---
 
-## 15. Current Validation Status
-
-The ingestion architecture and testing strategy have been defined.
-
-The following items remain subject to execution and technical validation:
+## 15. Final Validation Status
 
 | Component | Status |
 |---|---|
-| Ingestion architecture | Defined |
-| Data-source architecture | Defined |
-| Historical ingestion design | Defined |
-| Incremental ingestion design | Defined |
-| Bronze storage design | Defined |
-| Python connectors | Pending implementation/validation |
-| AEMET real API validation | Pending |
-| Open-Meteo real API validation | Pending |
-| REE / ESIOS real API validation | Pending |
-| Historical load validation | Pending |
-| Incremental load validation | Pending |
-| Local Bronze validation | Pending |
-| MinIO integration | Pending |
-| Spark Bronze read validation | Pending |
-| End-to-end validation | Pending |
+| Ingestion architecture | PASSED |
+| Data-source architecture | PASSED |
+| Python connectors | PASSED |
+| AEMET real API validation | PASSED |
+| Open-Meteo real API validation | PASSED |
+| REE / ESIOS real API validation | PASSED |
+| Historical ingestion | PASSED |
+| Historical chunking | PASSED |
+| Incremental ingestion | PASSED |
+| Local Bronze persistence | PASSED |
+| MinIO connectivity | PASSED |
+| MinIO Bronze persistence | PASSED |
+| Unit tests | PASSED — 31/31 |
+| API credentials externalized | PASSED |
+| End-to-end API -> Bronze validation | PASSED |
 
-This table will be updated as implementation and integration tests are
-completed.
+The ingestion layer is considered technically validated and ready for the
+subsequent Lakehouse processing phase.
+
+**Phase 3 - Data Ingestion: COMPLETED**

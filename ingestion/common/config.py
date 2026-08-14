@@ -1,8 +1,11 @@
 import os
 from pathlib import Path
+from dotenv import load_dotenv
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+load_dotenv(PROJECT_ROOT / ".env")
 
 DATA_DIR = PROJECT_ROOT / "data"
 BRONZE_DIR = DATA_DIR / "bronze"
@@ -10,6 +13,13 @@ BRONZE_DIR = DATA_DIR / "bronze"
 # API credentials
 AEMET_API_KEY = os.getenv("AEMET_API_KEY")
 ESIOS_API_KEY = os.getenv("ESIOS_API_KEY")
+
+# MinIO configuration
+MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "localhost:9000")
+MINIO_ACCESS_KEY = os.getenv("MINIO_ROOT_USER")
+MINIO_SECRET_KEY = os.getenv("MINIO_ROOT_PASSWORD")
+MINIO_BUCKET = os.getenv("MINIO_BUCKET", "energy-lakehouse")
+MINIO_SECURE = os.getenv("MINIO_SECURE", "false").lower() == "true"
 
 # API endpoints
 AEMET_BASE_URL = "https://opendata.aemet.es/opendata/api"

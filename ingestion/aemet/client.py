@@ -93,6 +93,24 @@ class AemetClient:
 
         return self.http_client.get_json(data_url)
 
+    def get_stations(
+            self,
+    ) -> dict[str, Any] | list[Any]:
+        """
+        Retrieve the AEMET climatological station inventory.
+        """
+
+        endpoint = (
+            f"{AEMET_BASE_URL}/valores/climatologicos/"
+            "inventarioestaciones/todasestaciones"
+        )
+
+        logger.info(
+            "Requesting AEMET climatological station inventory."
+        )
+
+        return self._get_aemet_data(endpoint)
+
     def get_daily_climatological_values(
         self,
         *,

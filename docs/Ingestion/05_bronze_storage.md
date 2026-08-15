@@ -5,9 +5,9 @@
 The Bronze layer is the initial persistence layer of the Energy Lakehouse
 Platform.
 
-Its main purpose is to preserve the information acquired from the external data
-sources with minimal modification before cleaning, normalization and analytical
-transformations are applied.
+Its main purpose is to preserve the information acquired from external data
+sources with minimal modification before cleaning, normalization,
+deduplication and analytical transformations are applied.
 
 The Bronze layer receives data from:
 
@@ -18,17 +18,22 @@ The Bronze layer receives data from:
 Both historical and incremental ingestion processes write data to the same
 logical Bronze layer.
 
+The production-like storage backend used by the platform is MinIO, providing
+S3-compatible object storage.
+
 ---
 
 ## 2. Objectives
 
 The Bronze layer has the following objectives:
 
-- Preserve the original information returned by each source.
-- Maintain separation between data providers.
-- Provide traceability of ingestion executions.
+- Preserve the information returned by each source.
+- Maintain separation between data providers and datasets.
+- Provide traceability of individual ingestion executions.
 - Allow source data to be reprocessed without requesting it again.
 - Support historical and incremental ingestion.
+- Preserve repeated acquisitions without overwriting previous objects.
+- Store technical ingestion metadata.
 - Provide the input for subsequent Silver-layer transformations.
 
 The Bronze layer is not intended to provide the final analytical model of the
@@ -38,83 +43,88 @@ platform.
 
 ## 3. Data Flow
 
-The relationship between ingestion and Bronze storage is:
+The implemented relationship between ingestion and Bronze storage is:
 
 ```text
 +-------------------+
-| AEMET OpenData    |
-+---------+---------+
-          |
-          |
-+---------v---------+
-|                   |
-| Python Ingestion  |
-|                   |
+| External APIs     |
+| AEMET / Open-Meteo|
+| ESIOS             |
 +---------+---------+
           |
           v
 +-------------------+
-|                   |
-|      Bronze       |
-|                   |
+| Python Ingestion  |
++---------+---------+
+          |
+          v
++-------------------+
+| Common Storage    |
+| Component         |
++---------+---------+
+          |
+          v
++-------------------+
+| MinIO             |
+| Bronze Layer      |
 +---------+---------+
           |
           v
 +-------------------+
 | Silver Processing |
-|     PySpark       |
+| PySpark           |
 +-------------------+
 ```
 
-The same pattern applies to Open-Meteo and REE / ESIOS.
+The persistence logic is centralized in:
+
+```text
+ingestion/common/storage.py
+```
+
+This prevents individual source connectors from implementing their own object
+storage logic.
 
 ---
 
-## 4. Source Separation
+## 4. Source and Dataset Separation
 
-Data is organized by source so that information from different providers remains
-independent during ingestion.
+Bronze objects are organized first by source and then by dataset.
 
-The logical structure is:
+The implemented logical structure is:
 
 ```text
 bronze/
 |
 |-- aemet/
+|   |-- current_observations/
+|   |-- daily_climatological_values/
+|   |-- radiation/
+|   `-- stations/
 |
 |-- open_meteo/
+|   |-- weather/
+|   |-- weather_hourly/
+|   |-- weather_15min/
+|   `-- weather_historical_forecast/
 |
 `-- esios/
+    |-- demand_real_5min/
+    |-- demanda_real/
+    |-- generacion_medida_eolica_terrestre/
+    |-- potencia_instalada_eolica/
+    |-- solar_photovoltaic_generation/
+    `-- <additional configured datasets>/
 ```
 
-Each source directory can contain additional subdirectories representing the
-datasets retrieved from that provider.
-
-For example:
-
-```text
-bronze/
-|
-|-- aemet/
-|   `-- <dataset>/
-|
-|-- open_meteo/
-|   `-- <dataset>/
-|
-`-- esios/
-    `-- <dataset>/
-```
-
-The definitive dataset names will be established after the API endpoints and
-indicators have been technically validated.
+This structure maintains clear separation between providers while allowing
+multiple datasets from the same provider to coexist independently.
 
 ---
 
-## 5. Temporal Organization
+## 5. Temporal Partitioning
 
-Bronze data may be organized using temporal partitions.
-
-A conceptual structure is:
+Bronze objects use the following partition structure:
 
 ```text
 bronze/
@@ -123,286 +133,532 @@ bronze/
         `-- year=YYYY/
             `-- month=MM/
                 `-- day=DD/
+                    `-- <object>
 ```
+
+The `year`, `month` and `day` partitions represent the **ingestion date** of
+the Bronze object.
+
+They do not necessarily represent the observation date or requested source
+period.
+
+For example, an ESIOS dataset requested for:
+
+```text
+2025-08-13
+```
+
+and ingested on:
+
+```text
+2026-08-15
+```
+
+is stored under:
+
+```text
+year=2026/month=08/day=15/
+```
+
+The requested source period is preserved separately in the object's ingestion
+metadata.
+
+This design provides traceability of when information entered the platform
+while retaining the source temporal context inside the persisted object.
+
+---
+
+## 6. Object Naming
+
+Each Bronze object contains an ingestion timestamp in its filename.
 
 Example:
 
 ```text
-bronze/
-`-- open_meteo/
-    `-- weather/
-        `-- year=2026/
-            `-- month=08/
-                `-- day=09/
+esios_demand_real_5min_20260815T102355585017Z.json
 ```
 
-Temporal organization provides several advantages:
+This prevents a new successful acquisition from overwriting an existing
+Bronze object.
 
-- Easier identification of ingestion periods.
-- More efficient downstream processing.
-- Simplified reprocessing of specific periods.
-- Improved traceability.
-- Reduced need to scan unrelated data.
+The combination of:
 
-The definitive partitioning strategy will depend on the granularity and volume
-of each dataset.
+```text
+source
+dataset
+ingestion-date partition
+ingestion timestamp
+```
+
+provides technical traceability for each acquisition.
 
 ---
 
-## 6. Raw Data Preservation
+## 7. Raw Data Preservation
 
 The Bronze layer follows a raw-data preservation principle.
 
-Data obtained from an external API should be stored with minimal modification.
+Data obtained from an external source is stored with minimal technical
+modification.
 
-The ingestion layer may perform technical operations required for persistence,
-such as:
+The ingestion layer performs operations required for persistence and
+traceability, including:
 
 - Adding ingestion metadata.
-- Assigning source identifiers.
-- Recording ingestion timestamps.
-- Organizing files by source and temporal period.
+- Assigning source and dataset identifiers.
+- Recording the ingestion timestamp.
+- Recording requested temporal boundaries.
+- Organizing objects by source, dataset and ingestion date.
+- Serializing data for object storage.
 
-However, the ingestion layer must not perform transformations such as:
+The Bronze ingestion layer does not perform:
 
 - Business calculations.
 - Cross-source joins.
 - Geographic harmonization.
 - Analytical aggregations.
-- Unit standardization for analytical purposes.
-- Construction of KPIs.
+- Analytical unit standardization.
+- KPI construction.
+- Definitive deduplication.
 
-These operations belong to the Silver and Gold processing layers.
+These operations belong to subsequent Lakehouse processing layers.
 
 ---
 
-## 7. Ingestion Metadata
+## 8. JSON Bronze Structure
 
-Technical metadata can be associated with ingested data to improve traceability.
+JSON-based datasets are persisted using a wrapper containing technical metadata
+and the acquired source payload.
 
-Relevant metadata may include:
+Conceptually:
+
+```json
+{
+  "metadata": {
+    "source": "<source>",
+    "dataset": "<dataset>",
+    "ingestion_mode": "<mode>",
+    "ingestion_timestamp": "<UTC timestamp>",
+    "requested_start_date": "<value or null>",
+    "requested_end_date": "<value or null>"
+  },
+  "data": {
+    "...": "source payload"
+  }
+}
+```
+
+The exact content of `data` depends on the source API.
+
+This structure has been validated using real AEMET, Open-Meteo and ESIOS
+acquisitions stored in MinIO.
+
+---
+
+## 9. Validated Metadata
+
+The implemented Bronze metadata contains:
 
 ```text
 source
 dataset
+ingestion_mode
 ingestion_timestamp
 requested_start_date
 requested_end_date
-ingestion_mode
 ```
 
-Where appropriate, additional information may be registered, such as the
-execution identifier or source endpoint.
+For datasets without an explicit requested temporal window, the corresponding
+date fields may be `null`.
 
-The final metadata structure will be defined alongside the implementation of
-the persistence component.
+For high-frequency ingestion using exact datetime windows, the requested
+boundaries can contain complete UTC datetime values.
+
+This allows the acquisition window to remain traceable independently from the
+physical ingestion-date partition.
 
 ---
 
-## 8. Historical Data
+## 10. Source Format Preservation
 
-Historical ingestion writes the initial datasets into Bronze.
+Most API responses used by the project are persisted as JSON.
 
-Conceptually:
+AEMET radiation data is an exception.
+
+The radiation endpoint provides source information as text/CSV, and the Bronze
+layer preserves this representation as a `.csv` object.
+
+Example:
+
+```text
+bronze/aemet/radiation/
+`-- year=2026/
+    `-- month=08/
+        `-- day=15/
+            `-- aemet_radiation_<timestamp>.csv
+```
+
+Analytical parsing of this dataset is separated from raw Bronze persistence.
+
+---
+
+## 11. Historical Data
+
+Historical ingestion writes initial source datasets into the same Bronze
+hierarchy used by incremental ingestion.
 
 ```text
 Historical API requests
           |
           v
-+---------------------+
-| Historical ingestion|
-+----------+----------+
++----------------------+
+| Historical ingestion |
++----------+-----------+
            |
            v
-+---------------------+
-|       Bronze        |
-+---------------------+
++----------------------+
+|    MinIO / Bronze    |
++----------------------+
 ```
 
-Large historical periods may be acquired in multiple request windows.
+Large historical periods can be acquired in multiple request windows.
 
-Each successfully acquired interval can be persisted independently, reducing the
-impact of failures during long-running historical loads.
+Each successful acquisition is persisted independently, reducing the impact of
+failures and allowing individual periods to be reprocessed.
 
 ---
 
-## 9. Incremental Data
+## 12. Incremental Data
 
-Incremental ingestion writes newly available information to the same logical
+Incremental ingestion writes newly acquired information to the same logical
 Bronze structure.
 
 ```text
-Initial historical load
-          |
-          v
-       Bronze
-          ^
-          |
-Incremental load 1
-          ^
-          |
-Incremental load 2
-          ^
-          |
-         ...
+Historical load --------\
+                         \
+Incremental load 1 -------> Bronze
+                         /
+Incremental load 2 ------/
 ```
 
-Downstream processing therefore does not need separate storage mechanisms for
-historical and incremental acquisition.
+Downstream processing therefore uses a common Bronze input regardless of
+whether an object originated from historical or incremental acquisition.
 
 ---
 
-## 10. Idempotency and Reprocessing
+## 13. Append-Only Strategy
 
-The ingestion architecture must support re-execution of previously requested
-periods.
+The Bronze layer follows an append-only strategy.
 
-Bronze prioritizes preservation of source data and ingestion traceability.
+A successful ingestion execution creates a new object rather than updating or
+overwriting a previously persisted acquisition.
 
-When a temporal period needs to be acquired again, the storage strategy must
-avoid uncontrolled corruption or accidental loss of previously acquired data.
-
-Definitive deduplication and business-level uniqueness rules are applied during
-subsequent Lakehouse processing where appropriate.
-
----
-
-## 11. Local Development Storage
-
-The ingestion layer is designed so that connectors can be developed and tested
-independently from the final object-storage infrastructure.
-
-During local development, Bronze output can be written to the project data
-directory:
+For example, two executions requesting exactly the same source window produce:
 
 ```text
-data/
-`-- bronze/
-    |-- aemet/
-    |-- open_meteo/
-    `-- esios/
+esios_validation_idempotency_<timestamp_A>.json
+esios_validation_idempotency_<timestamp_B>.json
 ```
 
-This local storage mechanism allows ingestion logic to be tested without
-requiring the complete platform infrastructure.
+Both objects are retained.
 
-The persistence logic is isolated in the common storage component:
+This behaviour preserves:
 
-```text
-ingestion/common/storage.py
-```
-
-This separation prevents API connectors from depending directly on a specific
-storage implementation.
+- Acquisition history.
+- Source traceability.
+- Reprocessing capability.
+- Evidence of repeated executions.
 
 ---
 
-## 12. Final Lakehouse Storage
+## 14. Idempotency and Duplicate Handling
 
-In the complete platform deployment, Bronze data will be persisted using the
-object-storage infrastructure defined by the Lakehouse architecture.
+Bronze is not physically idempotent by design.
+
+Re-executing the same temporal window can produce another Bronze object
+containing the same business observations.
+
+This behaviour was explicitly validated during Phase 3.
+
+Two consecutive ESIOS requests using the same:
+
+- Indicator.
+- Dataset.
+- Start datetime.
+- End datetime.
+
+produced different Bronze objects while validation confirmed:
+
+```text
+Same requested window: True
+Same source data:      True
+```
+
+The repeated acquisition therefore does not overwrite or corrupt the previous
+object.
+
+Business-level duplicate detection and definitive deduplication are delegated
+to the Silver layer.
+
+---
+
+## 15. Error Safety
+
+Validation errors are raised before Bronze persistence whenever possible.
+
+An invalid ESIOS temporal range where:
+
+```text
+start_datetime > end_datetime
+```
+
+was validated to raise:
+
+```text
+InvalidDateRangeError
+```
+
+before a Bronze object was persisted.
+
+Existing Bronze information remains unaffected by failed acquisition attempts.
+
+This supports safe retries and independent recovery of failed ingestion
+windows.
+
+---
+
+## 16. MinIO Storage
 
 The platform uses MinIO as its S3-compatible object storage system.
 
-Conceptually:
+Bronze objects are stored in the configured Lakehouse bucket under the
+`bronze/` prefix.
+
+The validated deployment uses:
 
 ```text
-External APIs
-      |
-      v
-Python ingestion
-      |
-      v
-Storage abstraction
-      |
-      +--------------------+
-      |                    |
-      v                    v
-Local filesystem       MinIO / S3
-Development            Platform
+energy-lakehouse/
+`-- bronze/
 ```
 
-This approach allows the ingestion code to remain independent from the
-underlying storage backend.
+Real Phase 3 validation confirmed successful persistence from:
+
+- Local Python ingestion executions.
+- Apache Airflow container executions.
+
+The MinIO Python client was also used to enumerate and read the persisted
+objects directly.
 
 ---
 
-## 13. Relationship with Apache Iceberg
+## 17. Validated MinIO Objects
 
-Bronze represents the initial landing layer for source data.
+Phase 3 validation confirmed Bronze objects for datasets including:
 
-Apache Iceberg is used by the Lakehouse architecture for managed analytical
+```text
+AEMET
+  current_observations
+  daily_climatological_values
+  radiation
+  stations
+
+Open-Meteo
+  weather
+  weather_hourly
+  weather_15min
+  weather_historical_forecast
+
+ESIOS
+  demand_real_5min
+  demanda_real
+  generacion_medida_eolica_terrestre
+  potencia_instalada_eolica
+  solar_photovoltaic_generation
+```
+
+Additional temporary validation datasets were also generated during technical
+testing.
+
+These validation objects are runtime data and are not part of the Git source
+repository.
+
+---
+
+## 18. Real Data Validation
+
+Real Bronze objects were read directly from MinIO during Phase 3 validation.
+
+### AEMET
+
+A validated `current_observations` object contained:
+
+```text
+9760 records
+```
+
+and included variables such as:
+
+```text
+temperature
+humidity
+precipitation
+wind
+pressure
+station coordinates
+```
+
+### ESIOS
+
+A complete daily validation of the 5-minute demand dataset contained:
+
+```text
+288 values
+```
+
+corresponding to:
+
+```text
+24 hours * 12 observations/hour
+```
+
+The persisted metadata correctly retained the requested historical date.
+
+### Open-Meteo
+
+A complete `weather_15min` daily object contained:
+
+```text
+96 observations
+```
+
+corresponding to:
+
+```text
+24 hours * 4 observations/hour
+```
+
+The validated source payload included meteorological variables such as
+temperature, humidity, precipitation, pressure, radiation and wind at several
+heights.
+
+---
+
+## 19. Relationship with Apache Airflow
+
+Apache Airflow executes the ingestion components but does not implement Bronze
+storage directly.
+
+The flow is:
+
+```text
+Airflow
+   |
+   v
+Python ingestion
+   |
+   v
+Common storage component
+   |
+   v
+MinIO / Bronze
+```
+
+This integration was validated from inside the Airflow scheduler container.
+
+A real AEMET ingestion executed from the scheduler container successfully
+created a Bronze object in MinIO.
+
+---
+
+## 20. Relationship with Apache Iceberg
+
+Bronze is currently the raw landing layer for source acquisitions.
+
+Apache Iceberg is part of the Lakehouse architecture for managed analytical
 tables.
 
-The definitive use of Iceberg across the Bronze, Silver and Gold layers will be
-implemented and validated during the Lakehouse implementation phase.
+The implementation and validation of Iceberg-based processing belongs to the
+Lakehouse implementation phase.
 
-The ingestion layer therefore remains focused on reliable acquisition and raw
-data persistence rather than analytical table transformations.
+Phase 3 therefore focuses on reliable source acquisition and Bronze object
+persistence rather than managed analytical-table transformations.
 
 ---
 
-## 14. Relationship with Silver
+## 21. Relationship with Silver
 
-Bronze provides the input for the Silver processing layer.
+Bronze provides the source input for Silver processing.
 
 ```text
 Bronze
    |
-   | Raw source data
+   | Raw acquisitions
    v
 PySpark
    |
+   | Parsing
    | Cleaning
    | Normalization
+   | Deduplication
    | Geographic harmonization
    | Data-quality processing
    v
 Silver
 ```
 
-This separation makes it possible to modify transformation logic without
-requiring the external data to be downloaded again.
+In particular, Silver is responsible for resolving duplicated business
+observations that can result from Bronze re-executions.
+
+This separation allows transformation and deduplication logic to evolve
+without requiring the original external data to be downloaded again.
 
 ---
 
-## 15. Version Control
+## 22. Version Control
 
-Data generated by ingestion processes must not be committed to the Git
-repository.
+Generated Bronze data is not committed to the Git repository.
 
-Git is used to version:
+Git versions:
 
 - Ingestion source code.
+- Airflow definitions.
 - Configuration templates.
 - Documentation.
 - Tests.
 - Infrastructure definitions.
 
-Generated Bronze datasets are runtime data and must remain outside version
-control.
+Runtime Bronze objects remain in MinIO or ignored local runtime storage.
 
-The project `.gitignore` must therefore exclude the corresponding runtime data
-directories.
+Sensitive configuration remains outside source control through the project's
+environment configuration strategy.
 
 ---
 
-## 16. Validation Status
+## 23. Validation Status
 
-The Bronze storage architecture is defined independently from the final
-containerized deployment.
+Bronze storage has been technically validated during Phase 3.
 
-During final integration testing, the following elements will be validated:
+The following elements have been confirmed:
 
-- Local Bronze persistence.
-- Directory and dataset organization.
-- Historical data persistence.
-- Incremental data persistence.
-- Re-execution behaviour.
-- Ingestion metadata.
+- Source-based organization.
+- Dataset-based organization.
+- Ingestion-date partitioning.
+- Unique timestamped object naming.
+- Historical persistence.
+- Incremental persistence.
+- JSON metadata wrapper.
+- Raw CSV persistence for AEMET radiation.
 - MinIO connectivity.
-- Object persistence in the final storage layer.
-- Reading Bronze data from the processing environment.
+- Object enumeration in MinIO.
+- Direct reading of persisted Bronze objects.
+- Real AEMET persistence.
+- Real Open-Meteo persistence.
+- Real ESIOS persistence.
+- Airflow-to-MinIO persistence.
+- Append-only re-execution behaviour.
+- Preservation of repeated acquisitions.
+- Error handling before persistence.
+- Separation of Bronze preservation from Silver deduplication.
 
-The results of these tests will be documented in
-`06_validation_and_testing.md`.
+The Bronze persistence component is therefore considered validated for
+Phase 3.

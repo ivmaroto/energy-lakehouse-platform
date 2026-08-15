@@ -24,8 +24,12 @@ MINIO_SECURE = os.getenv("MINIO_SECURE", "false").lower() == "true"
 # API endpoints
 AEMET_BASE_URL = "https://opendata.aemet.es/opendata/api"
 
+
 OPEN_METEO_BASE_URL = "https://api.open-meteo.com/v1/forecast"
 OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
+OPEN_METEO_HISTORICAL_FORECAST_URL = (
+    "https://historical-forecast-api.open-meteo.com/v1/forecast"
+)
 
 ESIOS_BASE_URL = "https://api.esios.ree.es"
 

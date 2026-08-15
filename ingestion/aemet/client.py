@@ -54,31 +54,47 @@ class AemetClient:
 
         return f"{value.isoformat()}T00:00:00UTC"
 
-    def _get_aemet_data(
-        self,
-        endpoint: str,
-    ) -> dict[str, Any] | list[Any]:
-        """
-        Execute the two-step AEMET OpenData request.
+    @property
+    def headers(self) -> dict[str, str]:
+        """Return the HTTP headers required by AEMET."""
 
-        The first request returns metadata containing the URL where
-        the requested dataset can be downloaded.
-        """
-
-        headers = {
+        return {
             "accept": "application/json",
             "api_key": self.api_key,
         }
 
+    def _get_aemet_metadata(
+        self,
+        endpoint: str,
+    ) -> dict[str, Any]:
+        """
+        Execute the first step of an AEMET OpenData request.
+
+        AEMET normally returns metadata containing temporary URLs
+        for the requested data and its metadata definition.
+        """
+
         metadata = self.http_client.get_json(
             endpoint,
-            headers=headers,
+            headers=self.headers,
         )
 
         if not isinstance(metadata, dict):
             raise APIResponseError(
                 "Unexpected AEMET metadata response format."
             )
+
+        return metadata
+
+    def _get_aemet_data(
+        self,
+        endpoint: str,
+    ) -> dict[str, Any] | list[Any]:
+        """
+        Retrieve an AEMET dataset whose payload is JSON.
+        """
+
+        metadata = self._get_aemet_metadata(endpoint)
 
         data_url = metadata.get("datos")
 
@@ -93,8 +109,36 @@ class AemetClient:
 
         return self.http_client.get_json(data_url)
 
+    def _get_aemet_text(
+        self,
+        endpoint: str,
+    ) -> str:
+        """
+        Retrieve an AEMET dataset whose payload is plain text.
+
+        This is required for datasets such as the special
+        radiation network, which returns semicolon-separated text.
+        """
+
+        metadata = self._get_aemet_metadata(endpoint)
+
+        data_url = metadata.get("datos")
+
+        if not data_url:
+            raise APIResponseError(
+                "AEMET response does not contain a data URL."
+            )
+
+        logger.info(
+            "AEMET text dataset URL obtained successfully."
+        )
+
+        response = self.http_client.get(data_url)
+
+        return response.text
+
     def get_stations(
-            self,
+        self,
     ) -> dict[str, Any] | list[Any]:
         """
         Retrieve the AEMET climatological station inventory.
@@ -148,3 +192,68 @@ class AemetClient:
         )
 
         return self._get_aemet_data(endpoint)
+
+    def get_current_observations(
+        self,
+    ) -> dict[str, Any] | list[Any]:
+        """
+        Retrieve current conventional observations from all AEMET stations.
+        """
+
+        endpoint = (
+            f"{AEMET_BASE_URL}/observacion/convencional/todas"
+        )
+
+        logger.info(
+            "Requesting AEMET conventional observations."
+        )
+
+        return self._get_aemet_data(endpoint)
+
+    def get_radiation_data(
+        self,
+    ) -> str:
+        """
+        Retrieve data from the AEMET special radiation network.
+
+        The source dataset is returned as semicolon-separated plain text
+        and is intentionally not parsed in the client layer.
+        """
+
+        endpoint = (
+            f"{AEMET_BASE_URL}/red/especial/radiacion"
+        )
+
+        logger.info(
+            "Requesting AEMET special radiation network data."
+        )
+
+        return self._get_aemet_text(endpoint)
+
+    def get_radiation_metadata(
+        self,
+    ) -> str:
+        """
+        Retrieve metadata for the AEMET special radiation network.
+        """
+
+        endpoint = (
+            f"{AEMET_BASE_URL}/red/especial/radiacion"
+        )
+
+        metadata = self._get_aemet_metadata(endpoint)
+
+        metadata_url = metadata.get("metadatos")
+
+        if not metadata_url:
+            raise APIResponseError(
+                "AEMET response does not contain a metadata URL."
+            )
+
+        logger.info(
+            "Requesting AEMET radiation metadata."
+        )
+
+        response = self.http_client.get(metadata_url)
+
+        return response.text

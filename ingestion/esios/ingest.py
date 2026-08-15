@@ -2,7 +2,7 @@
 Ingestion logic for REE / ESIOS data.
 """
 
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 from ingestion.common.config import ESIOS_HISTORICAL_CHUNK_DAYS
@@ -115,8 +115,8 @@ class EsiosIngestion:
         *,
         indicator_id: int,
         dataset: str,
-        start_date: date,
-        end_date: date,
+        start_date: date | datetime,
+        end_date: date | datetime,
         time_trunc: str | None = None,
         time_agg: str | None = None,
         geo_ids: list[int] | None = None,
@@ -126,6 +126,10 @@ class EsiosIngestion:
         """
         Retrieve an incremental temporal window for an ESIOS indicator
         and persist it in Bronze.
+
+        Date values can be used for daily windows.
+        Datetime values can be used for high-frequency windows
+        such as 5-minute or hourly ingestion.
         """
 
         logger.info(

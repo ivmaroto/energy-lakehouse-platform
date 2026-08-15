@@ -6,15 +6,18 @@ After the initial historical load, the Energy Lakehouse Platform uses
 incremental ingestion processes to keep meteorological and energy datasets
 updated.
 
-Incremental ingestion retrieves only the new data required since the previous
-successful execution instead of downloading the complete historical dataset
-again.
+Incremental ingestion retrieves the temporal window required by each dataset
+according to its publication frequency instead of repeatedly downloading the
+complete historical dataset.
 
-The process applies independently to:
+The process is implemented independently for:
 
 - AEMET OpenData.
 - Open-Meteo.
 - REE / ESIOS.
+
+Incremental ingestion is orchestrated through Apache Airflow and persists the
+acquired source data in the Bronze layer hosted in MinIO.
 
 ---
 
@@ -26,22 +29,23 @@ The incremental ingestion process has the following objectives:
 - Minimize unnecessary API requests.
 - Avoid repeatedly downloading complete historical datasets.
 - Preserve source information in the Bronze layer.
-- Support repeated executions.
-- Detect and handle failed requests.
-- Provide the data required for subsequent Lakehouse processing.
+- Support controlled re-execution of temporal windows.
+- Detect and handle invalid requests and API failures.
+- Support different ingestion frequencies according to dataset characteristics.
+- Provide traceable source data for subsequent Silver processing.
 
 ---
 
 ## 3. General Process
 
-The incremental ingestion workflow follows this general pattern:
+The implemented incremental ingestion workflow follows this general pattern:
 
 ```text
-Previous ingestion state
-          |
-          v
+Airflow schedule
+      |
+      v
 +----------------------+
-| Determine required   |
+| Determine execution  |
 | temporal window      |
 +----------+-----------+
            |
@@ -58,270 +62,457 @@ Previous ingestion state
            v
 +----------------------+
 | Bronze persistence   |
+|      in MinIO        |
 +----------+-----------+
            |
            v
 +----------------------+
-| Register execution   |
+| Airflow task status  |
 +----------------------+
 ```
 
-Each source is processed independently because publication frequency and data
-availability may differ between providers.
+Each dataset is processed independently because publication frequency,
+temporal granularity and data availability differ between providers.
 
 ---
 
-## 4. Incremental Window
+## 4. Incremental Frequencies
 
-An incremental execution requires determining the temporal interval that must
-be requested.
+The implemented ingestion strategy supports several execution frequencies:
 
-Conceptually:
+| Frequency | Main use |
+|---|---|
+| 5 minutes | High-frequency ESIOS energy indicators |
+| 15 minutes | Open-Meteo meteorological observations |
+| Hourly | AEMET observations and selected ESIOS indicators |
+| Daily | AEMET daily datasets and radiation data |
+| Monthly | ESIOS installed-capacity datasets |
+
+The Airflow orchestration layer separates these workloads according to their
+required execution frequency.
+
+The main implemented DAGs are:
 
 ```text
-Existing Bronze data               New data
-
-|-------------------------|--------------------|
-                          ^
-                          |
-                  Last processed point
+open_meteo_15min
+hourly_ingestion
+daily_ingestion
+monthly_ingestion
 ```
 
-The next execution requests the required period after the previously processed
-data.
-
-The definitive mechanism used to determine the last processed point will be
-validated during implementation.
+This separation prevents datasets with different publication characteristics
+from being unnecessarily requested at the same frequency.
 
 ---
 
-## 5. AEMET Incremental Ingestion
+## 5. Temporal Windows
 
-The AEMET connector will periodically request newly available meteorological
-information.
+Incremental ingestion uses explicit temporal windows.
 
-The process will:
+For high-frequency datasets, the ingestion layer supports exact UTC
+`datetime` boundaries rather than only calendar dates.
 
-1. Determine the required temporal interval.
-2. Build an authenticated AEMET request.
-3. Retrieve the available data.
-4. Validate the API response.
-5. Persist the source information in Bronze.
-6. Record the result of the execution.
+Example:
 
-The exact update frequency will depend on the selected AEMET datasets and their
+```text
+ESIOS 5-minute window
+
+2025-08-13 00:00 UTC
+        |
+        +--------------------+
+                             |
+                     2025-08-13 00:05 UTC
+```
+
+Open-Meteo 15-minute ingestion similarly supports exact temporal boundaries.
+
+Example:
+
+```text
+2026-08-13 10:00 UTC
+        |
+        +--------------------+
+                             |
+                     2026-08-13 10:15 UTC
+```
+
+Datetime values supplied with another timezone are normalized to UTC before
+building the corresponding API request where required.
+
+Daily and monthly datasets use larger temporal windows appropriate to their
 publication frequency.
 
 ---
 
-## 6. Open-Meteo Incremental Ingestion
+## 6. AEMET Incremental Ingestion
 
-The Open-Meteo connector will retrieve the meteorological information required
-for the new temporal window.
+AEMET incremental ingestion currently covers several types of meteorological
+information.
 
-The process will:
+### Conventional observations
 
-1. Determine the requested time interval.
-2. Select the required geographical coordinates.
-3. Select the required meteorological variables.
-4. Request the information from Open-Meteo.
-5. Validate the response.
-6. Persist the acquired information in Bronze.
-7. Record the result of the execution.
+Current conventional observations are retrieved periodically and persisted in:
 
-No authentication credential is required for the Open-Meteo access pattern used
-by this project.
+```text
+bronze/aemet/current_observations/
+```
+
+This dataset contains meteorological variables such as:
+
+- Temperature.
+- Relative humidity.
+- Precipitation.
+- Wind speed and direction.
+- Atmospheric pressure.
+
+### Daily climatological values
+
+Daily climatological values are retrieved for configured AEMET stations.
+
+The list of stations used by the Airflow DAG is externalized through the
+Airflow variable:
+
+```text
+AEMET_DAILY_STATIONS
+```
+
+This avoids embedding the definitive station configuration directly in the
+DAG source code.
+
+The resulting data is persisted in:
+
+```text
+bronze/aemet/daily_climatological_values/
+```
+
+### Radiation
+
+AEMET radiation data is acquired as source text/CSV information and preserved
+in Bronze without applying analytical transformations.
+
+The resulting files are persisted in:
+
+```text
+bronze/aemet/radiation/
+```
+
+The radiation parser is tested independently and will be used by subsequent
+processing stages.
 
 ---
 
-## 7. REE / ESIOS Incremental Ingestion
+## 7. Open-Meteo Incremental Ingestion
 
-The REE / ESIOS connector will retrieve newly available energy information for
-the selected indicators.
+Open-Meteo provides the high-frequency meteorological dataset used by the
+platform.
 
-The process will:
+The implemented 15-minute ingestion supports exact datetime windows and
+retrieves the meteorological variables required by the analytical use case.
 
-1. Determine the required temporal interval.
-2. Select the energy dataset or indicator.
-3. Build the authenticated API request.
-4. Retrieve the available information.
-5. Validate the response.
-6. Persist the acquired information in Bronze.
-7. Record the result of the execution.
+The validated dataset includes variables such as:
 
-The execution frequency will be adapted to the publication characteristics of
-the selected energy datasets.
+- Temperature.
+- Relative humidity.
+- Dew point.
+- Precipitation.
+- Cloud cover.
+- Atmospheric pressure.
+- Wind speed and direction at 10 m.
+- Wind gusts.
+- Wind speed and direction at 80 m.
+- Wind speed and direction at 120 m.
+- Shortwave radiation.
+- Direct radiation.
+- Diffuse radiation.
+- Direct normal irradiance.
+- Sunshine duration.
+
+The resulting dataset is persisted in:
+
+```text
+bronze/open_meteo/weather_15min/
+```
+
+A full-day validation returned 96 observations, corresponding to one record
+every 15 minutes.
+
+Open-Meteo access does not require an API credential for the access pattern
+used by this project.
 
 ---
 
-## 8. Idempotency
+## 8. REE / ESIOS Incremental Ingestion
 
-Incremental ingestion should be designed to tolerate repeated executions of the
-same temporal period.
+REE / ESIOS incremental ingestion retrieves energy information using selected
+indicator identifiers.
+
+The ingestion layer supports both calendar-date windows and exact UTC datetime
+windows.
+
+This allows the same connector to support datasets with different temporal
+granularities.
+
+A validated example is indicator `1293`, used during the 5-minute incremental
+validation.
+
+A complete day returned 288 observations:
+
+```text
+24 hours * 12 observations/hour = 288 observations
+```
+
+The same ingestion implementation is also used for hourly and monthly ESIOS
+datasets by supplying the corresponding temporal window and dataset
+configuration.
+
+---
+
+## 9. Airflow Orchestration
+
+Incremental ingestion is integrated with Apache Airflow.
+
+Airflow is responsible for:
+
+- Scheduling ingestion tasks.
+- Separating workloads by execution frequency.
+- Executing ingestion code inside the containerized environment.
+- Recording task execution status.
+- Supporting retries and operational monitoring.
+
+The ingestion modules remain independent Python components and can therefore
+also be executed and tested outside Airflow.
+
+The integration has been validated from inside the Airflow scheduler container,
+including a complete execution path:
+
+```text
+Airflow container
+      |
+      v
+Python ingestion module
+      |
+      v
+External API
+      |
+      v
+MinIO
+      |
+      v
+Bronze object
+```
+
+---
+
+## 10. Bronze Append-Only Strategy
+
+The Bronze layer uses an append-only strategy.
+
+Each successful ingestion execution creates a new object containing:
+
+- Source data.
+- Source identifier.
+- Dataset identifier.
+- Ingestion mode.
+- Ingestion timestamp.
+- Requested temporal boundaries when applicable.
+
+Object names contain the ingestion timestamp, preserving the traceability of
+each acquisition.
 
 For example:
 
 ```text
-Execution 1
-2026-08-01 -> 2026-08-02
-
-Execution 2
-2026-08-02 -> 2026-08-03
-
-Retry
-2026-08-02 -> 2026-08-03
+bronze/
+`-- esios/
+    `-- demand_real_5min/
+        `-- year=2026/
+            `-- month=08/
+                `-- day=15/
+                    `-- esios_demand_real_5min_<timestamp>.json
 ```
 
-A retry should not corrupt the Bronze dataset.
+The partition path represents the ingestion date.
 
-Duplicate detection and definitive deduplication rules will be applied where
-appropriate during subsequent Lakehouse processing.
-
-The Bronze layer prioritizes preservation and traceability of source data.
+The requested source-data period is preserved separately in the Bronze
+metadata.
 
 ---
 
-## 9. Late or Updated Source Data
+## 11. Re-execution and Idempotency
 
-External APIs may publish data after its corresponding observation period or
-may subsequently revise previously published information.
+Bronze is intentionally not physically idempotent.
 
-For this reason, the incremental architecture allows a configurable overlap
-between consecutive ingestion windows when required.
+If exactly the same temporal window is executed twice, both acquisitions are
+preserved as separate Bronze objects because each execution has its own
+ingestion timestamp.
+
+This behaviour was explicitly validated using the same ESIOS indicator,
+dataset and 5-minute temporal window in two consecutive executions.
+
+The validation confirmed:
+
+```text
+Same requested window: True
+Same source data:      True
+Different Bronze objects
+```
+
+This behaviour is consistent with the Bronze layer objective of preserving raw
+source acquisitions and maintaining ingestion traceability.
+
+A retry therefore does not overwrite or corrupt an existing Bronze object.
+
+---
+
+## 12. Duplicate Handling
+
+Because Bronze is append-only, repeated executions may produce duplicated
+business observations across different Bronze objects.
+
+These duplicates are intentionally preserved in Bronze.
+
+Definitive duplicate detection and deduplication will be performed during
+Silver processing using appropriate business and temporal keys for each
+dataset.
 
 Conceptually:
 
 ```text
-Previous execution
-|----------------------|
-
-Next execution
-                  |----------------------|
-                  <---- overlap ---->
+Bronze
+  |
+  |-- acquisition A ----\
+  |                      +----> Silver transformation
+  |-- acquisition B ----/            |
+                                    deduplication
+                                        |
+                                        v
+                               canonical records
 ```
 
-This strategy allows recently modified source information to be acquired again.
-
-The appropriate overlap will be determined independently for each source after
-the real API behaviour has been validated.
+This separates source traceability from analytical data quality.
 
 ---
 
-## 10. Error Handling
+## 13. Error Handling
 
-A failed incremental execution must not invalidate previously acquired data.
+Invalid temporal ranges are rejected before Bronze persistence.
 
-Potential failures include:
+For example, an ESIOS request where:
+
+```text
+start_datetime > end_datetime
+```
+
+raises:
+
+```text
+InvalidDateRangeError
+```
+
+This behaviour was validated during Phase 3.
+
+Other failures handled by the common ingestion architecture include:
 
 - Network connectivity errors.
 - HTTP errors.
 - Authentication failures.
 - Request timeouts.
 - Temporary API unavailability.
-- Invalid responses.
-- Empty responses.
+- Invalid API responses.
+- Missing expected response information.
 
 Failures are recorded through the common logging mechanism.
 
-A failed temporal window can subsequently be executed again.
-
-Automatic orchestration retries will be configured during the Apache Airflow
-phase.
+A failed execution does not modify previously persisted Bronze data.
 
 ---
 
-## 11. Technical Validation
+## 14. Technical Validation
 
-Before incremental data is persisted, the connector performs basic technical
-validation.
+The connectors perform technical validation before or during acquisition.
 
 This includes, where applicable:
 
-- Successful HTTP response.
-- Valid response format.
-- Expected response structure.
-- Valid requested dates.
-- Presence of the expected dataset.
-- Detection of malformed responses.
+- Valid temporal ranges.
+- Valid coordinates.
+- Valid indicator identifiers.
+- Successful HTTP responses.
+- Expected API response structures.
+- Presence of the required AEMET dataset URL.
+- Valid source payloads.
 
-Business-level quality validation is performed during later Lakehouse
-processing.
+Business-level quality rules and cross-source consistency checks belong to
+later Lakehouse processing stages.
 
 ---
 
-## 12. Bronze Persistence
+## 15. Bronze Persistence
 
-Incrementally acquired data is stored using the same Bronze organization as the
-historical ingestion process.
-
-Conceptually:
+Incremental data from all three sources is persisted in MinIO under the common
+Bronze hierarchy:
 
 ```text
 bronze/
 |
 |-- aemet/
+|   |-- current_observations/
+|   |-- daily_climatological_values/
+|   `-- radiation/
+|
 |-- open_meteo/
+|   `-- weather_15min/
+|
 `-- esios/
+    |-- demand_real_5min/
+    |-- generacion_medida_eolica_terrestre/
+    |-- potencia_instalada_eolica/
+    `-- ...
 ```
 
-Historical and incremental ingestion therefore feed the same logical Bronze
-layer.
+JSON datasets are wrapped with ingestion metadata and source data.
 
-This allows downstream processing to operate independently from the mechanism
-used to acquire each dataset.
+AEMET radiation source text is persisted as CSV/raw text in order to preserve
+the original acquired representation.
 
 ---
 
-## 13. Historical and Incremental Relationship
+## 16. Historical and Incremental Relationship
 
-Historical and incremental ingestion use the same source connectors.
+Historical and incremental ingestion reuse the same source-specific connector
+architecture.
 
 ```text
                   +------------------+
 Historical ------>|                  |
-                  | Source Connector |------> Bronze
+                  | Source Connector |------> Bronze / MinIO
 Incremental ----->|                  |
                   +------------------+
 ```
 
-The main difference is the temporal range supplied to each execution.
+The principal difference is the temporal range and execution strategy supplied
+to each acquisition.
 
-This avoids maintaining separate API implementations for historical and
-incremental data.
-
----
-
-## 14. Future Orchestration
-
-Incremental ingestion will ultimately be executed automatically by Apache
-Airflow.
-
-Airflow will be responsible for:
-
-- Scheduling ingestion jobs.
-- Managing dependencies.
-- Retrying failed executions.
-- Recording execution status.
-- Monitoring the ingestion workflow.
-
-The ingestion modules themselves remain independent Python components so they
-can also be executed and tested outside Airflow.
+This avoids maintaining duplicated API implementations for historical and
+incremental processing.
 
 ---
 
-## 15. Validation Status
+## 17. Validation Results
 
-The incremental ingestion design can be implemented independently from the
-containerized platform.
+Phase 3 validation confirmed the following:
 
-Final validation will verify:
+- Exact ESIOS datetime windows can be requested successfully.
+- Open-Meteo 15-minute windows can be requested successfully.
+- Datetimes are normalized to UTC where required.
+- AEMET conventional observations can be ingested successfully.
+- AEMET daily climatological data can be ingested successfully.
+- AEMET radiation data can be persisted in raw CSV form.
+- Incremental workloads execute successfully through Airflow.
+- Airflow containerized ingestion can persist directly to MinIO.
+- Bronze objects contain ingestion metadata and source payloads.
+- Re-execution preserves both acquisitions in Bronze.
+- Duplicate business observations are deferred to Silver deduplication.
+- Invalid temporal ranges are rejected before persistence.
 
-- Incremental window calculation.
-- Successful API acquisition.
-- Re-execution behaviour.
-- Handling of overlapping periods.
-- Bronze persistence.
-- Integration with the final storage infrastructure.
-- Compatibility with subsequent processing.
-
-The results will be recorded in the ingestion validation documentation.
+The incremental ingestion layer is therefore considered technically validated
+for Phase 3.

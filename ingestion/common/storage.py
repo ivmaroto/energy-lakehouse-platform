@@ -39,6 +39,66 @@ class LocalBronzeStorage:
     def __init__(self, base_path: Path = BRONZE_DIR) -> None:
         self.base_path = Path(base_path)
 
+    def save_text(
+            self,
+            data: str,
+            *,
+            source: str,
+            dataset: str,
+            ingestion_mode: str,
+            extension: str = "txt",
+            requested_start_date: str | None = None,
+            requested_end_date: str | None = None,
+    ) -> Path:
+        """
+        Persist a raw text response in the local Bronze layer.
+        """
+
+        ingestion_timestamp = datetime.now(timezone.utc)
+
+        target_directory = (
+                self.base_path
+                / source
+                / dataset
+                / f"year={ingestion_timestamp:%Y}"
+                / f"month={ingestion_timestamp:%m}"
+                / f"day={ingestion_timestamp:%d}"
+        )
+
+        try:
+            target_directory.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            filename = (
+                f"{source}_{dataset}_"
+                f"{ingestion_timestamp:%Y%m%dT%H%M%S%fZ}."
+                f"{extension}"
+            )
+
+            output_path = target_directory / filename
+
+            with output_path.open(
+                    "w",
+                    encoding="utf-8",
+            ) as file:
+                file.write(data)
+
+        except OSError as exc:
+            raise StorageError(
+                f"Could not persist Bronze text data for "
+                f"{source}/{dataset}: {exc}"
+            ) from exc
+
+        logger.info(
+            "Bronze text data stored: %s",
+            output_path,
+        )
+
+        return output_path
+
+
     def save_json(
         self,
         data: dict[str, Any] | list[Any],
@@ -145,6 +205,70 @@ class MinIOBronzeStorage:
             secret_key=secret_key,
             secure=secure,
         )
+
+    def save_text(
+            self,
+            data: str,
+            *,
+            source: str,
+            dataset: str,
+            ingestion_mode: str,
+            extension: str = "txt",
+            content_type: str = "text/plain",
+            requested_start_date: str | None = None,
+            requested_end_date: str | None = None,
+    ) -> str:
+        """
+        Persist a raw text response in the MinIO Bronze layer.
+        """
+
+        ingestion_timestamp = datetime.now(timezone.utc)
+
+        filename = (
+            f"{source}_{dataset}_"
+            f"{ingestion_timestamp:%Y%m%dT%H%M%S%fZ}."
+            f"{extension}"
+        )
+
+        object_name = (
+            f"bronze/{source}/{dataset}/"
+            f"year={ingestion_timestamp:%Y}/"
+            f"month={ingestion_timestamp:%m}/"
+            f"day={ingestion_timestamp:%d}/"
+            f"{filename}"
+        )
+
+        try:
+            raw_bytes = data.encode("utf-8")
+            stream = BytesIO(raw_bytes)
+
+            if not self.client.bucket_exists(self.bucket):
+                raise StorageError(
+                    f"MinIO bucket '{self.bucket}' does not exist."
+                )
+
+            self.client.put_object(
+                bucket_name=self.bucket,
+                object_name=object_name,
+                data=stream,
+                length=len(raw_bytes),
+                content_type=content_type,
+            )
+
+        except S3Error as exc:
+            raise StorageError(
+                f"Could not persist Bronze text data in MinIO for "
+                f"{source}/{dataset}: {exc}"
+            ) from exc
+
+        logger.info(
+            "Bronze text data stored in MinIO: %s/%s",
+            self.bucket,
+            object_name,
+        )
+
+        return object_name
+
 
     def save_json(
         self,

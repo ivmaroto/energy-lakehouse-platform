@@ -1,2 +1,5 @@
 apache-airflow-providers-apache-spark
 apache-airflow-providers-postgres
+minio
+requests
+python-dotenv

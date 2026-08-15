@@ -2,7 +2,7 @@
 Client for the REE / ESIOS API.
 """
 
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any
 
 from ingestion.common.config import ESIOS_API_KEY, ESIOS_BASE_URL
@@ -47,8 +47,8 @@ class EsiosClient:
 
     @staticmethod
     def _validate_date_range(
-        start_date: date,
-        end_date: date,
+        start_date: date | datetime,
+        end_date: date | datetime,
     ) -> None:
         """Validate the requested temporal interval."""
 
@@ -58,14 +58,44 @@ class EsiosClient:
             )
 
     @staticmethod
-    def _format_start_date(value: date) -> str:
-        """Format the beginning of a date for ESIOS."""
+    def _format_start_date(
+        value: date | datetime,
+    ) -> str:
+        """
+        Format the beginning of a temporal interval for ESIOS.
+
+        Date values are expanded to the beginning of the day.
+        Datetime values preserve their exact time and are normalized to UTC.
+        """
+
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+
+            return value.astimezone(timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
 
         return f"{value.isoformat()}T00:00:00Z"
 
     @staticmethod
-    def _format_end_date(value: date) -> str:
-        """Format the end of a date for ESIOS."""
+    def _format_end_date(
+        value: date | datetime,
+    ) -> str:
+        """
+        Format the end of a temporal interval for ESIOS.
+
+        Date values are expanded to the end of the day.
+        Datetime values preserve their exact time and are normalized to UTC.
+        """
+
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+
+            return value.astimezone(timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
 
         return f"{value.isoformat()}T23:59:59Z"
 
@@ -78,7 +108,9 @@ class EsiosClient:
 
         endpoint = f"{ESIOS_BASE_URL}/indicators"
 
-        logger.info("Requesting ESIOS indicator catalogue.")
+        logger.info(
+            "Requesting ESIOS indicator catalogue."
+        )
 
         return self.http_client.get_json(
             endpoint,
@@ -89,8 +121,8 @@ class EsiosClient:
         self,
         *,
         indicator_id: int,
-        start_date: date,
-        end_date: date,
+        start_date: date | datetime,
+        end_date: date | datetime,
         time_trunc: str | None = None,
         time_agg: str | None = None,
         geo_ids: list[int] | None = None,
@@ -101,18 +133,27 @@ class EsiosClient:
         Retrieve values for a specific ESIOS indicator.
         """
 
-        self._validate_date_range(start_date, end_date)
+        self._validate_date_range(
+            start_date,
+            end_date,
+        )
 
         if indicator_id <= 0:
             raise ValueError(
                 "A valid positive ESIOS indicator ID must be provided."
             )
 
-        endpoint = f"{ESIOS_BASE_URL}/indicators/{indicator_id}"
+        endpoint = (
+            f"{ESIOS_BASE_URL}/indicators/{indicator_id}"
+        )
 
         params: dict[str, Any] = {
-            "start_date": self._format_start_date(start_date),
-            "end_date": self._format_end_date(end_date),
+            "start_date": self._format_start_date(
+                start_date
+            ),
+            "end_date": self._format_end_date(
+                end_date
+            ),
         }
 
         if time_trunc:

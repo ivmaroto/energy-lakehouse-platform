@@ -26,6 +26,7 @@ services:
       timeout: 5s
       retries: 5
 
+
   minio:
     image: minio/minio:latest
     container_name: energy-minio
@@ -51,10 +52,12 @@ services:
       postgres:
         condition: service_healthy
 
+
   spark-master:
     build:
       context: .
       dockerfile: docker/spark/Dockerfile
+
     image: energy-spark:3.5
     container_name: energy-spark-master
     restart: unless-stopped
@@ -85,6 +88,7 @@ services:
     build:
       context: .
       dockerfile: docker/spark/Dockerfile
+
     image: energy-spark:3.5
     container_name: energy-spark-worker
     restart: unless-stopped
@@ -134,10 +138,12 @@ services:
       minio:
         condition: service_started
 
+
   airflow-init:
     build:
       context: .
       dockerfile: docker/airflow/Dockerfile
+
     image: energy-airflow:2.10.5
     container_name: energy-airflow-init
 
@@ -171,6 +177,7 @@ services:
     build:
       context: .
       dockerfile: docker/airflow/Dockerfile
+
     image: energy-airflow:2.10.5
     container_name: energy-airflow-webserver
     restart: unless-stopped
@@ -179,6 +186,17 @@ services:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow
+
+      AEMET_API_KEY: ${AEMET_API_KEY}
+      ESIOS_API_KEY: ${ESIOS_API_KEY}
+
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET:-energy-lakehouse}
+      MINIO_SECURE: "false"
+
+      PYTHONPATH: /opt/airflow
 
     command: webserver
 
@@ -190,6 +208,7 @@ services:
       - ./airflow/logs:/opt/airflow/logs
       - ./airflow/plugins:/opt/airflow/plugins
       - ./spark/jobs:/opt/spark/jobs
+      - ./ingestion:/opt/airflow/ingestion
 
     networks:
       - lakehouse-network
@@ -203,6 +222,7 @@ services:
     build:
       context: .
       dockerfile: docker/airflow/Dockerfile
+
     image: energy-airflow:2.10.5
     container_name: energy-airflow-scheduler
     restart: unless-stopped
@@ -212,6 +232,17 @@ services:
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow
 
+      AEMET_API_KEY: ${AEMET_API_KEY}
+      ESIOS_API_KEY: ${ESIOS_API_KEY}
+
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET:-energy-lakehouse}
+      MINIO_SECURE: "false"
+
+      PYTHONPATH: /opt/airflow
+
     command: scheduler
 
     volumes:
@@ -219,6 +250,7 @@ services:
       - ./airflow/logs:/opt/airflow/logs
       - ./airflow/plugins:/opt/airflow/plugins
       - ./spark/jobs:/opt/spark/jobs
+      - ./ingestion:/opt/airflow/ingestion
 
     networks:
       - lakehouse-network
@@ -227,10 +259,12 @@ services:
       airflow-init:
         condition: service_completed_successfully
 
+
   superset-init:
     build:
       context: .
       dockerfile: docker/superset/Dockerfile
+
     image: energy-superset:latest
     container_name: energy-superset-init
 
@@ -264,6 +298,7 @@ services:
     build:
       context: .
       dockerfile: docker/superset/Dockerfile
+
     image: energy-superset:latest
     container_name: energy-superset
     restart: unless-stopped
@@ -292,6 +327,7 @@ services:
     depends_on:
       superset-init:
         condition: service_completed_successfully
+
 
 networks:
   lakehouse-network:

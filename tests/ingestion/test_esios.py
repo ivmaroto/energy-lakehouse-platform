@@ -1,4 +1,5 @@
-from datetime import date
+from datetime import date, datetime, timezone, timedelta
+from ingestion.esios.ingest import EsiosIngestion
 from unittest.mock import Mock
 
 import pytest
@@ -150,3 +151,192 @@ def test_invalid_indicator_id_raises_error(indicator_id):
             start_date=date(2026, 8, 1),
             end_date=date(2026, 8, 2),
         )
+
+def test_get_indicator_preserves_exact_utc_datetime_window():
+    http_client = Mock()
+
+    http_client.get_json.return_value = {
+        "indicator": {
+            "id": 1293,
+            "values": [],
+        }
+    }
+
+    client = EsiosClient(
+        api_key="test-api-key",
+        http_client=http_client,
+    )
+
+    client.get_indicator(
+        indicator_id=1293,
+        start_date=datetime(
+            2026,
+            8,
+            13,
+            10,
+            0,
+            tzinfo=timezone.utc,
+        ),
+        end_date=datetime(
+            2026,
+            8,
+            13,
+            10,
+            5,
+            tzinfo=timezone.utc,
+        ),
+    )
+
+    call = http_client.get_json.call_args
+    params = call.kwargs["params"]
+
+    assert params["start_date"] == "2026-08-13T10:00:00Z"
+    assert params["end_date"] == "2026-08-13T10:05:00Z"
+
+
+def test_get_indicator_normalizes_datetime_to_utc():
+    http_client = Mock()
+
+    http_client.get_json.return_value = {
+        "indicator": {
+            "id": 1293,
+            "values": [],
+        }
+    }
+
+    client = EsiosClient(
+        api_key="test-api-key",
+        http_client=http_client,
+    )
+
+    utc_plus_two = timezone(
+        timedelta(hours=2)
+    )
+
+    client.get_indicator(
+        indicator_id=1293,
+        start_date=datetime(
+            2026,
+            8,
+            13,
+            12,
+            0,
+            tzinfo=utc_plus_two,
+        ),
+        end_date=datetime(
+            2026,
+            8,
+            13,
+            12,
+            5,
+            tzinfo=utc_plus_two,
+        ),
+    )
+
+    call = http_client.get_json.call_args
+    params = call.kwargs["params"]
+
+    assert params["start_date"] == "2026-08-13T10:00:00Z"
+    assert params["end_date"] == "2026-08-13T10:05:00Z"
+
+
+def test_invalid_datetime_range_raises_error():
+    client = EsiosClient(
+        api_key="test-api-key",
+        http_client=Mock(),
+    )
+
+    with pytest.raises(InvalidDateRangeError):
+        client.get_indicator(
+            indicator_id=1293,
+            start_date=datetime(
+                2026,
+                8,
+                13,
+                10,
+                5,
+                tzinfo=timezone.utc,
+            ),
+            end_date=datetime(
+                2026,
+                8,
+                13,
+                10,
+                0,
+                tzinfo=timezone.utc,
+            ),
+        )
+
+
+def test_incremental_ingestion_accepts_exact_datetime_window():
+    client = Mock()
+    storage = Mock()
+
+    client.get_indicator.return_value = {
+        "indicator": {
+            "id": 1293,
+            "values": [],
+        }
+    }
+
+    storage.save_json.return_value = (
+        "bronze/esios/demand_real_5min/test.json"
+    )
+
+    ingestion = EsiosIngestion(
+        client=client,
+        storage=storage,
+    )
+
+    start_datetime = datetime(
+        2026,
+        8,
+        13,
+        10,
+        0,
+        tzinfo=timezone.utc,
+    )
+
+    end_datetime = datetime(
+        2026,
+        8,
+        13,
+        10,
+        5,
+        tzinfo=timezone.utc,
+    )
+
+    result = ingestion.ingest_incremental(
+        indicator_id=1293,
+        dataset="demand_real_5min",
+        start_date=start_datetime,
+        end_date=end_datetime,
+    )
+
+    client.get_indicator.assert_called_once_with(
+        indicator_id=1293,
+        start_date=start_datetime,
+        end_date=end_datetime,
+        time_trunc=None,
+        time_agg=None,
+        geo_ids=None,
+        geo_trunc=None,
+        geo_agg=None,
+    )
+
+    storage.save_json.assert_called_once_with(
+        client.get_indicator.return_value,
+        source="esios",
+        dataset="demand_real_5min",
+        ingestion_mode="incremental",
+        requested_start_date=(
+            "2026-08-13T10:00:00+00:00"
+        ),
+        requested_end_date=(
+            "2026-08-13T10:05:00+00:00"
+        ),
+    )
+
+    assert result == (
+        "bronze/esios/demand_real_5min/test.json"
+    )

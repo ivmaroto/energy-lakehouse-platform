@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from uuid import uuid4
+
 from io import BytesIO
 
 from minio import Minio
@@ -73,8 +75,8 @@ class LocalBronzeStorage:
 
             filename = (
                 f"{source}_{dataset}_"
-                f"{ingestion_timestamp:%Y%m%dT%H%M%S%fZ}."
-                f"{extension}"
+                f"{ingestion_timestamp:%Y%m%dT%H%M%S%fZ}_"
+                f"{uuid4().hex}.{extension}"
             )
 
             output_path = target_directory / filename
@@ -108,6 +110,7 @@ class LocalBronzeStorage:
         ingestion_mode: str,
         requested_start_date: str | None = None,
         requested_end_date: str | None = None,
+        extra_metadata: dict[str, Any] | None = None,
     ) -> Path:
         """
         Persist a JSON response in the local Bronze layer.
@@ -134,22 +137,26 @@ class LocalBronzeStorage:
 
             filename = (
                 f"{source}_{dataset}_"
-                f"{ingestion_timestamp:%Y%m%dT%H%M%S%fZ}.json"
+                f"{ingestion_timestamp:%Y%m%dT%H%M%S%fZ}_"
+                f"{uuid4().hex}.json"
             )
 
             output_path = target_directory / filename
 
+            metadata = {
+                "source": source,
+                "dataset": dataset,
+                "ingestion_mode": ingestion_mode,
+                "ingestion_timestamp": ingestion_timestamp.isoformat(),
+                "requested_start_date": requested_start_date,
+                "requested_end_date": requested_end_date,
+            }
+
+            if extra_metadata:
+                metadata.update(extra_metadata)
+
             payload = {
-                "metadata": {
-                    "source": source,
-                    "dataset": dataset,
-                    "ingestion_mode": ingestion_mode,
-                    "ingestion_timestamp": (
-                        ingestion_timestamp.isoformat()
-                    ),
-                    "requested_start_date": requested_start_date,
-                    "requested_end_date": requested_end_date,
-                },
+                "metadata": metadata,
                 "data": data,
             }
 
@@ -226,8 +233,8 @@ class MinIOBronzeStorage:
 
         filename = (
             f"{source}_{dataset}_"
-            f"{ingestion_timestamp:%Y%m%dT%H%M%S%fZ}."
-            f"{extension}"
+            f"{ingestion_timestamp:%Y%m%dT%H%M%S%fZ}_"
+            f"{uuid4().hex}.{extension}"
         )
 
         object_name = (
@@ -279,6 +286,7 @@ class MinIOBronzeStorage:
         ingestion_mode: str,
         requested_start_date: str | None = None,
         requested_end_date: str | None = None,
+        extra_metadata: dict[str, Any] | None = None,
     ) -> str:
         """
         Persist a JSON response in the MinIO Bronze layer.
@@ -290,7 +298,8 @@ class MinIOBronzeStorage:
 
         filename = (
             f"{source}_{dataset}_"
-            f"{ingestion_timestamp:%Y%m%dT%H%M%S%fZ}.json"
+            f"{ingestion_timestamp:%Y%m%dT%H%M%S%fZ}_"
+            f"{uuid4().hex}.json"
         )
 
         object_name = (
@@ -301,17 +310,20 @@ class MinIOBronzeStorage:
             f"{filename}"
         )
 
+        metadata = {
+            "source": source,
+            "dataset": dataset,
+            "ingestion_mode": ingestion_mode,
+            "ingestion_timestamp": ingestion_timestamp.isoformat(),
+            "requested_start_date": requested_start_date,
+            "requested_end_date": requested_end_date,
+        }
+
+        if extra_metadata:
+            metadata.update(extra_metadata)
+
         payload = {
-            "metadata": {
-                "source": source,
-                "dataset": dataset,
-                "ingestion_mode": ingestion_mode,
-                "ingestion_timestamp": (
-                    ingestion_timestamp.isoformat()
-                ),
-                "requested_start_date": requested_start_date,
-                "requested_end_date": requested_end_date,
-            },
+            "metadata": metadata,
             "data": data,
         }
 

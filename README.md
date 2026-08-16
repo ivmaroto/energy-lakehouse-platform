@@ -202,12 +202,14 @@ energy-lakehouse-platform/
 |---|---|
 | Phase 0 – Project Organization | ✅ Completed |
 | Phase 1 – Architecture Design | ✅ Completed |
-| Phase 2 – Infrastructure | 🟡 Final validation pending |
-| Phase 3 – Data Ingestion | ⏳ Pending |
-| Phase 4 – Data Processing | ⏳ Pending |
+| Phase 2 – Infrastructure | ✅ Completed and validated |
+| Phase 3 – Data Ingestion | ✅ Completed and validated |
+| Phase 4 – Lakehouse Implementation | 🚧 In progress |
 | Phase 5 – Analytics & Visualization | ⏳ Pending |
 
-Phase 2 infrastructure has been successfully deployed locally. A final clean-environment reproducibility test is pending.
+The infrastructure and ingestion layers have been implemented and technically validated.
+
+The ingestion layer currently integrates AEMET OpenData, Open-Meteo and REE / ESIOS, with frequency-specific Apache Airflow DAGs and Bronze persistence in MinIO.
 
 ---
 

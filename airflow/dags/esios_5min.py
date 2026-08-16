@@ -4,6 +4,8 @@ Airflow DAG for 5-minute REE / ESIOS ingestion.
 
 from datetime import timedelta
 
+from ingestion.common.esios_config import load_esios_indicators
+
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.utils.dates import days_ago
@@ -11,20 +13,7 @@ from airflow.utils.dates import days_ago
 from ingestion.esios.ingest import EsiosIngestion
 
 
-ESIOS_5MIN_INDICATORS = {
-    1293: "demanda_real",
-    10004: "demanda_real_suma_generacion",
-    2038: "generacion_treal_eolica_nacional",
-    2039: "generacion_treal_nuclear_nacional",
-    2040: "generacion_treal_carbon_nacional",
-    2041: "generacion_treal_ciclo_combinado_nacional",
-    2042: "generacion_treal_hidraulica_nacional",
-    2044: "generacion_treal_solar_fotovoltaica_nacional",
-    2045: "generacion_treal_solar_termica_nacional",
-    2046: "generacion_treal_termica_renovable_nacional",
-    2051: "generacion_treal_cogeneracion_residuos_nacional",
-    2065: "generacion_treal_consumo_bombeo_nacional",
-}
+ESIOS_5MIN_INDICATORS = load_esios_indicators("five_minute")
 
 
 def ingest_esios_indicator(

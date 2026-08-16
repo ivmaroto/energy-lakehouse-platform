@@ -4,6 +4,8 @@ Airflow DAG for 15-minute Open-Meteo ingestion.
 
 import json
 
+from datetime import timedelta
+
 from airflow import DAG
 from airflow.models import Variable
 from airflow.operators.python import PythonOperator
@@ -26,13 +28,16 @@ def ingest_location(
     data_interval_start = context["data_interval_start"]
     data_interval_end = context["data_interval_end"]
 
+    request_end = data_interval_end - timedelta(seconds=1)
+
     ingestion = OpenMeteoIngestion()
 
     return ingestion.ingest_minutely_15(
+        location_id=location_id,
         latitude=latitude,
         longitude=longitude,
         start_datetime=data_interval_start,
-        end_datetime=data_interval_end,
+        end_datetime=request_end,
     )
 
 

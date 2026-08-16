@@ -6,6 +6,7 @@ Includes:
 - AEMET radiation network data.
 """
 
+from datetime import timedelta
 from airflow import DAG
 from airflow.models import Variable
 from airflow.operators.python import PythonOperator
@@ -31,7 +32,7 @@ def ingest_aemet_daily_climatology(
     return ingestion.ingest_incremental(
         station_id=station_id,
         start_date=data_interval_start.date(),
-        end_date=data_interval_end.date(),
+        end_date=(data_interval_end - timedelta(days=1)).date(),
     )
 
 

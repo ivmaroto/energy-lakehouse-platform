@@ -170,12 +170,12 @@ while retaining the source temporal context inside the persisted object.
 
 ## 6. Object Naming
 
-Each Bronze object contains an ingestion timestamp in its filename.
+Each Bronze object filename includes both the UTC ingestion timestamp and a UUID.
 
 Example:
 
 ```text
-esios_demand_real_5min_20260815T102355585017Z.json
+esios_demand_real_5min_20260815T102355585017Z_<uuid>.json
 ```
 
 This prevents a new successful acquisition from overwriting an existing
@@ -240,7 +240,8 @@ Conceptually:
     "ingestion_mode": "<mode>",
     "ingestion_timestamp": "<UTC timestamp>",
     "requested_start_date": "<value or null>",
-    "requested_end_date": "<value or null>"
+    "requested_end_date": "<value or null>",
+    "<source_specific_key>": "<source-specific value>"
   },
   "data": {
     "...": "source payload"
@@ -250,6 +251,13 @@ Conceptually:
 
 The exact content of `data` depends on the source API.
 
+In addition to the common technical metadata fields, ingestion processes can
+persist source- or dataset-specific metadata when required for traceability.
+
+Examples include the AEMET station identifier, the ESIOS indicator identifier,
+and Open-Meteo location information such as location identifier, latitude and
+longitude.
+
 This structure has been validated using real AEMET, Open-Meteo and ESIOS
 acquisitions stored in MinIO.
 
@@ -257,7 +265,7 @@ acquisitions stored in MinIO.
 
 ## 9. Validated Metadata
 
-The implemented Bronze metadata contains:
+The implemented Bronze metadata contains the following common fields:
 
 ```text
 source
@@ -266,6 +274,15 @@ ingestion_mode
 ingestion_timestamp
 requested_start_date
 requested_end_date
+```
+
+Additional source- or dataset-specific metadata can also be included when
+required for traceability. Currently implemented examples include:
+
+```text
+AEMET       -> station_id
+ESIOS       -> indicator_id
+Open-Meteo  -> location_id, latitude, longitude
 ```
 
 For datasets without an explicit requested temporal window, the corresponding

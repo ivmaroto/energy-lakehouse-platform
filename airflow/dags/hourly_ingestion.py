@@ -9,6 +9,8 @@ Includes:
 
 from datetime import timedelta
 
+from ingestion.common.esios_config import load_esios_indicators
+
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.utils.dates import days_ago
@@ -17,22 +19,7 @@ from ingestion.aemet.ingest import AemetIngestion
 from ingestion.esios.ingest import EsiosIngestion
 
 
-ESIOS_HOURLY_INDICATORS = {
-    1159: "generacion_medida_eolica_terrestre",
-    1161: "generacion_medida_solar_fotovoltaica",
-    1162: "generacion_medida_solar_termica",
-    10035: "generacion_medida_hidraulica",
-    1153: "generacion_medida_nuclear",
-    1156: "generacion_medida_ciclo_combinado",
-    1158: "generacion_medida_gas_natural_turbina_vapor",
-    1164: "generacion_medida_gas_natural_cogeneracion",
-    10036: "generacion_medida_carbon",
-    10041: "generacion_medida_otras_renovables",
-    10043: "generacion_medida_total",
-    10195: "generacion_medida_total_tipo_produccion",
-    1193: "demanda_en_consumo",
-    10267: "demanda_medida_discriminacion_horaria_total",
-}
+ESIOS_HOURLY_INDICATORS = load_esios_indicators("hourly")
 
 
 def ingest_esios_hourly_indicator(

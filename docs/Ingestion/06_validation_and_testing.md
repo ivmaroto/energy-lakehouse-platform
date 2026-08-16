@@ -610,22 +610,19 @@ tests/ingestion/test_open_meteo.py
 tests/ingestion/test_storage.py
 ```
 
-The expanded source-specific test suites were executed independently.
+The complete ingestion regression suite was executed after the final audited
+changes.
 
-Validated results:
+Validated result:
 
 ```text
-ESIOS:
-11 passed
-
-AEMET:
-11 passed
-
-Open-Meteo:
-12 passed
+46 passed
 ```
 
-These tests include coverage for newly implemented functionality such as:
+The regression suite covers the ingestion components implemented for AEMET,
+Open-Meteo, ESIOS, shared date utilities and Bronze storage.
+
+The validated tests include coverage for functionality such as:
 
 - Exact datetime windows.
 - UTC normalization.
@@ -636,9 +633,10 @@ These tests include coverage for newly implemented functionality such as:
 - AEMET radiation parsing.
 - Raw radiation persistence.
 - Invalid temporal ranges.
+- Bronze storage behaviour.
 
-A final complete regression execution of the entire test suite is performed as
-part of the final Phase 3 validation procedure.
+The final complete regression execution completed successfully with all
+46 tests passing.
 
 ---
 

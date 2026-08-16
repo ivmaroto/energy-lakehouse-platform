@@ -245,6 +245,7 @@ class OpenMeteoIngestion:
             end_datetime: datetime,
             minutely_15_variables: list[str] | None = None,
             timezone: str = "UTC",
+            location_id: str | None = None,
     ) -> Path | str:
         """
         Retrieve an exact 15-minute Open-Meteo temporal window
@@ -278,6 +279,11 @@ class OpenMeteoIngestion:
             ingestion_mode="incremental",
             requested_start_date=start_datetime.isoformat(),
             requested_end_date=end_datetime.isoformat(),
+            extra_metadata={
+                "location_id": location_id,
+                "latitude": latitude,
+                "longitude": longitude,
+            },
         )
 
         logger.info(

@@ -94,6 +94,7 @@ required execution frequency.
 The main implemented DAGs are:
 
 ```text
+esios_5min
 open_meteo_15min
 hourly_ingestion
 daily_ingestion

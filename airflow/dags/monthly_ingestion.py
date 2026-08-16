@@ -4,6 +4,8 @@ Airflow DAG for monthly REE / ESIOS installed-capacity ingestion.
 
 from datetime import timedelta
 
+from ingestion.common.esios_config import load_esios_indicators
+
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.utils.dates import days_ago
@@ -11,17 +13,7 @@ from airflow.utils.dates import days_ago
 from ingestion.esios.ingest import EsiosIngestion
 
 
-ESIOS_MONTHLY_INDICATORS = {
-    1475: "potencia_instalada_hidraulica",
-    1485: "potencia_instalada_eolica",
-    1486: "potencia_instalada_solar_fotovoltaica",
-    1487: "potencia_instalada_solar_termica",
-    10302: "potencia_instalada_total_renovable",
-    1477: "potencia_instalada_nuclear",
-    1478: "potencia_instalada_carbon",
-    1483: "potencia_instalada_ciclo_combinado",
-    1488: "potencia_instalada_otras_renovables",
-}
+ESIOS_MONTHLY_INDICATORS = load_esios_indicators("monthly")
 
 
 def ingest_esios_monthly_indicator(

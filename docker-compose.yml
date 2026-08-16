@@ -28,7 +28,7 @@ services:
 
 
   minio:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
     container_name: energy-minio
     restart: unless-stopped
 
@@ -63,8 +63,13 @@ services:
     restart: unless-stopped
 
     command:
-      - /opt/spark/bin/spark-class
-      - org.apache.spark.deploy.master.Master
+      - /usr/bin/bash
+      - -c
+      - |
+        mkdir -p /tmp/spark-conf &&
+        python3 -c "import os,pathlib; src=pathlib.Path('/opt/spark/conf/spark-defaults.conf.template'); dst=pathlib.Path('/tmp/spark-conf/spark-defaults.conf'); dst.write_text(os.path.expandvars(src.read_text()))" &&
+        export SPARK_CONF_DIR=/tmp/spark-conf &&
+        exec /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
 
     ports:
       - "7077:7077"
@@ -76,6 +81,12 @@ services:
 
     networks:
       - lakehouse-network
+
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
 
     depends_on:
       postgres:
@@ -94,13 +105,13 @@ services:
     restart: unless-stopped
 
     command:
-      - /opt/spark/bin/spark-class
-      - org.apache.spark.deploy.worker.Worker
-      - spark://spark-master:7077
-      - --cores
-      - "2"
-      - --memory
-      - 2G
+      - /usr/bin/bash
+      - -c
+      - |
+        mkdir -p /tmp/spark-conf &&
+        python3 -c "import os,pathlib; src=pathlib.Path('/opt/spark/conf/spark-defaults.conf.template'); dst=pathlib.Path('/tmp/spark-conf/spark-defaults.conf'); dst.write_text(os.path.expandvars(src.read_text()))" &&
+        export SPARK_CONF_DIR=/tmp/spark-conf &&
+        exec /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077 --cores ${SPARK_WORKER_CORES:-2} --memory ${SPARK_WORKER_MEMORY:-2G}
 
     ports:
       - "8081:8081"
@@ -111,6 +122,12 @@ services:
 
     networks:
       - lakehouse-network
+
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
 
     depends_on:
       spark-master:
@@ -137,6 +154,19 @@ services:
         condition: service_healthy
       minio:
         condition: service_started
+
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/v1/info >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
 
 
   airflow-init:
@@ -209,6 +239,7 @@ services:
       - ./airflow/plugins:/opt/airflow/plugins
       - ./spark/jobs:/opt/spark/jobs
       - ./ingestion:/opt/airflow/ingestion
+      - ./config:/opt/airflow/config:ro
 
     networks:
       - lakehouse-network
@@ -251,6 +282,7 @@ services:
       - ./airflow/plugins:/opt/airflow/plugins
       - ./spark/jobs:/opt/spark/jobs
       - ./ingestion:/opt/airflow/ingestion
+      - ./config:/opt/airflow/config:ro
 
     networks:
       - lakehouse-network

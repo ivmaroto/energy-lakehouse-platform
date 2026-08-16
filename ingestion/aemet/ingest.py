@@ -182,6 +182,9 @@ class AemetIngestion:
                 ingestion_mode="historical",
                 requested_start_date=chunk_start.isoformat(),
                 requested_end_date=chunk_end.isoformat(),
+                extra_metadata={
+                    "station_id": station_id,
+                },
             )
 
             output_paths.append(output_path)
@@ -227,6 +230,9 @@ class AemetIngestion:
             ingestion_mode="incremental",
             requested_start_date=start_date.isoformat(),
             requested_end_date=end_date.isoformat(),
+            extra_metadata={
+                "station_id": station_id,
+            },
         )
 
         logger.info(

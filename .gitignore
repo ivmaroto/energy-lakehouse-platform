@@ -237,3 +237,6 @@ data/gold/
 
 # Local environment
 .env
+
+# Runtime-generated Spark configuration
+spark/conf/spark-defaults.conf

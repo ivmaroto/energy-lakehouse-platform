@@ -147,10 +147,16 @@ The ingestion code is organized by data source while sharing common
 infrastructure components.
 
 ```text
+config/
+|
+`-- esios_indicators.json
+
 ingestion/
 |
 |-- common/
 |   |-- config.py
+|   |-- date_utils.py
+|   |-- esios_config.py
 |   |-- exceptions.py
 |   |-- http_client.py
 |   |-- logger.py
@@ -158,7 +164,8 @@ ingestion/
 |
 |-- aemet/
 |   |-- client.py
-|   `-- ingest.py
+|   |-- ingest.py
+|   `-- radiation_parser.py
 |
 |-- open_meteo/
 |   |-- client.py
@@ -176,11 +183,41 @@ ingestion/
 The `common` package contains reusable functionality shared by the different
 connectors.
 
-- `config.py`: common configuration.
+- `config.py`: common configuration loaded from environment variables.
+- `date_utils.py`: utilities for validating and splitting temporal ranges.
+- `esios_config.py`: loader for the external ESIOS indicator configuration.
 - `http_client.py`: common HTTP communication functionality.
 - `logger.py`: logging configuration.
 - `exceptions.py`: ingestion-specific exceptions.
-- `storage.py`: abstraction for persistence of acquired data.
+- `storage.py`: abstraction for local and MinIO Bronze persistence.
+
+### ESIOS indicator configuration
+
+The ESIOS indicators used by the scheduled ingestion processes are defined
+outside the DAG source code in:
+
+```text
+config/esios_indicators.json
+```
+
+The configuration is loaded through:
+
+```text
+ingestion/common/esios_config.py
+```
+
+This separates the selected ESIOS indicator IDs and dataset names from the
+Airflow DAG implementation and avoids duplicating those mappings across
+multiple DAG files.
+
+The configuration groups the selected indicators according to their ingestion
+frequency:
+
+```text
+five_minute
+hourly
+monthly
+```
 
 ### Source connectors
 
@@ -188,6 +225,9 @@ Each external source has an independent package containing:
 
 - `client.py`: communication with the external API.
 - `ingest.py`: ingestion logic for the corresponding source.
+
+AEMET additionally includes `radiation_parser.py`, which contains the parsing
+logic required for the raw radiation dataset.
 
 This separation keeps API-specific logic isolated while allowing shared
 functionality to be reused.

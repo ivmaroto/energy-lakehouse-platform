@@ -394,6 +394,11 @@ def test_ingest_minutely_15_persists_exact_window():
         requested_end_date=(
             "2026-08-13T10:15:00+00:00"
         ),
+        extra_metadata={
+            "location_id": None,
+            "latitude": 43.0,
+            "longitude": -2.5,
+        },
     )
 
     assert result == (

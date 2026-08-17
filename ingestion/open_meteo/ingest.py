@@ -95,6 +95,9 @@ class OpenMeteoIngestion:
         end_date: date,
         hourly_variables: list[str] | None = None,
         timezone: str = "UTC",
+        station_id: str | None = None,
+        station_name: str | None = None,
+        province: str | None = None,
     ) -> list[Path | str]:
         """
         Retrieve historical hourly Open-Meteo weather data in chunks.
@@ -146,6 +149,13 @@ class OpenMeteoIngestion:
                 ingestion_mode="historical",
                 requested_start_date=chunk_start.isoformat(),
                 requested_end_date=chunk_end.isoformat(),
+                extra_metadata={
+                    "station_id": station_id,
+                    "station_name": station_name,
+                    "province": province,
+                    "latitude": latitude,
+                    "longitude": longitude,
+                },
             )
 
             output_paths.append(output_path)
@@ -167,6 +177,9 @@ class OpenMeteoIngestion:
         end_date: date,
         hourly_variables: list[str] | None = None,
         timezone: str = "UTC",
+        station_id: str | None = None,
+        station_name: str | None = None,
+        province: str | None = None,
     ) -> list[Path | str]:
         """
         Retrieve historical forecast data for validated wind variables
@@ -223,6 +236,13 @@ class OpenMeteoIngestion:
                 ingestion_mode="historical",
                 requested_start_date=chunk_start.isoformat(),
                 requested_end_date=chunk_end.isoformat(),
+                extra_metadata={
+                    "station_id": station_id,
+                    "station_name": station_name,
+                    "province": province,
+                    "latitude": latitude,
+                    "longitude": longitude,
+                },
             )
 
             output_paths.append(output_path)
@@ -237,15 +257,17 @@ class OpenMeteoIngestion:
 
 
     def ingest_minutely_15(
-            self,
-            *,
-            latitude: float,
-            longitude: float,
-            start_datetime: datetime,
-            end_datetime: datetime,
-            minutely_15_variables: list[str] | None = None,
-            timezone: str = "UTC",
-            location_id: str | None = None,
+        self,
+        *,
+        latitude: float,
+        longitude: float,
+        start_datetime: datetime,
+        end_datetime: datetime,
+        minutely_15_variables: list[str] | None = None,
+        timezone: str = "UTC",
+        location_id: str | None = None,
+        station_name: str | None = None,
+        province: str | None = None,
     ) -> Path | str:
         """
         Retrieve an exact 15-minute Open-Meteo temporal window
@@ -253,8 +275,8 @@ class OpenMeteoIngestion:
         """
 
         variables = (
-                minutely_15_variables
-                or DEFAULT_MINUTELY_15_VARIABLES
+            minutely_15_variables
+            or DEFAULT_MINUTELY_15_VARIABLES
         )
 
         logger.info(
@@ -281,6 +303,8 @@ class OpenMeteoIngestion:
             requested_end_date=end_datetime.isoformat(),
             extra_metadata={
                 "location_id": location_id,
+                "station_name": station_name,
+                "province": province,
                 "latitude": latitude,
                 "longitude": longitude,
             },

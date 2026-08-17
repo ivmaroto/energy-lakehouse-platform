@@ -396,6 +396,8 @@ def test_ingest_minutely_15_persists_exact_window():
         ),
         extra_metadata={
             "location_id": None,
+            "station_name": None,
+            "province": None,
             "latitude": 43.0,
             "longitude": -2.5,
         },

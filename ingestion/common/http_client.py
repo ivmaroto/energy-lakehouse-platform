@@ -104,6 +104,57 @@ class HTTPClient:
 
         return response
 
+    def post(
+        self,
+        url: str,
+        *,
+        data: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> requests.Response:
+        """
+        Perform a POST request using the common HTTP configuration.
+        """
+
+        logger.debug("POST request: %s", url)
+
+        try:
+            response = self.session.post(
+                url,
+                data=data,
+                headers=headers,
+                timeout=self.timeout,
+            )
+
+        except requests.exceptions.Timeout as exc:
+            raise APIConnectionError(
+                f"Request timed out while connecting to {url}"
+            ) from exc
+
+        except requests.exceptions.ConnectionError as exc:
+            raise APIConnectionError(
+                f"Could not connect to {url}"
+            ) from exc
+
+        except requests.exceptions.RequestException as exc:
+            raise APIConnectionError(
+                f"Unexpected HTTP error while connecting to {url}: {exc}"
+            ) from exc
+
+        if response.status_code in (401, 403):
+            raise APIAuthenticationError(
+                f"Authentication failed for {url}. "
+                f"HTTP status: {response.status_code}"
+            )
+
+        if not response.ok:
+            raise APIRequestError(
+                f"Request to {url} failed with "
+                f"HTTP status {response.status_code}"
+            )
+
+        return response
+
+
     def get_json(
         self,
         url: str,

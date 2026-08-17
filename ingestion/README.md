@@ -589,26 +589,47 @@ Apache Airflow will orchestrate scheduled ingestion executions.
 
 ## 19. Current Status
 
-The ingestion software structure currently includes:
+The ingestion layer has been implemented and technically validated against the
+three external data sources and the MinIO Bronze storage layer.
+
+Validation includes real API requests, historical and incremental ingestion,
+frequency-specific ingestion scenarios, Bronze persistence, error handling and
+automated regression testing.
 
 | Component | Status |
 |---|---|
-| Common configuration | Implemented |
-| Exception hierarchy | Implemented |
-| HTTP client | Implemented |
-| Logging | Implemented |
-| Local Bronze storage | Implemented |
-| Open-Meteo client | Implemented, pending final validation |
-| Open-Meteo ingestion | Implemented, pending final validation |
-| AEMET client | Implemented, pending final validation |
-| AEMET ingestion | Implemented, pending final validation |
-| ESIOS client | Implemented, pending final validation |
-| ESIOS ingestion | Implemented, pending final validation |
-| Common CLI | Implemented, pending final validation |
-| Historical full load | Pending validation |
-| Incremental full load | Pending validation |
-| MinIO integration | Pending |
-| End-to-end validation | Pending |
+| Common configuration | Validated |
+| Exception hierarchy | Validated |
+| HTTP client | Validated |
+| Logging | Validated |
+| Local Bronze storage | Validated |
+| Open-Meteo client | Validated |
+| Open-Meteo ingestion | Validated |
+| AEMET client | Validated |
+| AEMET ingestion | Validated |
+| ESIOS client | Validated |
+| ESIOS ingestion | Validated |
+| Common CLI | Validated |
+| Historical ingestion | Validated |
+| Incremental ingestion | Validated |
+| MinIO integration | Validated |
+| End-to-end API to Bronze integration | Validated |
 
-The implementation status will be updated as API and infrastructure tests are
-completed.
+The final ingestion regression suite completed successfully with:
+
+```text
+56 passed
+```
+
+Detailed validation evidence is documented in:
+
+```text
+docs/Ingestion/06_validation_and_testing.md
+```
+
+The ingestion layer is considered technically implemented and validated for
+Phase 3.
+
+Subsequent cleaning, normalization, business-level deduplication, source
+integration and analytical transformations are handled in the Lakehouse
+processing phase.

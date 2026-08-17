@@ -33,6 +33,12 @@ OPEN_METEO_HISTORICAL_FORECAST_URL = (
 
 ESIOS_BASE_URL = "https://api.esios.ree.es"
 
+# CNIG / IGN configuration
+CNIG_BASE_URL = "https://centrodedescargas.cnig.es/CentroDescargas"
+CNIG_NGMEP_SEQUENTIAL = "9000004"
+CNIG_NGMEP_SERIES = "NGMEN"
+CNIG_NGMEP_LICENSE = "11"
+
 # HTTP configuration
 HTTP_TIMEOUT = int(os.getenv("HTTP_TIMEOUT", "30"))
 HTTP_MAX_RETRIES = int(os.getenv("HTTP_MAX_RETRIES", "3"))

@@ -277,6 +277,67 @@ class MinIOBronzeStorage:
         return object_name
 
 
+    def save_bytes(
+        self,
+        data: bytes,
+        *,
+        source: str,
+        dataset: str,
+        ingestion_mode: str,
+        extension: str,
+        content_type: str,
+    ) -> str:
+        """
+        Persist raw binary data in the MinIO Bronze layer.
+        """
+
+        ingestion_timestamp = datetime.now(timezone.utc)
+
+        filename = (
+            f"{source}_{dataset}_"
+            f"{ingestion_timestamp:%Y%m%dT%H%M%S%fZ}_"
+            f"{uuid4().hex}.{extension}"
+        )
+
+        object_name = (
+            f"bronze/{source}/{dataset}/"
+            f"year={ingestion_timestamp:%Y}/"
+            f"month={ingestion_timestamp:%m}/"
+            f"day={ingestion_timestamp:%d}/"
+            f"{filename}"
+        )
+
+        try:
+            stream = BytesIO(data)
+
+            if not self.client.bucket_exists(self.bucket):
+                raise StorageError(
+                    f"MinIO bucket '{self.bucket}' does not exist."
+                )
+
+            self.client.put_object(
+                bucket_name=self.bucket,
+                object_name=object_name,
+                data=stream,
+                length=len(data),
+                content_type=content_type,
+            )
+
+        except S3Error as exc:
+            raise StorageError(
+                f"Could not persist Bronze binary data in MinIO for "
+                f"{source}/{dataset}: {exc}"
+            ) from exc
+
+        logger.info(
+            "Bronze binary data stored in MinIO: %s/%s",
+            self.bucket,
+            object_name,
+        )
+
+        return object_name
+
+
     def save_json(
         self,
         data: dict[str, Any] | list[Any],

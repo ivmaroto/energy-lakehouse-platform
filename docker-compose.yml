@@ -78,6 +78,7 @@ services:
     volumes:
       - ./spark/jobs:/opt/spark/jobs
       - ./spark/conf:/opt/spark/conf
+      - ./tests:/opt/spark/tests
 
     networks:
       - lakehouse-network
@@ -87,6 +88,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET}
+      AWS_REGION: us-east-1
 
     depends_on:
       postgres:
@@ -128,6 +131,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET}
+      AWS_REGION: us-east-1
 
     depends_on:
       spark-master:

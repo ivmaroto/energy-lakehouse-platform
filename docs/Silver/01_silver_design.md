@@ -927,19 +927,19 @@ reusable normalized layer; Gold is responsible for analytical selection.
 | `longitude` | DOUBLE | Yes |
 | `elevation` | DOUBLE | No |
 | `temperature_2m` | DOUBLE | No |
-| `relative_humidity_2m` | INTEGER | No |
+| `relative_humidity_2m` | BIGINT | No |
 | `dew_point_2m` | DOUBLE | No |
 | `precipitation` | DOUBLE | No |
 | `pressure_msl` | DOUBLE | No |
 | `surface_pressure` | DOUBLE | No |
-| `cloud_cover` | INTEGER | No |
+| `cloud_cover` | BIGINT | No |
 | `shortwave_radiation` | DOUBLE | No |
 | `direct_radiation` | DOUBLE | No |
 | `diffuse_radiation` | DOUBLE | No |
 | `direct_normal_irradiance` | DOUBLE | No |
 | `sunshine_duration` | DOUBLE | No |
 | `wind_speed_10m` | DOUBLE | No |
-| `wind_direction_10m` | INTEGER | No |
+| `wind_direction_10m` | BIGINT | No |
 | `wind_gusts_10m` | DOUBLE | No |
 | `source` | STRING | Yes |
 | `ingestion_timestamp` | TIMESTAMP | Yes |
@@ -960,9 +960,9 @@ Partitioning: day.
 | `longitude` | DOUBLE | Yes |
 | `elevation` | DOUBLE | No |
 | `wind_speed_80m` | DOUBLE | No |
-| `wind_direction_80m` | INTEGER | No |
+| `wind_direction_80m` | BIGINT | No |
 | `wind_speed_120m` | DOUBLE | No |
-| `wind_direction_120m` | INTEGER | No |
+| `wind_direction_120m` | BIGINT | No |
 | `source` | STRING | Yes |
 | `ingestion_timestamp` | TIMESTAMP | Yes |
 
@@ -984,24 +984,24 @@ The Bronze metadata field `location_id` is normalized to `station_id`.
 | `longitude` | DOUBLE | Yes |
 | `elevation` | DOUBLE | No |
 | `temperature_2m` | DOUBLE | No |
-| `relative_humidity_2m` | INTEGER | No |
+| `relative_humidity_2m` | BIGINT | No |
 | `dew_point_2m` | DOUBLE | No |
 | `precipitation` | DOUBLE | No |
 | `pressure_msl` | DOUBLE | No |
 | `surface_pressure` | DOUBLE | No |
-| `cloud_cover` | INTEGER | No |
+| `cloud_cover` | BIGINT | No |
 | `shortwave_radiation` | DOUBLE | No |
 | `direct_radiation` | DOUBLE | No |
 | `diffuse_radiation` | DOUBLE | No |
 | `direct_normal_irradiance` | DOUBLE | No |
 | `sunshine_duration` | DOUBLE | No |
 | `wind_speed_10m` | DOUBLE | No |
-| `wind_direction_10m` | INTEGER | No |
+| `wind_direction_10m` | BIGINT | No |
 | `wind_gusts_10m` | DOUBLE | No |
 | `wind_speed_80m` | DOUBLE | No |
-| `wind_direction_80m` | INTEGER | No |
+| `wind_direction_80m` | BIGINT | No |
 | `wind_speed_120m` | DOUBLE | No |
-| `wind_direction_120m` | INTEGER | No |
+| `wind_direction_120m` | BIGINT | No |
 | `source` | STRING | Yes |
 | `ingestion_timestamp` | TIMESTAMP | Yes |
 
@@ -1237,23 +1237,29 @@ The already validated coordinate conversion applies to all 921/921 stations.
 
 ##### `silver_aemet_daily_climatology`
 
-The validated Bronze inspection exposed 21 real fields:
+Validated Bronze fields used by the implemented transformation:
 
 ```text
-alt
+altitud
 dir
 fecha
 horaHrMax
 horaHrMin
+horaPIntMax
+horaPresMax
+horaPresMin
 horaracha
 horatmax
 horatmin
-hr
 hrMax
+hrMedia
 hrMin
 indicativo
 nombre
+pintMax
 prec
+presMax
+presMin
 provincia
 racha
 sol
@@ -1261,6 +1267,7 @@ tmax
 tmed
 tmin
 velmedia
+_bronze_ingestion_timestamp
 ```
 
 Approved structural normalization:
@@ -1268,26 +1275,13 @@ Approved structural normalization:
 ```text
 indicativo -> station_id
 fecha      -> observation_date
+altitud    -> altitud
 ```
 
 The remaining AEMET meteorological field names are preserved.
 
-Validated Bronze values show that numeric measurements are represented as
-strings and use decimal commas where applicable. Silver converts those values
-to appropriate numeric types when the value is numeric.
-
-Validated non-numeric source values are not silently coerced or invented.
-For example, the inspected payload contained:
-
-```text
-horaHrMin = "Varias"
-```
-
-and therefore source-specific special values must be handled explicitly.
-
-The validated inspection used four records from the selected Bronze object.
-Consequently, fields absent from that inspected object are not invented in this
-schema.
+The persisted Silver table was validated with 2,420 rows and 29 Silver
+columns, including technical traceability fields.
 
 Natural key:
 
@@ -1310,51 +1304,51 @@ Validated Bronze evidence:
 
 ```text
 records = 9688
-fields  = 39
 ```
 
-Validated Bronze fields:
+Validated Bronze fields used by the implemented transformation:
 
 ```text
 alt
 dmax
-dmax10
-dmax60
+dmaxu
 dv
+dvu
 fint
-glo
+geo700
+geo850
+geo925
 hr
 idema
+inso
 lat
 lon
 nieve
 pacutp
+pliqt
 prec
 pres
 pres_nmar
-pres_nmarmax
-pres_nmarmin
-presmax
-presmin
+psoltp
+rviento
+stddv
+stddvu
 stdvv
+stdvvu
 ta
 tamax
 tamin
 tpr
+ts
+tss20cm
+tss5cm
 ubi
 vis
 vmax
-vmax10
-vmax60
+vmaxu
 vv
-vv10
-vv60
-w1
-w2
-wawa
-ww
-wwca
-wwcs
+vvu
+_bronze_ingestion_timestamp
 ```
 
 Approved structural normalization:
@@ -1362,17 +1356,22 @@ Approved structural normalization:
 ```text
 idema -> station_id
 fint  -> observation_timestamp
-lat   -> normalized latitude
-lon   -> normalized longitude
+lat   -> latitude
+lon   -> longitude
 ```
 
 The remaining meteorological names are preserved exactly as AEMET field names.
 
-The validated payload showed that AEMET observation measurements already
-arrive as numeric values where present. Many meteorological fields are
-legitimately nullable or absent for individual observations; this is consistent
-with the approved principle that an allowed `NULL` does not automatically
-represent an error.
+The persisted Silver table was validated with:
+
+```text
+9688 rows
+41 Silver columns
+0 null natural keys
+0 null observation timestamps
+0 duplicate natural keys
+0 invalid coordinates
+```
 
 Natural key:
 
@@ -1521,3 +1520,25 @@ attribute.
 
 Section 4.2 is ready for the final 4.2.14 checklist review. It is considered
 closed only after that review is explicitly approved.
+
+````
+
+
+### Implementation reconciliation
+
+During the Silver implementation, the design document was reconciled against
+the schemas physically observed in Bronze and against the final Apache Iceberg
+tables.
+
+The following documentation corrections were incorporated:
+
+- AEMET daily climatology fields updated to the real Bronze schema used by the
+  implemented transformation.
+- AEMET current-observation fields updated to the real Bronze schema used by
+  the implemented transformation.
+- Open-Meteo integer fields documented as `BIGINT` where PySpark/Iceberg
+  physically materialized them as long integer types.
+
+These changes do not modify the approved Silver architecture, natural keys,
+granularities or partitioning rules. They align the documentation with the
+implementation that was subsequently validated end-to-end.

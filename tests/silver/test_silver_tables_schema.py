@@ -44,6 +44,40 @@ EXPECTED_PARTITIONING = {
 }
 
 
+EXPECTED_CANONICAL_GEOGRAPHY_COLUMNS = {
+    "lakehouse.silver.silver_aemet_stations": {
+        "province_code",
+        "province_name",
+        "autonomous_community_code",
+        "autonomous_community_name",
+    },
+    "lakehouse.silver.silver_aemet_daily_climatology": {
+        "province_code",
+        "province_name",
+        "autonomous_community_code",
+        "autonomous_community_name",
+    },
+    "lakehouse.silver.silver_open_meteo_hourly": {
+        "province_code",
+        "province_name",
+        "autonomous_community_code",
+        "autonomous_community_name",
+    },
+    "lakehouse.silver.silver_open_meteo_historical_forecast": {
+        "province_code",
+        "province_name",
+        "autonomous_community_code",
+        "autonomous_community_name",
+    },
+    "lakehouse.silver.silver_open_meteo_15min": {
+        "province_code",
+        "province_name",
+        "autonomous_community_code",
+        "autonomous_community_name",
+    },
+}
+
+
 def main():
     spark = (
         SparkSession.builder
@@ -89,6 +123,33 @@ def main():
 
         print("COLUMNS =", len(df.columns))
         print("SCHEMA =", df.schema.simpleString())
+
+        expected_columns = (
+            EXPECTED_CANONICAL_GEOGRAPHY_COLUMNS.get(
+                table_name,
+                set(),
+            )
+        )
+
+        missing_expected_columns = sorted(
+            expected_columns
+            - set(df.columns)
+        )
+
+        print(
+            "EXPECTED_CANONICAL_GEOGRAPHY_COLUMNS =",
+            sorted(expected_columns),
+        )
+
+        print(
+            "MISSING_CANONICAL_GEOGRAPHY_COLUMNS =",
+            missing_expected_columns,
+        )
+
+        print(
+            "CANONICAL_GEOGRAPHY_SCHEMA_OK =",
+            len(missing_expected_columns) == 0,
+        )
 
         description = (
             spark.sql(

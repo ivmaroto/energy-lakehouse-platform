@@ -1,4 +1,3 @@
-```
 # Silver Layer Design
 
 ## 1. Purpose
@@ -171,37 +170,145 @@ These aggregations belong to the Gold layer.
 
 ## 4. Geographical Normalization
 
-The common geographical hierarchy is based on official geographical
-reference data.
+CNIG is the canonical geographical master used by the Silver layer for
+province and autonomous-community normalization.
 
-The target hierarchy is:
+The canonical geographical resolution flow is:
 
 ```text
-AEMET station
-      ↓
-official municipality
-      ↓
-official province
-      ↓
-autonomous community
+source geographical name
+        ↓
+deterministic normalization
+        ↓
+controlled alias fallback when required
+        ↓
+CNIG canonical province
+        ↓
+CNIG autonomous community
 ```
 
-CNIG is used as the official geographical reference for provinces and
-municipalities.
+### 4.1 Deterministic name normalization
 
-Silver uses canonical geographical identifiers and normalized geographical
-names.
+Province names supplied by meteorological sources are normalized before
+matching against CNIG.
 
-Name inconsistencies between external sources must be resolved during
-normalization rather than propagated to analytical tables.
+The implemented normalization:
+
+- trims surrounding whitespace;
+- converts names to uppercase;
+- applies Unicode decomposition;
+- removes diacritics.
+
+This operation does not translate geographical names and does not manufacture
+new geographical information.
+
+Examples validated against the persisted Silver data include:
+
+```text
+ALMERIA      -> Almería
+ARABA/ALAVA  -> Araba/Álava
+AVILA        -> Ávila
+CACERES      -> Cáceres
+CADIZ        -> Cádiz
+CORDOBA      -> Córdoba
+JAEN         -> Jaén
+LEON         -> León
+MALAGA       -> Málaga
+```
+
+### 4.2 Controlled province aliases
+
+Names that cannot be resolved through deterministic normalization use a
+controlled alias configuration:
+
+```text
+config/province_aliases.json
+```
+
+The validated aliases are:
+
+```text
+ALICANTE               -> Alacant/Alicante
+BALEARES               -> Illes Balears
+CASTELLON              -> Castelló/Castellón
+STA. CRUZ DE TENERIFE  -> Santa Cruz de Tenerife
+VALENCIA                -> València/Valencia
+```
+
+Aliases are an explicit fallback mechanism. They do not replace normal
+deterministic matching and are not inferred dynamically.
+
+### 4.3 Canonical Silver geography
+
+When province normalization is applicable, the resolved CNIG information is
+materialized using the canonical columns:
+
+```text
+province_code
+province_name
+autonomous_community_code
+autonomous_community_name
+```
+
+The original source geographical field is preserved for traceability.
+
+For AEMET:
+
+```text
+provincia
+```
+
+contains the original source province value.
+
+For Open-Meteo:
+
+```text
+province
+```
+
+contains the original source province value.
+
+The canonical columns contain the corresponding CNIG representation.
+
+The canonical geographical enrichment is applied to:
+
+```text
+silver_aemet_stations
+silver_aemet_daily_climatology
+silver_open_meteo_hourly
+silver_open_meteo_historical_forecast
+silver_open_meteo_15min
+```
+
+`silver_aemet_current_observations` is not province-enriched through this
+mechanism because the validated source schema does not provide the province
+field required by this matching process.
+
+### 4.4 Geographical integrity rules
 
 Silver preserves the real geographical granularity supplied by each source.
 
 In particular:
 
-- province-level ESIOS data remains province-level;
+- province-level data remains province-level;
 - autonomous-community data remains autonomous-community-level;
-- national or peninsular data is not artificially expanded to provinces.
+- national or peninsular data is not artificially expanded to provinces;
+- missing geographical detail is not manufactured;
+- source geographical names remain available where required for traceability.
+
+Geographical enrichment is considered valid only when the applicable source
+province resolves to both:
+
+```text
+province_code
+province_name
+```
+
+and its corresponding canonical autonomous-community information is present.
+
+The persisted Silver validation confirmed zero unmatched canonical provinces
+and zero unmatched canonical autonomous communities in the five
+meteorological tables to which this normalization applies.
 
 ---
 
@@ -560,13 +667,13 @@ Their roles are different:
 
 ```text
 Open-Meteo
-→ reproducible historical meteorological source
+-> reproducible historical meteorological source
 
 AEMET current observations
-→ official hourly observation / contrast source
+-> official hourly observation / contrast source
 
 AEMET daily climatology
-→ official daily climatological reference
+-> official daily climatological reference
 ```
 
 Silver does not perform premature analytical aggregation or source
@@ -906,7 +1013,6 @@ Required analytical aggregations are implemented later in Gold.
 
 ---
 
-
 ### 12.1 Physical Schema Decisions
 
 The physical schemas below are based on validated Bronze payloads and approved
@@ -943,6 +1049,10 @@ reusable normalized layer; Gold is responsible for analytical selection.
 | `wind_gusts_10m` | DOUBLE | No |
 | `source` | STRING | Yes |
 | `ingestion_timestamp` | TIMESTAMP | Yes |
+| `province_code` | STRING | Yes |
+| `province_name` | STRING | Yes |
+| `autonomous_community_code` | STRING | Yes |
+| `autonomous_community_name` | STRING | Yes |
 
 Natural key: `station_id + observation_timestamp`.
 
@@ -965,6 +1075,10 @@ Partitioning: day.
 | `wind_direction_120m` | BIGINT | No |
 | `source` | STRING | Yes |
 | `ingestion_timestamp` | TIMESTAMP | Yes |
+| `province_code` | STRING | Yes |
+| `province_name` | STRING | Yes |
+| `autonomous_community_code` | STRING | Yes |
+| `autonomous_community_name` | STRING | Yes |
 
 Natural key: `station_id + observation_timestamp`.
 
@@ -1004,6 +1118,10 @@ The Bronze metadata field `location_id` is normalized to `station_id`.
 | `wind_direction_120m` | BIGINT | No |
 | `source` | STRING | Yes |
 | `ingestion_timestamp` | TIMESTAMP | Yes |
+| `province_code` | STRING | Yes |
+| `province_name` | STRING | Yes |
+| `autonomous_community_code` | STRING | Yes |
+| `autonomous_community_name` | STRING | Yes |
 
 Natural key: `station_id + observation_timestamp`.
 
@@ -1212,15 +1330,21 @@ records = 921
 fields  = 7
 ```
 
-| Silver column | Bronze field | Type | Required |
+| Silver column | Bronze field / origin | Type | Required |
 |---|---|---|---|
 | `station_id` | `indicativo` | STRING | Yes |
 | `nombre` | `nombre` | STRING | Yes |
 | `provincia` | `provincia` | STRING | Yes |
-| `altitud` | `altitud` | numeric type after validation/typing | Yes |
-| normalized latitude | `latitud` | DOUBLE | Yes |
-| normalized longitude | `longitud` | DOUBLE | Yes |
+| `altitud` | `altitud` | DOUBLE | Yes |
+| `latitude` | `latitud` | DOUBLE | Yes |
+| `longitude` | `longitud` | DOUBLE | Yes |
 | `indsinop` | `indsinop` | STRING | No |
+| `source` | technical traceability | STRING | Yes |
+| `ingestion_timestamp` | technical traceability | TIMESTAMP | Yes |
+| `province_code` | CNIG canonical geography | STRING | Yes |
+| `province_name` | CNIG canonical geography | STRING | Yes |
+| `autonomous_community_code` | CNIG canonical geography | STRING | Yes |
+| `autonomous_community_name` | CNIG canonical geography | STRING | Yes |
 
 `indsinop` is legitimately nullable: the validated payload contained 622 empty
 values out of 921 stations.
@@ -1234,6 +1358,9 @@ station_id
 Partitioning: none.
 
 The already validated coordinate conversion applies to all 921/921 stations.
+
+The original AEMET `provincia` value is preserved while the canonical
+geographical fields contain the corresponding CNIG representation.
 
 ##### `silver_aemet_daily_climatology`
 
@@ -1280,8 +1407,18 @@ altitud    -> altitud
 
 The remaining AEMET meteorological field names are preserved.
 
-The persisted Silver table was validated with 2,420 rows and 29 Silver
-columns, including technical traceability fields.
+The persisted Silver table was validated with 2,420 rows.
+
+The persisted table also contains the canonical CNIG geographical fields:
+
+```text
+province_code
+province_name
+autonomous_community_code
+autonomous_community_name
+```
+
+The original AEMET `provincia` value is preserved for source traceability.
 
 Natural key:
 
@@ -1387,11 +1524,16 @@ Role:
 official incremental hourly observation / contrast
 ```
 
+`silver_aemet_current_observations` does not contain the canonical province
+enrichment described in section 4 because its validated source schema does not
+provide the province field required by that matching mechanism.
+
 The validated inspection does not by itself revalidate the previously approved
 source-specific treatment of AEMET `Ip`; that rule remains documented as a
 previously validated transformation case and is not reconstructed from this
 payload.
 
+---
 
 ## 13. Silver Data Quality
 
@@ -1497,6 +1639,7 @@ Once this review is completed and approved, section 4.2 — Silver technical
 design — can be considered closed.
 
 ---
+
 ## 16. Current Design Status
 
 ```text
@@ -1521,8 +1664,7 @@ attribute.
 Section 4.2 is ready for the final 4.2.14 checklist review. It is considered
 closed only after that review is explicitly approved.
 
-````
-
+---
 
 ### Implementation reconciliation
 
@@ -1538,6 +1680,16 @@ The following documentation corrections were incorporated:
   the implemented transformation.
 - Open-Meteo integer fields documented as `BIGINT` where PySpark/Iceberg
   physically materialized them as long integer types.
+- Canonical province normalization was implemented using CNIG as the
+  geographical master.
+- Deterministic province-name normalization is applied before matching.
+- A controlled `config/province_aliases.json` fallback handles the five
+  validated source-name exceptions.
+- Canonical `province_code`, `province_name`,
+  `autonomous_community_code` and `autonomous_community_name` fields were
+  incorporated into the five applicable meteorological Silver tables.
+- Persisted-data validation confirmed zero unmatched provinces and zero
+  unmatched autonomous communities in those five tables.
 
 These changes do not modify the approved Silver architecture, natural keys,
 granularities or partitioning rules. They align the documentation with the

@@ -7,10 +7,12 @@ TABLES = {
     "silver_aemet_stations": {
         "expected_rows": 921,
         "key": ["station_id"],
+        "canonical_geography": True,
     },
     "silver_aemet_daily_climatology": {
         "expected_rows": 2420,
         "key": ["station_id", "observation_date"],
+        "canonical_geography": True,
     },
     "silver_aemet_current_observations": {
         "expected_rows": 9688,
@@ -20,16 +22,19 @@ TABLES = {
         "expected_rows": 88416,
         "key": ["station_id", "observation_timestamp"],
         "expected_minutes": 60,
+        "canonical_geography": True,
     },
     "silver_open_meteo_historical_forecast": {
         "expected_rows": 88416,
         "key": ["station_id", "observation_timestamp"],
         "expected_minutes": 60,
+        "canonical_geography": True,
     },
     "silver_open_meteo_15min": {
         "expected_rows": 353664,
         "key": ["station_id", "observation_timestamp"],
         "expected_minutes": 15,
+        "canonical_geography": True,
     },
     "silver_cnig_provinces": {
         "expected_rows": 52,
@@ -73,12 +78,24 @@ TABLES = {
 }
 
 
+CANONICAL_GEOGRAPHY_COLUMNS = [
+    "province_code",
+    "province_name",
+    "autonomous_community_code",
+    "autonomous_community_name",
+]
+
+
 def count_null_keys(df, key):
     condition = None
 
     for column in key:
         current = F.col(column).isNull()
-        condition = current if condition is None else condition | current
+        condition = (
+            current
+            if condition is None
+            else condition | current
+        )
 
     return df.filter(condition).count()
 
@@ -88,7 +105,9 @@ def count_duplicates(df, key):
         df
         .groupBy(*key)
         .count()
-        .filter(F.col("count") > 1)
+        .filter(
+            F.col("count") > 1
+        )
         .count()
     )
 
@@ -101,7 +120,9 @@ def validate_temporal_granularity(
     window = (
         Window
         .partitionBy(*partition_columns)
-        .orderBy("observation_timestamp")
+        .orderBy(
+            "observation_timestamp"
+        )
     )
 
     diffs = (
@@ -112,64 +133,158 @@ def validate_temporal_granularity(
         )
         .withColumn(
             "previous_timestamp",
-            F.lag("observation_timestamp").over(window),
+            F.lag(
+                "observation_timestamp"
+            ).over(window),
         )
         .withColumn(
             "diff_minutes",
             (
-                F.col("observation_timestamp").cast("long")
-                - F.col("previous_timestamp").cast("long")
+                F.col(
+                    "observation_timestamp"
+                ).cast("long")
+                - F.col(
+                    "previous_timestamp"
+                ).cast("long")
             ) / 60,
         )
-        .filter(F.col("previous_timestamp").isNotNull())
+        .filter(
+            F.col(
+                "previous_timestamp"
+            ).isNotNull()
+        )
     )
 
     total = diffs.count()
 
     matching = (
         diffs
-        .filter(F.col("diff_minutes") == expected_minutes)
+        .filter(
+            F.col(
+                "diff_minutes"
+            ) == expected_minutes
+        )
         .count()
     )
 
     return total, matching
 
 
+def validate_canonical_geography(
+    df,
+):
+    missing_columns = [
+        column
+        for column in CANONICAL_GEOGRAPHY_COLUMNS
+        if column not in df.columns
+    ]
+
+    if missing_columns:
+        return {
+            "missing_columns": missing_columns,
+            "null_province_rows": None,
+            "null_community_rows": None,
+        }
+
+    null_province_rows = (
+        df
+        .filter(
+            F.col(
+                "province_code"
+            ).isNull()
+            | F.col(
+                "province_name"
+            ).isNull()
+        )
+        .count()
+    )
+
+    null_community_rows = (
+        df
+        .filter(
+            F.col(
+                "autonomous_community_code"
+            ).isNull()
+            | F.col(
+                "autonomous_community_name"
+            ).isNull()
+        )
+        .count()
+    )
+
+    return {
+        "missing_columns": [],
+        "null_province_rows": null_province_rows,
+        "null_community_rows": null_community_rows,
+    }
+
+
 def main():
     spark = (
         SparkSession.builder
-        .appName("silver-persisted-validation")
+        .appName(
+            "silver-persisted-validation"
+        )
         .getOrCreate()
     )
 
     print("=" * 80)
-    print("SILVER PERSISTED DATA VALIDATION")
+    print(
+        "SILVER PERSISTED DATA VALIDATION"
+    )
     print("=" * 80)
 
     for table, config in TABLES.items():
-        full_name = f"lakehouse.silver.{table}"
+        full_name = (
+            f"lakehouse.silver.{table}"
+        )
 
         print("=" * 80)
-        print(f"TABLE = {table}")
+        print(
+            f"TABLE = {table}"
+        )
 
-        df = spark.table(full_name)
+        df = spark.table(
+            full_name
+        )
 
         rows = df.count()
+
         null_keys = count_null_keys(
             df,
             config["key"],
         )
+
         duplicates = count_duplicates(
             df,
             config["key"],
         )
 
-        print("ROWS =", rows)
-        print("EXPECTED_ROWS =", config["expected_rows"])
-        print("ROW_COUNT_OK =", rows == config["expected_rows"])
+        print(
+            "ROWS =",
+            rows,
+        )
 
-        print("NULL_NATURAL_KEYS =", null_keys)
-        print("DUPLICATE_KEYS =", duplicates)
+        print(
+            "EXPECTED_ROWS =",
+            config["expected_rows"],
+        )
+
+        print(
+            "ROW_COUNT_OK =",
+            rows
+            == config["expected_rows"],
+        )
+
+        print(
+            "NULL_NATURAL_KEYS =",
+            null_keys,
+        )
+
+        print(
+            "DUPLICATE_KEYS =",
+            duplicates,
+        )
 
         timestamp_columns = [
             column
@@ -184,7 +299,11 @@ def main():
         for column in timestamp_columns:
             null_count = (
                 df
-                .filter(F.col(column).isNull())
+                .filter(
+                    F.col(
+                        column
+                    ).isNull()
+                )
                 .count()
             )
 
@@ -200,10 +319,26 @@ def main():
             invalid_coordinates = (
                 df
                 .filter(
-                    (F.col("latitude") < -90)
-                    | (F.col("latitude") > 90)
-                    | (F.col("longitude") < -180)
-                    | (F.col("longitude") > 180)
+                    (
+                        F.col(
+                            "latitude"
+                        ) < -90
+                    )
+                    | (
+                        F.col(
+                            "latitude"
+                        ) > 90
+                    )
+                    | (
+                        F.col(
+                            "longitude"
+                        ) < -180
+                    )
+                    | (
+                        F.col(
+                            "longitude"
+                        ) > 180
+                    )
                 )
                 .count()
             )
@@ -213,8 +348,80 @@ def main():
                 invalid_coordinates,
             )
 
+        # --------------------------------------------------------------------
+        # Canonical geography validation
+        # --------------------------------------------------------------------
+
+        if config.get(
+            "canonical_geography",
+            False,
+        ):
+            geography_validation = (
+                validate_canonical_geography(
+                    df
+                )
+            )
+
+            print(
+                "CANONICAL_GEOGRAPHY_COLUMNS =",
+                CANONICAL_GEOGRAPHY_COLUMNS,
+            )
+
+            print(
+                "MISSING_CANONICAL_GEOGRAPHY_COLUMNS =",
+                geography_validation[
+                    "missing_columns"
+                ],
+            )
+
+            print(
+                "CANONICAL_GEOGRAPHY_SCHEMA_OK =",
+                len(
+                    geography_validation[
+                        "missing_columns"
+                    ]
+                ) == 0,
+            )
+
+            if not geography_validation[
+                "missing_columns"
+            ]:
+                print(
+                    "NULL_CANONICAL_PROVINCE_ROWS =",
+                    geography_validation[
+                        "null_province_rows"
+                    ],
+                )
+
+                print(
+                    "NULL_CANONICAL_COMMUNITY_ROWS =",
+                    geography_validation[
+                        "null_community_rows"
+                    ],
+                )
+
+                print(
+                    "CANONICAL_PROVINCE_MATCH_OK =",
+                    geography_validation[
+                        "null_province_rows"
+                    ] == 0,
+                )
+
+                print(
+                    "CANONICAL_COMMUNITY_MATCH_OK =",
+                    geography_validation[
+                        "null_community_rows"
+                    ] == 0,
+                )
+
+        # --------------------------------------------------------------------
+        # Temporal granularity validation
+        # --------------------------------------------------------------------
+
         if "expected_minutes" in config:
-            if table.startswith("silver_esios"):
+            if table.startswith(
+                "silver_esios"
+            ):
                 partition_columns = [
                     "indicator_id",
                     "esios_geo_id",
@@ -224,31 +431,42 @@ def main():
                     "station_id",
                 ]
 
-            total, matching = validate_temporal_granularity(
-                df,
-                config["expected_minutes"],
-                partition_columns,
+            total, matching = (
+                validate_temporal_granularity(
+                    df,
+                    config[
+                        "expected_minutes"
+                    ],
+                    partition_columns,
+                )
             )
 
             print(
                 "EXPECTED_GRANULARITY_MINUTES =",
-                config["expected_minutes"],
+                config[
+                    "expected_minutes"
+                ],
             )
+
             print(
                 "TOTAL_TEMPORAL_DIFFERENCES =",
                 total,
             )
+
             print(
                 "MATCHING_GRANULARITY =",
                 matching,
             )
+
             print(
                 "TEMPORAL_GAPS_OR_DIFFERENCES =",
                 total - matching,
             )
 
     print("=" * 80)
-    print("SILVER PERSISTED DATA VALIDATION COMPLETE")
+    print(
+        "SILVER PERSISTED DATA VALIDATION COMPLETE"
+    )
     print("=" * 80)
 
     spark.stop()

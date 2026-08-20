@@ -79,6 +79,7 @@ services:
       - ./spark/jobs:/opt/spark/jobs
       - ./spark/conf:/opt/spark/conf
       - ./tests:/opt/spark/tests
+      - ./config:/opt/config:ro
 
     networks:
       - lakehouse-network
@@ -122,6 +123,7 @@ services:
     volumes:
       - ./spark/jobs:/opt/spark/jobs
       - ./spark/conf:/opt/spark/conf
+      - ./config:/opt/config:ro
 
     networks:
       - lakehouse-network

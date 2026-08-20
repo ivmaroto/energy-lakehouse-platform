@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import argparse
+
 from pyspark.sql import DataFrame, SparkSession
 
 from silver.aemet import build_aemet_silver
 from silver.cnig import build_cnig_silver
 from silver.esios import build_esios_silver
 from silver.open_meteo import build_open_meteo_silver
+
+from silver.geography import (
+    enrich_with_cnig_province,
+    validate_all_provinces_matched,
+)
 
 from silver.create_tables import (
     TABLE_AEMET_CURRENT,
@@ -21,6 +28,19 @@ from silver.create_tables import (
     TABLE_OPEN_METEO_HISTORICAL,
     TABLE_OPEN_METEO_HOURLY,
 )
+
+
+# ============================================================================
+# Execution modes
+# ============================================================================
+
+MODE_ALL = "all"
+MODE_GEOGRAPHY_FIX = "geography-fix"
+
+VALID_MODES = {
+    MODE_ALL,
+    MODE_GEOGRAPHY_FIX,
+}
 
 
 # ============================================================================
@@ -69,6 +89,31 @@ KEY_ESIOS = [
 
 
 # ============================================================================
+# Argument parsing
+# ============================================================================
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Persist Silver DataFrames into Iceberg."
+        )
+    )
+
+    parser.add_argument(
+        "--mode",
+        choices=sorted(VALID_MODES),
+        default=MODE_ALL,
+        help=(
+            "'all' writes the complete Silver layer. "
+            "'geography-fix' writes only the meteorological "
+            "tables affected by canonical province normalization."
+        ),
+    )
+
+    return parser.parse_args()
+
+
+# ============================================================================
 # Helpers
 # ============================================================================
 
@@ -76,7 +121,9 @@ def table_exists(
     spark: SparkSession,
     table_name: str,
 ) -> bool:
-    return spark.catalog.tableExists(table_name)
+    return spark.catalog.tableExists(
+        table_name
+    )
 
 
 def validate_target_table(
@@ -84,14 +131,15 @@ def validate_target_table(
     table_name: str,
 ) -> None:
     """
-    4.4 assumes the 12 Iceberg tables were already created in 4.3.
+    4.4 assumes the required Iceberg tables have already been created.
     """
     if not table_exists(
         spark,
         table_name,
     ):
         raise RuntimeError(
-            f"Required Silver Iceberg table does not exist: {table_name}"
+            f"Required Silver Iceberg table does not exist: "
+            f"{table_name}"
         )
 
 
@@ -165,16 +213,22 @@ def merge_into_table(
         table_name,
     )
 
-    # Materialize and truncate the original logical plan.
     materialized_df = df.localCheckpoint(
         eager=True
     )
 
-    source_count = materialized_df.count()
+    source_count = (
+        materialized_df
+        .count()
+    )
 
     print("=" * 80)
-    print(f"TABLE = {table_name}")
-    print(f"SOURCE_ROWS = {source_count}")
+    print(
+        f"TABLE = {table_name}"
+    )
+    print(
+        f"SOURCE_ROWS = {source_count}"
+    )
 
     materialized_df.createOrReplaceTempView(
         view_name
@@ -219,18 +273,31 @@ def merge_into_table(
 # ============================================================================
 
 def main() -> None:
+    args = parse_args()
+    mode = args.mode
+
     spark = (
         SparkSession.builder
-        .appName("write-silver-iceberg")
+        .appName(
+            "write-silver-iceberg"
+        )
         .getOrCreate()
     )
 
     print("=" * 80)
-    print("WRITE SILVER DATA TO ICEBERG")
+    print(
+        "WRITE SILVER DATA TO ICEBERG"
+    )
+    print(
+        f"MODE = {mode}"
+    )
     print("=" * 80)
 
     # ------------------------------------------------------------------------
-    # Rebuild validated Bronze -> Silver DataFrames
+    # Build AEMET
+    #
+    # Required in both execution modes because the geography correction
+    # affects AEMET stations and daily climatology.
     # ------------------------------------------------------------------------
 
     (
@@ -241,6 +308,13 @@ def main() -> None:
         spark
     )
 
+    # ------------------------------------------------------------------------
+    # Build Open-Meteo
+    #
+    # Required in both execution modes because all three Open-Meteo Silver
+    # tables are affected by canonical province normalization.
+    # ------------------------------------------------------------------------
+
     (
         open_meteo_hourly,
         open_meteo_historical,
@@ -249,6 +323,12 @@ def main() -> None:
         spark
     )
 
+    # ------------------------------------------------------------------------
+    # Build CNIG
+    #
+    # CNIG provinces are required as the canonical geographical master.
+    # ------------------------------------------------------------------------
+
     (
         cnig_provinces,
         cnig_autonomous_communities,
@@ -256,6 +336,177 @@ def main() -> None:
     ) = build_cnig_silver(
         spark
     )
+
+    # ------------------------------------------------------------------------
+    # Canonical geographical normalization
+    #
+    # CNIG is the canonical province master.
+    #
+    # Original source province names are preserved for traceability.
+    # Only unresolved normalized names fall back to the controlled
+    # province_aliases.json mapping.
+    # ------------------------------------------------------------------------
+
+    aemet_stations = (
+        enrich_with_cnig_province(
+            aemet_stations,
+            cnig_provinces,
+            source_province_column="provincia",
+        )
+    )
+
+    aemet_daily = (
+        enrich_with_cnig_province(
+            aemet_daily,
+            cnig_provinces,
+            source_province_column="provincia",
+        )
+    )
+
+    open_meteo_hourly = (
+        enrich_with_cnig_province(
+            open_meteo_hourly,
+            cnig_provinces,
+            source_province_column="province",
+        )
+    )
+
+    open_meteo_historical = (
+        enrich_with_cnig_province(
+            open_meteo_historical,
+            cnig_provinces,
+            source_province_column="province",
+        )
+    )
+
+    open_meteo_15min = (
+        enrich_with_cnig_province(
+            open_meteo_15min,
+            cnig_provinces,
+            source_province_column="province",
+        )
+    )
+
+    # ------------------------------------------------------------------------
+    # Validate canonical geography before persistence
+    # ------------------------------------------------------------------------
+
+    validate_all_provinces_matched(
+        aemet_stations,
+        dataset_name=(
+            "silver_aemet_stations"
+        ),
+    )
+
+    validate_all_provinces_matched(
+        aemet_daily,
+        dataset_name=(
+            "silver_aemet_daily_climatology"
+        ),
+    )
+
+    validate_all_provinces_matched(
+        open_meteo_hourly,
+        dataset_name=(
+            "silver_open_meteo_hourly"
+        ),
+    )
+
+    validate_all_provinces_matched(
+        open_meteo_historical,
+        dataset_name=(
+            "silver_open_meteo_historical_forecast"
+        ),
+    )
+
+    validate_all_provinces_matched(
+        open_meteo_15min,
+        dataset_name=(
+            "silver_open_meteo_15min"
+        ),
+    )
+
+    # ========================================================================
+    # Geography-fix mode
+    #
+    # Persist ONLY the five tables affected by the geographical correction.
+    # ========================================================================
+
+    if mode == MODE_GEOGRAPHY_FIX:
+        print("=" * 80)
+        print(
+            "GEOGRAPHY FIX - AFFECTED TABLES ONLY"
+        )
+        print("=" * 80)
+
+        # --------------------------------------------------------------------
+        # AEMET affected tables
+        # --------------------------------------------------------------------
+
+        merge_into_table(
+            spark=spark,
+            df=aemet_stations,
+            table_name=TABLE_AEMET_STATIONS,
+            natural_key=KEY_AEMET_STATIONS,
+            view_name="src_aemet_stations",
+        )
+
+        merge_into_table(
+            spark=spark,
+            df=aemet_daily,
+            table_name=TABLE_AEMET_DAILY,
+            natural_key=KEY_AEMET_DAILY,
+            view_name="src_aemet_daily",
+        )
+
+        # --------------------------------------------------------------------
+        # Open-Meteo affected tables
+        # --------------------------------------------------------------------
+
+        merge_into_table(
+            spark=spark,
+            df=open_meteo_hourly,
+            table_name=TABLE_OPEN_METEO_HOURLY,
+            natural_key=KEY_OPEN_METEO,
+            view_name="src_open_meteo_hourly",
+        )
+
+        merge_into_table(
+            spark=spark,
+            df=open_meteo_historical,
+            table_name=TABLE_OPEN_METEO_HISTORICAL,
+            natural_key=KEY_OPEN_METEO,
+            view_name="src_open_meteo_historical",
+        )
+
+        merge_into_table(
+            spark=spark,
+            df=open_meteo_15min,
+            table_name=TABLE_OPEN_METEO_15MIN,
+            natural_key=KEY_OPEN_METEO,
+            view_name="src_open_meteo_15min",
+        )
+
+        print("=" * 80)
+        print(
+            "GEOGRAPHY FIX SILVER WRITE COMPLETE"
+        )
+        print("=" * 80)
+
+        spark.stop()
+
+        return
+
+    # ========================================================================
+    # Full Silver mode
+    # ========================================================================
+
+    # ------------------------------------------------------------------------
+    # Build ESIOS only when the complete Silver layer is being written.
+    #
+    # The geography-fix execution deliberately avoids rebuilding or writing
+    # ESIOS because those tables are outside the detected incidence.
+    # ------------------------------------------------------------------------
 
     (
         esios_energy_hourly,
@@ -338,7 +589,9 @@ def main() -> None:
         df=cnig_autonomous_communities,
         table_name=TABLE_CNIG_AUTONOMOUS_COMMUNITIES,
         natural_key=KEY_CNIG_AUTONOMOUS_COMMUNITIES,
-        view_name="src_cnig_autonomous_communities",
+        view_name=(
+            "src_cnig_autonomous_communities"
+        ),
     )
 
     merge_into_table(
@@ -374,11 +627,15 @@ def main() -> None:
         df=esios_installed_capacity,
         table_name=TABLE_ESIOS_INSTALLED_CAPACITY,
         natural_key=KEY_ESIOS,
-        view_name="src_esios_installed_capacity",
+        view_name=(
+            "src_esios_installed_capacity"
+        ),
     )
 
     print("=" * 80)
-    print("SILVER ICEBERG WRITE COMPLETE")
+    print(
+        "SILVER ICEBERG WRITE COMPLETE"
+    )
     print("=" * 80)
 
     spark.stop()

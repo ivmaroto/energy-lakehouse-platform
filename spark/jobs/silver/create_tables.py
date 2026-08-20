@@ -8,6 +8,11 @@ from silver.cnig import build_cnig_silver
 from silver.esios import build_esios_silver
 from silver.open_meteo import build_open_meteo_silver
 
+from silver.geography import (
+    enrich_with_cnig_province,
+    validate_all_provinces_matched,
+)
+
 
 CATALOG = "lakehouse"
 NAMESPACE = "silver"
@@ -81,7 +86,9 @@ def table_exists(
     """
     Check whether an Iceberg table already exists in the configured catalog.
     """
-    return spark.catalog.tableExists(table_name)
+    return spark.catalog.tableExists(
+        table_name
+    )
 
 
 def create_unpartitioned_table(
@@ -95,8 +102,13 @@ def create_unpartitioned_table(
 
     If the table already exists, it is left untouched.
     """
-    if table_exists(spark, table_name):
-        print(f"EXISTS = {table_name}")
+    if table_exists(
+        spark,
+        table_name,
+    ):
+        print(
+            f"EXISTS = {table_name}"
+        )
         return
 
     (
@@ -107,7 +119,9 @@ def create_unpartitioned_table(
         .create()
     )
 
-    print(f"CREATED = {table_name}")
+    print(
+        f"CREATED = {table_name}"
+    )
 
 
 def create_day_partitioned_table(
@@ -121,8 +135,13 @@ def create_day_partitioned_table(
 
     If the table already exists, it is left untouched.
     """
-    if table_exists(spark, table_name):
-        print(f"EXISTS = {table_name}")
+    if table_exists(
+        spark,
+        table_name,
+    ):
+        print(
+            f"EXISTS = {table_name}"
+        )
         return
 
     (
@@ -131,12 +150,16 @@ def create_day_partitioned_table(
         .writeTo(table_name)
         .using("iceberg")
         .partitionedBy(
-            F.days(timestamp_column)
+            F.days(
+                timestamp_column
+            )
         )
         .create()
     )
 
-    print(f"CREATED = {table_name}")
+    print(
+        f"CREATED = {table_name}"
+    )
 
 
 def create_month_partitioned_table(
@@ -150,8 +173,13 @@ def create_month_partitioned_table(
 
     If the table already exists, it is left untouched.
     """
-    if table_exists(spark, table_name):
-        print(f"EXISTS = {table_name}")
+    if table_exists(
+        spark,
+        table_name,
+    ):
+        print(
+            f"EXISTS = {table_name}"
+        )
         return
 
     (
@@ -160,12 +188,16 @@ def create_month_partitioned_table(
         .writeTo(table_name)
         .using("iceberg")
         .partitionedBy(
-            F.months(temporal_column)
+            F.months(
+                temporal_column
+            )
         )
         .create()
     )
 
-    print(f"CREATED = {table_name}")
+    print(
+        f"CREATED = {table_name}"
+    )
 
 
 # ============================================================================
@@ -175,12 +207,16 @@ def create_month_partitioned_table(
 def main() -> None:
     spark = (
         SparkSession.builder
-        .appName("create-silver-iceberg-tables")
+        .appName(
+            "create-silver-iceberg-tables"
+        )
         .getOrCreate()
     )
 
     print("=" * 80)
-    print("CREATE SILVER ICEBERG TABLES")
+    print(
+        "CREATE SILVER ICEBERG TABLES"
+    )
     print("=" * 80)
 
     # ------------------------------------------------------------------------
@@ -188,11 +224,13 @@ def main() -> None:
     # ------------------------------------------------------------------------
 
     spark.sql(
-        f"CREATE NAMESPACE IF NOT EXISTS {CATALOG}.{NAMESPACE}"
+        f"CREATE NAMESPACE IF NOT EXISTS "
+        f"{CATALOG}.{NAMESPACE}"
     )
 
     print(
-        f"NAMESPACE READY = {CATALOG}.{NAMESPACE}"
+        f"NAMESPACE READY = "
+        f"{CATALOG}.{NAMESPACE}"
     )
 
     # ------------------------------------------------------------------------
@@ -232,6 +270,95 @@ def main() -> None:
         esios_installed_capacity,
     ) = build_esios_silver(
         spark
+    )
+
+    # ------------------------------------------------------------------------
+    # Canonical geographical normalization
+    #
+    # CNIG is the canonical province master.
+    #
+    # Original source province names remain available for traceability.
+    # Canonical identifiers/names are added before deriving the physical
+    # Iceberg schemas.
+    # ------------------------------------------------------------------------
+
+    aemet_stations = (
+        enrich_with_cnig_province(
+            aemet_stations,
+            cnig_provinces,
+            source_province_column="provincia",
+        )
+    )
+
+    aemet_daily = (
+        enrich_with_cnig_province(
+            aemet_daily,
+            cnig_provinces,
+            source_province_column="provincia",
+        )
+    )
+
+    open_meteo_hourly = (
+        enrich_with_cnig_province(
+            open_meteo_hourly,
+            cnig_provinces,
+            source_province_column="province",
+        )
+    )
+
+    open_meteo_historical = (
+        enrich_with_cnig_province(
+            open_meteo_historical,
+            cnig_provinces,
+            source_province_column="province",
+        )
+    )
+
+    open_meteo_15min = (
+        enrich_with_cnig_province(
+            open_meteo_15min,
+            cnig_provinces,
+            source_province_column="province",
+        )
+    )
+
+    # ------------------------------------------------------------------------
+    # Validate canonical province resolution
+    # ------------------------------------------------------------------------
+
+    validate_all_provinces_matched(
+        aemet_stations,
+        dataset_name=(
+            "silver_aemet_stations"
+        ),
+    )
+
+    validate_all_provinces_matched(
+        aemet_daily,
+        dataset_name=(
+            "silver_aemet_daily_climatology"
+        ),
+    )
+
+    validate_all_provinces_matched(
+        open_meteo_hourly,
+        dataset_name=(
+            "silver_open_meteo_hourly"
+        ),
+    )
+
+    validate_all_provinces_matched(
+        open_meteo_historical,
+        dataset_name=(
+            "silver_open_meteo_historical_forecast"
+        ),
+    )
+
+    validate_all_provinces_matched(
+        open_meteo_15min,
+        dataset_name=(
+            "silver_open_meteo_15min"
+        ),
     )
 
     # ------------------------------------------------------------------------
@@ -331,7 +458,9 @@ def main() -> None:
     )
 
     print("=" * 80)
-    print("SILVER ICEBERG TABLE CREATION COMPLETE")
+    print(
+        "SILVER ICEBERG TABLE CREATION COMPLETE"
+    )
     print("=" * 80)
 
     spark.stop()

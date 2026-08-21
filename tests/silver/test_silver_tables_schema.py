@@ -75,6 +75,12 @@ EXPECTED_CANONICAL_GEOGRAPHY_COLUMNS = {
         "autonomous_community_code",
         "autonomous_community_name",
     },
+    "lakehouse.silver.silver_esios_energy_hourly": {
+        "province_code",
+        "province_name",
+        "autonomous_community_code",
+        "autonomous_community_name",
+    },
 }
 
 

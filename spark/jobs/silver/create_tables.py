@@ -322,6 +322,14 @@ def main() -> None:
         )
     )
 
+    esios_energy_hourly = (
+        enrich_with_cnig_province(
+            esios_energy_hourly,
+            cnig_provinces,
+            source_province_column="esios_geo_name",
+        )
+    )
+
     # ------------------------------------------------------------------------
     # Validate canonical province resolution
     # ------------------------------------------------------------------------
@@ -358,6 +366,13 @@ def main() -> None:
         open_meteo_15min,
         dataset_name=(
             "silver_open_meteo_15min"
+        ),
+    )
+
+    validate_all_provinces_matched(
+        esios_energy_hourly,
+        dataset_name=(
+            "silver_esios_energy_hourly"
         ),
     )
 

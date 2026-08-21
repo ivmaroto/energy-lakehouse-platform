@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 
@@ -5,6 +6,7 @@ import pytest
 from pyspark.sql import SparkSession
 
 from silver.geography import (
+    PROVINCE_ALIASES_PATH,
     enrich_with_cnig_province,
     load_province_aliases,
     normalize_geographical_name,
@@ -332,20 +334,22 @@ def test_normalize_geographical_name_handles_null_and_empty():
 # ============================================================================
 
 def test_validated_province_aliases_are_loaded():
+    with PROVINCE_ALIASES_PATH.open(
+        "r",
+        encoding="utf-8",
+    ) as file:
+        configured_aliases = json.load(file)
+
+    expected_aliases = {
+        normalize_geographical_name(source_name):
+        normalize_geographical_name(canonical_name)
+        for source_name, canonical_name
+        in configured_aliases.items()
+    }
+
     aliases = load_province_aliases()
 
-    assert aliases["ALICANTE"] == "ALACANT/ALICANTE"
-    assert aliases["BALEARES"] == "ILLES BALEARS"
-    assert aliases["CASTELLON"] == "CASTELLO/CASTELLON"
-
-    assert (
-        aliases["STA. CRUZ DE TENERIFE"]
-        == "SANTA CRUZ DE TENERIFE"
-    )
-
-    assert aliases["VALENCIA"] == "VALENCIA/VALENCIA"
-
-    assert len(aliases) == 5
+    assert aliases == expected_aliases
 
 
 # ============================================================================

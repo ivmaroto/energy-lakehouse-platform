@@ -36,10 +36,12 @@ from silver.create_tables import (
 
 MODE_ALL = "all"
 MODE_GEOGRAPHY_FIX = "geography-fix"
+MODE_ESIOS_GEOGRAPHY_FIX = "esios-geography-fix"
 
 VALID_MODES = {
     MODE_ALL,
     MODE_GEOGRAPHY_FIX,
+    MODE_ESIOS_GEOGRAPHY_FIX,
 }
 
 
@@ -106,7 +108,10 @@ def parse_args() -> argparse.Namespace:
         help=(
             "'all' writes the complete Silver layer. "
             "'geography-fix' writes only the meteorological "
-            "tables affected by canonical province normalization."
+            "tables affected by canonical province normalization. "
+            "'esios-geography-fix' writes only "
+            "silver_esios_energy_hourly after canonical "
+            "province normalization."
         ),
     )
 
@@ -294,10 +299,77 @@ def main() -> None:
     print("=" * 80)
 
     # ------------------------------------------------------------------------
-    # Build AEMET
+    # Build CNIG
     #
-    # Required in both execution modes because the geography correction
-    # affects AEMET stations and daily climatology.
+    # Required in every mode because CNIG is the canonical geographical
+    # master used by the Silver geography normalization.
+    # ------------------------------------------------------------------------
+
+    (
+        cnig_provinces,
+        cnig_autonomous_communities,
+        cnig_municipalities,
+    ) = build_cnig_silver(
+        spark
+    )
+
+    # ========================================================================
+    # ESIOS geography-fix mode
+    #
+    # Persist ONLY silver_esios_energy_hourly after canonical province
+    # normalization. National 5-minute and monthly installed-capacity
+    # families are deliberately excluded from this province-level fix.
+    # ========================================================================
+
+    if mode == MODE_ESIOS_GEOGRAPHY_FIX:
+        (
+            esios_energy_hourly,
+            _esios_power_5min,
+            _esios_installed_capacity,
+        ) = build_esios_silver(
+            spark
+        )
+
+        esios_energy_hourly = (
+            enrich_with_cnig_province(
+                esios_energy_hourly,
+                cnig_provinces,
+                source_province_column="esios_geo_name",
+            )
+        )
+
+        validate_all_provinces_matched(
+            esios_energy_hourly,
+            dataset_name=(
+                "silver_esios_energy_hourly"
+            ),
+        )
+
+        print("=" * 80)
+        print(
+            "ESIOS GEOGRAPHY FIX - AFFECTED TABLE ONLY"
+        )
+        print("=" * 80)
+
+        merge_into_table(
+            spark=spark,
+            df=esios_energy_hourly,
+            table_name=TABLE_ESIOS_ENERGY_HOURLY,
+            natural_key=KEY_ESIOS,
+            view_name="src_esios_energy_hourly",
+        )
+
+        print("=" * 80)
+        print(
+            "ESIOS GEOGRAPHY FIX SILVER WRITE COMPLETE"
+        )
+        print("=" * 80)
+
+        spark.stop()
+        return
+
+    # ------------------------------------------------------------------------
+    # Build AEMET
     # ------------------------------------------------------------------------
 
     (
@@ -310,9 +382,6 @@ def main() -> None:
 
     # ------------------------------------------------------------------------
     # Build Open-Meteo
-    #
-    # Required in both execution modes because all three Open-Meteo Silver
-    # tables are affected by canonical province normalization.
     # ------------------------------------------------------------------------
 
     (
@@ -324,27 +393,7 @@ def main() -> None:
     )
 
     # ------------------------------------------------------------------------
-    # Build CNIG
-    #
-    # CNIG provinces are required as the canonical geographical master.
-    # ------------------------------------------------------------------------
-
-    (
-        cnig_provinces,
-        cnig_autonomous_communities,
-        cnig_municipalities,
-    ) = build_cnig_silver(
-        spark
-    )
-
-    # ------------------------------------------------------------------------
     # Canonical geographical normalization
-    #
-    # CNIG is the canonical province master.
-    #
-    # Original source province names are preserved for traceability.
-    # Only unresolved normalized names fall back to the controlled
-    # province_aliases.json mapping.
     # ------------------------------------------------------------------------
 
     aemet_stations = (
@@ -429,7 +478,8 @@ def main() -> None:
     # ========================================================================
     # Geography-fix mode
     #
-    # Persist ONLY the five tables affected by the geographical correction.
+    # Persist ONLY the five meteorological tables affected by the previous
+    # canonical province normalization correction.
     # ========================================================================
 
     if mode == MODE_GEOGRAPHY_FIX:
@@ -438,10 +488,6 @@ def main() -> None:
             "GEOGRAPHY FIX - AFFECTED TABLES ONLY"
         )
         print("=" * 80)
-
-        # --------------------------------------------------------------------
-        # AEMET affected tables
-        # --------------------------------------------------------------------
 
         merge_into_table(
             spark=spark,
@@ -458,10 +504,6 @@ def main() -> None:
             natural_key=KEY_AEMET_DAILY,
             view_name="src_aemet_daily",
         )
-
-        # --------------------------------------------------------------------
-        # Open-Meteo affected tables
-        # --------------------------------------------------------------------
 
         merge_into_table(
             spark=spark,
@@ -494,19 +536,11 @@ def main() -> None:
         print("=" * 80)
 
         spark.stop()
-
         return
 
     # ========================================================================
     # Full Silver mode
     # ========================================================================
-
-    # ------------------------------------------------------------------------
-    # Build ESIOS only when the complete Silver layer is being written.
-    #
-    # The geography-fix execution deliberately avoids rebuilding or writing
-    # ESIOS because those tables are outside the detected incidence.
-    # ------------------------------------------------------------------------
 
     (
         esios_energy_hourly,
@@ -514,6 +548,21 @@ def main() -> None:
         esios_installed_capacity,
     ) = build_esios_silver(
         spark
+    )
+
+    esios_energy_hourly = (
+        enrich_with_cnig_province(
+            esios_energy_hourly,
+            cnig_provinces,
+            source_province_column="esios_geo_name",
+        )
+    )
+
+    validate_all_provinces_matched(
+        esios_energy_hourly,
+        dataset_name=(
+            "silver_esios_energy_hourly"
+        ),
     )
 
     # ------------------------------------------------------------------------

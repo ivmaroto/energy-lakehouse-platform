@@ -1,0 +1,10 @@
+{
+  "esios_time_gap_hours": 1,
+  "peninsula_excluded_province_codes": [
+    "07",
+    "35",
+    "38",
+    "51",
+    "52"
+  ]
+}

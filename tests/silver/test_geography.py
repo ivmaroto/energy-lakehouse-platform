@@ -6,10 +6,14 @@ import pytest
 from pyspark.sql import SparkSession
 
 from silver.geography import (
+    AUTONOMOUS_COMMUNITY_ALIASES_PATH,
     PROVINCE_ALIASES_PATH,
+    enrich_with_cnig_autonomous_community,
     enrich_with_cnig_province,
+    load_autonomous_community_aliases,
     load_province_aliases,
     normalize_geographical_name,
+    validate_all_autonomous_communities_matched,
     validate_all_provinces_matched,
 )
 
@@ -546,3 +550,315 @@ def test_validation_passes_when_every_province_matches(
     )
 
     assert result.count() == 4
+
+
+# ============================================================================
+# Autonomous-community normalization
+# ============================================================================
+
+@pytest.fixture(scope="session")
+def cnig_autonomous_communities(spark):
+    """
+    Synthetic CNIG autonomous-community master containing the 19 canonical
+    values validated against the persisted Silver CNIG table.
+    """
+    return spark.createDataFrame(
+        [
+            ("01", "Andalucía"),
+            ("02", "Aragón"),
+            ("03", "Principado de Asturias"),
+            ("04", "Illes Balears"),
+            ("05", "Canarias"),
+            ("06", "Cantabria"),
+            ("07", "Castilla y León"),
+            ("08", "Castilla-La Mancha"),
+            ("09", "Cataluña/Catalunya"),
+            ("10", "Comunitat Valenciana"),
+            ("11", "Extremadura"),
+            ("12", "Galicia"),
+            ("13", "Comunidad de Madrid"),
+            ("14", "Región de Murcia"),
+            ("15", "Comunidad Foral de Navarra"),
+            ("16", "País Vasco/Euskadi"),
+            ("17", "La Rioja"),
+            ("18", "Ciudad Autónoma de Ceuta"),
+            ("19", "Ciudad Autónoma de Melilla"),
+        ],
+        [
+            "autonomous_community_code",
+            "autonomous_community_name",
+        ],
+    )
+
+
+@pytest.fixture(scope="session")
+def esios_autonomous_community_rows(
+    spark,
+    cnig_autonomous_communities,
+):
+    """
+    The 19 ESIOS geographical names observed in the real
+    silver_esios_installed_capacity_monthly dataset.
+
+    Twelve resolve by deterministic normalization and seven require
+    controlled aliases.
+    """
+    source_df = spark.createDataFrame(
+        [
+            ("Andalucía",),
+            ("Aragón",),
+            ("Principado de Asturias",),
+            ("Islas Baleares",),
+            ("Islas Canarias",),
+            ("Cantabria",),
+            ("Castilla y León",),
+            ("Castilla-La Mancha",),
+            ("Cataluña",),
+            ("Comunidad Valenciana",),
+            ("Extremadura",),
+            ("Galicia",),
+            ("Comunidad de Madrid",),
+            ("Región de Murcia",),
+            ("Comunidad Foral de Navarra",),
+            ("País Vasco",),
+            ("La Rioja",),
+            ("Ceuta",),
+            ("Melilla",),
+        ],
+        [
+            "esios_geo_name",
+        ],
+    )
+
+    result = enrich_with_cnig_autonomous_community(
+        source_df,
+        cnig_autonomous_communities,
+        source_autonomous_community_column="esios_geo_name",
+    )
+
+    return result
+
+
+def test_validated_autonomous_community_aliases_are_loaded():
+    with AUTONOMOUS_COMMUNITY_ALIASES_PATH.open(
+        "r",
+        encoding="utf-8",
+    ) as file:
+        configured_aliases = json.load(file)
+
+    expected_aliases = {
+        normalize_geographical_name(source_name):
+        normalize_geographical_name(canonical_name)
+        for source_name, canonical_name
+        in configured_aliases.items()
+    }
+
+    aliases = load_autonomous_community_aliases()
+
+    assert aliases == expected_aliases
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (" Cataluña ", "CATALUNA"),
+        ("CATALUÑA", "CATALUNA"),
+        ("País Vasco", "PAIS VASCO"),
+        ("PAIS VASCO", "PAIS VASCO"),
+        ("Islas Baleares", "ISLAS BALEARES"),
+        (
+            "Comunidad Valenciana",
+            "COMUNIDAD VALENCIANA",
+        ),
+    ],
+)
+def test_autonomous_community_deterministic_normalization(
+    source,
+    expected,
+):
+    assert normalize_geographical_name(source) == expected
+
+
+def test_all_real_esios_autonomous_communities_match_cnig(
+    esios_autonomous_community_rows,
+):
+    validate_all_autonomous_communities_matched(
+        esios_autonomous_community_rows,
+        dataset_name=(
+            "silver_esios_installed_capacity_monthly"
+        ),
+    )
+
+    assert esios_autonomous_community_rows.count() == 19
+
+
+def test_real_esios_autonomous_communities_have_no_null_canonical_geography(
+    esios_autonomous_community_rows,
+):
+    rows = esios_autonomous_community_rows.collect()
+
+    assert all(
+        row["autonomous_community_code"] is not None
+        for row in rows
+    )
+
+    assert all(
+        row["autonomous_community_name"] is not None
+        for row in rows
+    )
+
+
+def test_real_esios_autonomous_communities_resolve_one_to_one(
+    esios_autonomous_community_rows,
+):
+    rows = esios_autonomous_community_rows.collect()
+
+    mappings = {}
+
+    for row in rows:
+        source_name = row["esios_geo_name"]
+        canonical_code = row[
+            "autonomous_community_code"
+        ]
+
+        mappings.setdefault(
+            source_name,
+            set(),
+        ).add(
+            canonical_code
+        )
+
+    assert all(
+        len(canonical_codes) == 1
+        for canonical_codes in mappings.values()
+    )
+
+    assert len(mappings) == 19
+
+
+@pytest.mark.parametrize(
+    (
+        "source_name",
+        "expected_code",
+        "expected_name",
+    ),
+    [
+        (
+            "Cataluña",
+            "09",
+            "Cataluña/Catalunya",
+        ),
+        (
+            "Ceuta",
+            "18",
+            "Ciudad Autónoma de Ceuta",
+        ),
+        (
+            "Comunidad Valenciana",
+            "10",
+            "Comunitat Valenciana",
+        ),
+        (
+            "Islas Baleares",
+            "04",
+            "Illes Balears",
+        ),
+        (
+            "Islas Canarias",
+            "05",
+            "Canarias",
+        ),
+        (
+            "Melilla",
+            "19",
+            "Ciudad Autónoma de Melilla",
+        ),
+        (
+            "País Vasco",
+            "16",
+            "País Vasco/Euskadi",
+        ),
+    ],
+)
+def test_validated_autonomous_community_aliases_match_cnig(
+    esios_autonomous_community_rows,
+    source_name,
+    expected_code,
+    expected_name,
+):
+    rows = {
+        row["esios_geo_name"]: row
+        for row in esios_autonomous_community_rows.collect()
+    }
+
+    row = rows[source_name]
+
+    # Original ESIOS value is preserved.
+    assert row["esios_geo_name"] == source_name
+
+    # Canonical values must come from CNIG.
+    assert (
+        row["autonomous_community_code"]
+        == expected_code
+    )
+
+    assert (
+        row["autonomous_community_name"]
+        == expected_name
+    )
+
+
+def test_unknown_autonomous_community_remains_unmatched(
+    spark,
+    cnig_autonomous_communities,
+):
+    source_df = spark.createDataFrame(
+        [
+            ("CCAA_INEXISTENTE",),
+        ],
+        [
+            "esios_geo_name",
+        ],
+    )
+
+    result = enrich_with_cnig_autonomous_community(
+        source_df,
+        cnig_autonomous_communities,
+        source_autonomous_community_column="esios_geo_name",
+    )
+
+    row = result.first()
+
+    assert row["esios_geo_name"] == "CCAA_INEXISTENTE"
+
+    assert row["autonomous_community_code"] is None
+    assert row["autonomous_community_name"] is None
+
+
+def test_validation_fails_when_autonomous_community_has_no_cnig_match(
+    spark,
+    cnig_autonomous_communities,
+):
+    source_df = spark.createDataFrame(
+        [
+            ("CCAA_INEXISTENTE",),
+        ],
+        [
+            "esios_geo_name",
+        ],
+    )
+
+    result = enrich_with_cnig_autonomous_community(
+        source_df,
+        cnig_autonomous_communities,
+        source_autonomous_community_column="esios_geo_name",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Geographical normalization failed",
+    ):
+        validate_all_autonomous_communities_matched(
+            result,
+            dataset_name="test_dataset",
+        )

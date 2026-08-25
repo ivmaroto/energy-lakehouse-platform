@@ -10,7 +10,9 @@ from silver.esios import build_esios_silver
 from silver.open_meteo import build_open_meteo_silver
 
 from silver.geography import (
+    enrich_with_cnig_autonomous_community,
     enrich_with_cnig_province,
+    validate_all_autonomous_communities_matched,
     validate_all_provinces_matched,
 )
 
@@ -109,9 +111,9 @@ def parse_args() -> argparse.Namespace:
             "'all' writes the complete Silver layer. "
             "'geography-fix' writes only the meteorological "
             "tables affected by canonical province normalization. "
-            "'esios-geography-fix' writes only "
-            "silver_esios_energy_hourly after canonical "
-            "province normalization."
+            "'esios-geography-fix' writes only the ESIOS "
+            "tables affected by canonical geographical "
+            "normalization."
         ),
     )
 
@@ -316,19 +318,31 @@ def main() -> None:
     # ========================================================================
     # ESIOS geography-fix mode
     #
-    # Persist ONLY silver_esios_energy_hourly after canonical province
-    # normalization. National 5-minute and monthly installed-capacity
-    # families are deliberately excluded from this province-level fix.
+    # Persist ONLY the ESIOS tables affected by canonical geographical
+    # normalization:
+    #
+    #   - silver_esios_energy_hourly
+    #       -> canonical CNIG province
+    #
+    #   - silver_esios_installed_capacity_monthly
+    #       -> canonical CNIG autonomous community
+    #
+    # silver_esios_power_5min remains deliberately excluded because this
+    # correction does not change its geographical model.
     # ========================================================================
 
     if mode == MODE_ESIOS_GEOGRAPHY_FIX:
         (
             esios_energy_hourly,
             _esios_power_5min,
-            _esios_installed_capacity,
+            esios_installed_capacity,
         ) = build_esios_silver(
             spark
         )
+
+        # --------------------------------------------------------------------
+        # ESIOS hourly energy -> canonical CNIG province
+        # --------------------------------------------------------------------
 
         esios_energy_hourly = (
             enrich_with_cnig_province(
@@ -345,9 +359,31 @@ def main() -> None:
             ),
         )
 
+        # --------------------------------------------------------------------
+        # ESIOS monthly installed capacity
+        # -> canonical CNIG autonomous community
+        # --------------------------------------------------------------------
+
+        esios_installed_capacity = (
+            enrich_with_cnig_autonomous_community(
+                esios_installed_capacity,
+                cnig_autonomous_communities,
+                source_autonomous_community_column=(
+                    "esios_geo_name"
+                ),
+            )
+        )
+
+        validate_all_autonomous_communities_matched(
+            esios_installed_capacity,
+            dataset_name=(
+                "silver_esios_installed_capacity_monthly"
+            ),
+        )
+
         print("=" * 80)
         print(
-            "ESIOS GEOGRAPHY FIX - AFFECTED TABLE ONLY"
+            "ESIOS GEOGRAPHY FIX - AFFECTED TABLES ONLY"
         )
         print("=" * 80)
 
@@ -357,6 +393,16 @@ def main() -> None:
             table_name=TABLE_ESIOS_ENERGY_HOURLY,
             natural_key=KEY_ESIOS,
             view_name="src_esios_energy_hourly",
+        )
+
+        merge_into_table(
+            spark=spark,
+            df=esios_installed_capacity,
+            table_name=TABLE_ESIOS_INSTALLED_CAPACITY,
+            natural_key=KEY_ESIOS,
+            view_name=(
+                "src_esios_installed_capacity"
+            ),
         )
 
         print("=" * 80)
@@ -550,6 +596,10 @@ def main() -> None:
         spark
     )
 
+    # ------------------------------------------------------------------------
+    # ESIOS hourly energy -> canonical CNIG province
+    # ------------------------------------------------------------------------
+
     esios_energy_hourly = (
         enrich_with_cnig_province(
             esios_energy_hourly,
@@ -562,6 +612,28 @@ def main() -> None:
         esios_energy_hourly,
         dataset_name=(
             "silver_esios_energy_hourly"
+        ),
+    )
+
+    # ------------------------------------------------------------------------
+    # ESIOS monthly installed capacity
+    # -> canonical CNIG autonomous community
+    # ------------------------------------------------------------------------
+
+    esios_installed_capacity = (
+        enrich_with_cnig_autonomous_community(
+            esios_installed_capacity,
+            cnig_autonomous_communities,
+            source_autonomous_community_column=(
+                "esios_geo_name"
+            ),
+        )
+    )
+
+    validate_all_autonomous_communities_matched(
+        esios_installed_capacity,
+        dataset_name=(
+            "silver_esios_installed_capacity_monthly"
         ),
     )
 

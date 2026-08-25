@@ -9,7 +9,9 @@ from silver.esios import build_esios_silver
 from silver.open_meteo import build_open_meteo_silver
 
 from silver.geography import (
+    enrich_with_cnig_autonomous_community,
     enrich_with_cnig_province,
+    validate_all_autonomous_communities_matched,
     validate_all_provinces_matched,
 )
 
@@ -330,6 +332,14 @@ def main() -> None:
         )
     )
 
+    esios_installed_capacity = (
+        enrich_with_cnig_autonomous_community(
+            esios_installed_capacity,
+            cnig_autonomous_communities,
+            source_autonomous_community_column="esios_geo_name",
+        )
+    )
+
     # ------------------------------------------------------------------------
     # Validate canonical province resolution
     # ------------------------------------------------------------------------
@@ -373,6 +383,13 @@ def main() -> None:
         esios_energy_hourly,
         dataset_name=(
             "silver_esios_energy_hourly"
+        ),
+    )
+
+    validate_all_autonomous_communities_matched(
+        esios_installed_capacity,
+        dataset_name=(
+            "silver_esios_installed_capacity_monthly"
         ),
     )
 

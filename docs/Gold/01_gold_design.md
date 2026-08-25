@@ -112,8 +112,9 @@ granularity that can be supported by the validated source data.
                                                         to 15 minutes
 
   Gold 4            Spain/Peninsula   5 minutes         High-frequency
-                    depending on                        ESIOS energy data
-                    indicator                           
+                    depending on                        ESIOS power and
+                    indicator                           derived interval
+                                                        energy
   -----------------------------------------------------------------------
 
 ### 3.1 Geographical rule
@@ -244,7 +245,7 @@ does not change the physical grain.
 
 ## 5.6 Iceberg Partitioning
 
-`day(gold_timestamp)`
+`days(gold_timestamp)`
 
 Province is not added to the partition specification.
 
@@ -363,6 +364,16 @@ The selected source is retained in:
 -   `temperature_source`
 -   `humidity_source`
 -   `precipitation_source`
+
+### AEMET unresolved-station geography rule
+
+An AEMET observation whose `station_id` cannot be resolved through the
+validated station/geographical mapping must not be assigned an invented
+province.
+
+Such observations are excluded from the Province × hour Gold
+aggregation while remaining available in the upstream layers for
+traceability and future catalogue correction.
 
 ## 5.8 Hourly Energy Transformations
 
@@ -519,6 +530,10 @@ Weather:
 
 `point → province → Spain`
 
+and, independently for the peninsular scope:
+
+`point → province → approved Peninsula provinces → Peninsula`
+
 Energy:
 
 `ESIOS 5 min → MW-to-MWh interval conversion → three-interval aggregation → 15 min`
@@ -570,7 +585,7 @@ Spain and Peninsula are not treated as equivalent.
 
 ## 7.6 Iceberg Partitioning
 
-`day(gold_timestamp)`
+`days(gold_timestamp)`
 
 No additional geographical partition.
 
@@ -579,16 +594,42 @@ No additional geographical partition.
 Open-Meteo already provides the required 15-minute temporal grain. No
 additional temporal aggregation is performed.
 
-For scalar variables:
+For the Spain scope, scalar variables follow:
 
 `points → AVG by province → AVG across provinces → Spain × 15 min`
 
-For wind directions:
+For the Spain scope, wind directions follow:
 
 `points → circular mean by province → circular mean across provinces → Spain × 15 min`
 
-A direct national average across all points must not replace this
-approved two-stage spatial aggregation.
+For the Peninsula scope, weather is aggregated independently from the
+validated province-level Open-Meteo data. Spain weather must never be
+relabelled as Peninsula weather.
+
+The validated non-peninsular province codes excluded from the Peninsula
+aggregation are:
+
+-   `07` — Illes Balears;
+-   `35` — Las Palmas;
+-   `38` — Santa Cruz de Tenerife;
+-   `51` — Ceuta;
+-   `52` — Melilla.
+
+Therefore the validated Peninsula weather aggregation uses 47 eligible
+province entities from the 52 province-level entities available in the
+canonical geographical preparation.
+
+For scalar variables:
+
+`eligible provinces → AVG across provinces → Peninsula × 15 min`
+
+For wind directions:
+
+`eligible provinces → circular mean across provinces → Peninsula × 15 min`
+
+A direct national average across all points must not replace the
+approved two-stage spatial aggregation. Spain and Peninsula must remain
+distinct analytical scopes.
 
 ## 7.8 Energy Transformation: 5 min → 15 min
 
@@ -685,7 +726,7 @@ Exactly one row per geographical scope and 5-minute timestamp.
 
 ## 8.6 Iceberg Partitioning
 
-`day(gold_timestamp)`
+`days(gold_timestamp)`
 
 ## 8.7 Selected Indicators
 
@@ -868,6 +909,18 @@ Natural key:
 
 `(geography_level, geography_code)`
 
+The validated national Gold keys are:
+
+-   Spain: `COUNTRY:ES`
+-   Peninsula: `PENINSULA:ES-PEN`
+
+These two keys are canonical and must remain distinct.
+
+The literal serialization for Province and Autonomous Community keys
+must preserve the same deterministic, stable, reproducible, and unique
+properties. It must not be invented or changed without implementation
+evidence and explicit approval.
+
 ## 10.5 Territorial Hierarchy
 
 Where applicable:
@@ -1000,6 +1053,25 @@ This prevents artificial multiplication such as:
 `3 weather stations × 4 Open-Meteo points × 1 ESIOS value`
 
 Individual station and point observations remain in Silver.
+
+## 13.2 Duplicate handling rule
+
+Duplicates at an analytical natural grain must be treated as an error,
+not silently removed.
+
+Approved behavior:
+
+-   duplicate fact natural key → error;
+-   duplicate metric grain + `indicator_id` → error;
+-   duplicate AEMET `station_id` in the station master → error;
+-   duplicate CNIG `autonomous_community_code` in the canonical master
+    → error;
+-   `dropDuplicates()` must not be used to hide analytical fact
+    duplication.
+
+A distinct geographical projection may only be used when constructing
+a set of geographical combinations for contradiction detection. It
+must not remove analytical observations from a fact dataset.
 
 ------------------------------------------------------------------------
 
@@ -1386,7 +1458,7 @@ Arithmetic `AVG(direction)` is not valid.
 
 ## 18.13 National Weather Aggregation Controls
 
-For `gold_fact_country_15min`:
+For `gold_fact_country_15min`, Spain weather follows:
 
 `point → province → Spain`
 
@@ -1397,6 +1469,16 @@ Scalar variables:
 Directions:
 
 `circular mean(points by province) → circular mean(provinces)`
+
+Peninsula weather must be calculated independently from province-level
+weather after excluding province codes `07`, `35`, `38`, `51`, and
+`52`.
+
+The following transformation is prohibited:
+
+`Spain weather → relabel as Peninsula`
+
+Spain and Peninsula must remain independent geographical scopes.
 
 ## 18.14 Energy Integrity: 5 min → 15 min
 
@@ -1579,3 +1661,27 @@ The physical Gold implementation must follow this document.
 New metrics, indicators, geographical levels, temporal grains,
 transformations, or integration rules must not be introduced without
 explicit approval.
+
+## 21.1 Current implementation checkpoint
+
+The implementation has been validated against this design through the
+following completed Gold steps:
+
+-   **4.5.2 — Silver → Gold transformations:** completed and validated;
+-   **4.5.3 — Gold unit-test suite:** completed and validated with
+    `88 passed`;
+-   **4.5.4 — physical Gold table creation:** completed and validated.
+
+At the end of 4.5.4:
+
+-   namespace `lakehouse.gold` exists;
+-   the 6 approved physical tables exist;
+-   all 6 tables are registered as Apache Iceberg tables;
+-   the physical schemas match the schemas defined in this document;
+-   the partition specifications match the approved design;
+-   table creation uses `CREATE TABLE IF NOT EXISTS`;
+-   a second execution preserved the original Iceberg metadata version,
+    demonstrating that existing tables were not unnecessarily recreated;
+-   the tables remain empty at this checkpoint.
+
+**4.5.5 — persistence of real Gold data remains pending.**

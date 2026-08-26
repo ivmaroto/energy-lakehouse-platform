@@ -1,3 +1,4 @@
+
 # Gold Layer Implementation and Validation
 
 ## 1. Purpose
@@ -1855,8 +1856,8 @@ and new physical Parquet objects even when the logical Gold result is
 unchanged.
 
 This is accepted at the current implementation checkpoint. Physical
-Iceberg optimization is deferred to phase 4.7, where optimizations will
-be evaluated against the real persisted tables.
+Iceberg optimization is evaluated later in this document against the
+real persisted tables.
 
 ## 25.7 Visualization Layer
 
@@ -1924,7 +1925,7 @@ The current validated Gold implementation checkpoint is:
 4.5.9   End-to-end validation                   COMPLETED AND VALIDATED
 4.5.10  Documentation                           COMPLETED
 4.5.11  Final Gold audit                        COMPLETED AND VALIDATED
-4.5.12  Git closure                             PARTIALLY VALIDATED
+4.5.12  Git closure                             COMPLETED AND VALIDATED
 4.5.13  Formal Gold closure                     PENDING
 ```
 
@@ -1942,9 +1943,11 @@ The implementation was committed with:
 
 A clean working tree was reported after the commit.
 
-Synchronization with `origin/main` has not yet been recorded as validated
-evidence in this document. Therefore, 4.5.12 is not marked as fully
-completed.
+The implementation commit was later confirmed as synchronized with
+`origin/main` when the subsequent repository push advanced `main` from
+`519872f` to `5305076` successfully.
+
+Therefore, 4.5.12 is completed and validated.
 
 Formal closure of 4.5.13 remains pending.
 
@@ -2527,4 +2530,223 @@ At closure, the local `main` branch was reported as up to date with
 No new tables, indicators, grains, metrics, or transformation rules were
 introduced during this validation work.
 
-The next planned activity is Iceberg optimization.
+Iceberg physical optimization is evaluated in the following section.
+
+---
+
+# 29. Iceberg Physical Optimization Assessment
+
+## 29.1 Purpose and Scope
+
+This section evaluates the physical state of the persisted Gold Iceberg
+tables and determines whether maintenance or optimization operations are
+justified by the real current data volume.
+
+No optimization operation is selected in advance. The decision is based
+on measured table state.
+
+The assessment covers:
+
+- active data-file count;
+- total active data-file size;
+- average file size;
+- snapshot count;
+- manifest count;
+- partition count;
+- logical row-count preservation;
+- Spark consultability;
+- Trino consultability.
+
+No Gold transformation code, metric mapping, schema, analytical rule, or
+automated test is modified as part of this assessment.
+
+## 29.2 Physical Baseline
+
+The six persisted Gold tables were inspected through the Iceberg metadata
+tables.
+
+Validated baseline:
+
+| Table | Active data files | Total bytes | Average file bytes | Snapshots | Manifests | Partition rows |
+|---|---:|---:|---:|---:|---:|---:|
+| `gold_fact_province_hourly` | 5 | 413,551 | 82,710.2 | 2 | 2 | 5 |
+| `gold_fact_installed_capacity_monthly` | 1 | 8,132 | 8,132.0 | 2 | 2 | 1 |
+| `gold_fact_country_15min` | 5 | 104,974 | 20,994.8 | 2 | 2 | 5 |
+| `gold_fact_country_5min` | 5 | 108,881 | 21,776.2 | 2 | 2 | 5 |
+| `gold_dim_time` | 1 | 72,707 | 72,707.0 | 2 | 2 | 1 |
+| `gold_dim_geography` | 1 | 8,738 | 8,738.0 | 2 | 2 | 1 |
+
+The current Gold layer therefore contains:
+
+```text
+18 active data files
+```
+
+The three principal partitioned fact tables contain five active data
+files each, matching their five current partition rows.
+
+The monthly capacity fact and both dimensions contain one active data
+file each.
+
+## 29.3 Optimization-Need Evaluation
+
+The measured physical state does not justify an Iceberg maintenance
+operation at the current data volume.
+
+### 29.3.1 Data-File Compaction
+
+**NOT REQUIRED**
+
+Although the individual files are small in absolute size, the current
+state does not exhibit a small-file proliferation problem.
+
+Validated evidence:
+
+- only 18 active data files exist across all six Gold tables;
+- `gold_fact_province_hourly` contains 5 active files for 5 current
+  partition rows;
+- `gold_fact_country_15min` contains 5 active files for 5 current
+  partition rows;
+- `gold_fact_country_5min` contains 5 active files for 5 current
+  partition rows;
+- the remaining tables contain one active file each.
+
+Running a data-file rewrite would therefore introduce additional
+maintenance and physical rewrites without a demonstrated fragmentation
+problem.
+
+### 29.3.2 Snapshot Expiration
+
+**NOT REQUIRED**
+
+Every Gold table contains only:
+
+```text
+2 snapshots
+```
+
+This does not represent material snapshot accumulation at the current
+checkpoint.
+
+### 29.3.3 Manifest Rewrite
+
+**NOT REQUIRED**
+
+Every Gold table contains only:
+
+```text
+2 manifests
+```
+
+No manifest proliferation was identified.
+
+### 29.3.4 Partition Redesign
+
+**NOT REQUIRED**
+
+No evidence was found that the current partition strategy is causing
+physical fragmentation or an operational problem at the current data
+volume.
+
+No partition specification is therefore changed.
+
+## 29.4 Maintenance Decision
+
+The measured state leads to the following decision:
+
+```text
+Data-file compaction       NOT REQUIRED
+Snapshot expiration        NOT REQUIRED
+Manifest rewrite           NOT REQUIRED
+Partition redesign         NOT REQUIRED
+```
+
+No Iceberg maintenance operation was executed.
+
+This is a deliberate engineering decision based on measured physical
+state rather than an omitted optimization task.
+
+Optimization remains available for future reassessment when data volume,
+snapshot history, manifest count, or file fragmentation increases.
+
+## 29.5 Logical-State Validation
+
+Because no physical maintenance operation was justified, the persisted
+logical state was revalidated without modifying the tables.
+
+Spark returned:
+
+| Gold table | Rows |
+|---|---:|
+| `gold_fact_province_hourly` | 5,604 |
+| `gold_fact_installed_capacity_monthly` | 19 |
+| `gold_fact_country_15min` | 776 |
+| `gold_fact_country_5min` | 2,304 |
+| `gold_dim_time` | 1,649 |
+| `gold_dim_geography` | 73 |
+
+Trino independently returned exactly the same six row counts:
+
+| Gold table | Rows |
+|---|---:|
+| `gold_fact_province_hourly` | 5,604 |
+| `gold_fact_installed_capacity_monthly` | 19 |
+| `gold_fact_country_15min` | 776 |
+| `gold_fact_country_5min` | 2,304 |
+| `gold_dim_time` | 1,649 |
+| `gold_dim_geography` | 73 |
+
+The persisted Gold layer therefore remained fully consultable from both
+Spark and Trino.
+
+## 29.6 Baseline-versus-Final Physical Comparison
+
+A second physical metadata inspection was performed after the
+optimization decision.
+
+Because no maintenance operation was executed, the expected final state
+was identical to the baseline.
+
+Validated final state:
+
+| Table | Data files | Total bytes | Snapshots | Manifests | Partition rows |
+|---|---:|---:|---:|---:|---:|
+| `gold_fact_province_hourly` | 5 | 413,551 | 2 | 2 | 5 |
+| `gold_fact_installed_capacity_monthly` | 1 | 8,132 | 2 | 2 | 1 |
+| `gold_fact_country_15min` | 5 | 104,974 | 2 | 2 | 5 |
+| `gold_fact_country_5min` | 5 | 108,881 | 2 | 2 | 5 |
+| `gold_dim_time` | 1 | 72,707 | 2 | 2 | 1 |
+| `gold_dim_geography` | 1 | 8,738 | 2 | 2 | 1 |
+
+The baseline and final physical states match exactly.
+
+Therefore:
+
+- no data files were rewritten;
+- no snapshots were expired;
+- no manifests were rewritten;
+- no partition specification was changed;
+- no logical row count changed;
+- Spark consultability remained intact;
+- Trino consultability remained intact.
+
+## 29.7 Conclusion
+
+**COMPLETED AND VALIDATED**
+
+The physical Gold Iceberg state was measured before making any
+optimization decision.
+
+The current volume does not exhibit data-file, snapshot, manifest, or
+partition fragmentation that justifies maintenance.
+
+No physical optimization was therefore executed.
+
+The validated engineering conclusion is:
+
+> Iceberg maintenance should be applied when measured physical growth or
+> fragmentation demonstrates a real benefit, rather than as an
+> unconditional operation on already healthy tables.
+
+The same physical metrics can be reassessed as the Lakehouse accumulates
+more data, files, snapshots, and manifests.

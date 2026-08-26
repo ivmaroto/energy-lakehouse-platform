@@ -29,7 +29,7 @@ consumption.
 The validated downstream boundary at this checkpoint is Trino. The
 subsequent visualization layer is not claimed as validated here.
 
-At the current checkpoint:
+At the 4.5.10 documentation checkpoint recorded in this introductory section:
 
 - **4.5.1 — Gold structure preparation:** completed.
 - **4.5.2 — Silver → Gold transformations:** completed and validated.
@@ -692,19 +692,25 @@ Coverage includes:
 - `MERGE` generation and preservation of `gold_created_at`;
 - Gold persistence orchestration.
 
-## 12.3 Final Test Execution
+## 12.3 Validated Full-Suite Execution
 
-Final command:
+Validated command:
 
 ```powershell
 $env:PYTHONPATH="$PWD\spark\jobs"
 pytest tests\gold -v
 ```
 
-Final result:
+Validated result:
 
 ```text
 111 passed in 204.68s (0:03:24)
+```
+
+A later full pre-commit execution produced:
+
+```text
+111 passed in 195.95s (0:03:15)
 ```
 
 The dedicated persistence test module also validated:
@@ -1908,7 +1914,7 @@ The current validated Gold implementation checkpoint is:
 
 ```text
 4.5.1   Gold structure preparation              COMPLETED
-4.5.2   Silver → Gold transformations           COMPLETED AND VALIDATED
+4.5.2   Silver -> Gold transformations          COMPLETED AND VALIDATED
 4.5.3   Gold automated tests                    COMPLETED AND VALIDATED
 4.5.4   Physical Gold table creation            COMPLETED AND VALIDATED
 4.5.5   Real Gold persistence                   COMPLETED AND VALIDATED
@@ -1917,11 +1923,571 @@ The current validated Gold implementation checkpoint is:
 4.5.8   Trino validation                        COMPLETED AND VALIDATED
 4.5.9   End-to-end validation                   COMPLETED AND VALIDATED
 4.5.10  Documentation                           COMPLETED
+4.5.11  Final Gold audit                        COMPLETED AND VALIDATED
+4.5.12  Git closure                             PARTIALLY VALIDATED
+4.5.13  Formal Gold closure                     PENDING
 ```
 
-The next Gold implementation step is:
+The later final pre-commit Gold automated validation executed successfully with:
 
-`4.5.11 — final Gold audit`
+```text
+111 passed in 195.95s (0:03:15)
+```
 
-No later Gold step is marked as completed in this document without
-execution evidence.
+The implementation was committed with:
+
+```text
+519872f Implement and validate Gold layer
+```
+
+A clean working tree was reported after the commit.
+
+Synchronization with `origin/main` has not yet been recorded as validated
+evidence in this document. Therefore, 4.5.12 is not marked as fully
+completed.
+
+Formal closure of 4.5.13 remains pending.
+
+---
+
+# 28. 4.6 — Lakehouse Integration and Query Validation
+
+## 28.1 Status and Scope
+
+Section 4.6 validates the Lakehouse as an integrated analytical system.
+
+No new tables, indicators, temporal grains, geographical grains, metric
+definitions, unit conversions, interpolation rules, or analytical
+business rules are introduced in this section.
+
+The validation scope is:
+
+```text
+Bronze
+  ->
+Silver
+  ->
+Gold
+  ->
+Spark / Trino
+  ->
+Analytical queries
+```
+
+The purpose is to demonstrate:
+
+- physical and logical consultability of the Lakehouse;
+- traceability between layers;
+- preservation of temporal and geographical semantics;
+- preservation of measurement units;
+- integrated analytical flows;
+- reproducibility of analytical results;
+- preservation of NULL semantics;
+- separation between Spain and Peninsula scopes.
+
+---
+
+## 28.2 Lakehouse Inventory and Consultability
+
+### 28.2.1 Bronze
+
+The physical Bronze layer was validated in MinIO under:
+
+```text
+/data/energy-lakehouse/bronze
+```
+
+The validated Bronze source domains are:
+
+```text
+aemet
+cnig
+esios
+open_meteo
+```
+
+Representative physical datasets were inspected for:
+
+- AEMET current observations;
+- CNIG provinces;
+- Open-Meteo hourly weather;
+- ESIOS hourly generation;
+- ESIOS 5-minute power;
+- ESIOS installed capacity.
+
+Bronze preserves source-oriented raw data before Silver normalization.
+
+### 28.2.2 Silver
+
+Spark catalog discovery validated 12 Silver Iceberg tables:
+
+```text
+silver_open_meteo_15min
+silver_cnig_provinces
+silver_cnig_autonomous_communities
+silver_cnig_municipalities
+silver_esios_energy_hourly
+silver_esios_power_5min
+silver_esios_installed_capacity_monthly
+silver_aemet_stations
+silver_aemet_daily_climatology
+silver_aemet_current_observations
+silver_open_meteo_hourly
+silver_open_meteo_historical_forecast
+```
+
+The persisted hourly ESIOS Silver table contained:
+
+```text
+silver_esios_energy_hourly = 30107 rows
+```
+
+### 28.2.3 Gold
+
+Spark and Trino catalog discovery validated the six Gold Iceberg tables:
+
+```text
+gold_fact_province_hourly
+gold_fact_installed_capacity_monthly
+gold_fact_country_15min
+gold_fact_country_5min
+gold_dim_time
+gold_dim_geography
+```
+
+The persisted province-hour fact contained:
+
+```text
+gold_fact_province_hourly = 5604 rows
+```
+
+Both Silver and Gold were successfully discovered and queried through
+Trino using the Iceberg catalog.
+
+---
+
+## 28.3 Bronze -> Silver -> Gold Traceability
+
+Representative real observations were traced through the Lakehouse.
+
+### 28.3.1 ESIOS Hourly Generation
+
+A real wind-generation observation was traced from Bronze:
+
+```text
+indicator_id:     1159
+indicator_name:   Generación medida Eólica terrestre
+province:         Albacete
+source_timestamp: 2026-07-28 00:00:00 UTC
+value:            430.464
+```
+
+Silver preserved the observation:
+
+```text
+indicator_id:          1159
+province:              Albacete
+observation_timestamp: 2026-07-28 00:00:00
+value:                 430.464
+```
+
+Gold applied the configured ESIOS temporal alignment:
+
+```text
+gold_timestamp:      2026-07-28 01:00:00
+wind_generation_mwh: 430.464
+```
+
+The same Gold observation was queried successfully through Trino.
+
+### 28.3.2 AEMET
+
+A representative Bronze observation was:
+
+```text
+station_id:     0002I
+timestamp:      2026-08-17 01:00:00 UTC
+temperature:    27.3
+humidity:       83
+precipitation:  0.0
+```
+
+Silver preserved the observation and resolved station `0002I` to:
+
+```text
+province_code:               43
+province_name:               Tarragona
+autonomous_community_code:   09
+autonomous_community_name:   Cataluña/Catalunya
+```
+
+For Tarragona at that timestamp, 12 AEMET observations produced:
+
+```text
+temperature:   24.15
+humidity:      80.25
+precipitation: 0.0
+```
+
+The Gold province-hour record contained the same aggregated values and
+identified AEMET as the selected source.
+
+### 28.3.3 Open-Meteo
+
+A representative Bronze hourly observation from station `C659M` was
+traced through Silver.
+
+The validated analytical values included:
+
+```text
+temperature:              22.9
+humidity:                 74
+precipitation:            0.0
+shortwave_radiation:      146.0
+direct_normal_irradiance: 328.4
+```
+
+For province code `35` (Las Palmas), 39 Silver observations at the
+selected timestamp produced:
+
+```text
+average solar radiation: 159.230769
+average DNI:             369.689744
+```
+
+Gold contained the same provincial aggregate values.
+
+### 28.3.4 ESIOS 5-Minute Power and Interval Energy
+
+Three real indicator `2038` observations were traced:
+
+```text
+00:00 -> 4352 MW
+00:05 -> 4350 MW
+00:10 -> 4331 MW
+```
+
+Silver preserved the source power values.
+
+After the configured one-hour temporal alignment, Gold 5-minute records
+contained:
+
+```text
+01:00 -> 4352 MW -> 362.66666666666663 MWh
+01:05 -> 4350 MW -> 362.5 MWh
+01:10 -> 4331 MW -> 360.91666666666663 MWh
+```
+
+The validated conversion rule is:
+
+```text
+interval_energy_mwh = power_mw * 5 / 60
+```
+
+The corresponding Gold 15-minute interval contained:
+
+```text
+1086.0833333333333 MWh
+```
+
+which is the sum of the three real 5-minute interval-energy values.
+
+### 28.3.5 Installed Capacity
+
+A real wind installed-capacity observation was traced:
+
+```text
+indicator_id:     1485
+ESIOS geo_id:     4
+ESIOS geography:  Andalucía
+value:            3747.295 MW
+```
+
+Silver contained:
+
+```text
+2026-07-31 22:00:00
+Andalucía
+3747.295 MW
+```
+
+Gold contained:
+
+```text
+year_month:                     2026-07
+autonomous_community_code:      01
+autonomous_community_name:      Andalucía
+wind_installed_capacity_mw:     3747.295
+```
+
+No MW-to-MWh conversion is applied to installed capacity.
+
+### 28.3.6 CNIG Geography
+
+The Bronze CNIG province source contained:
+
+```text
+02;Albacete;08;Castilla-La Mancha;Albacete
+```
+
+Silver contained:
+
+```text
+province_code:               02
+province_name:               Albacete
+autonomous_community_code:   08
+autonomous_community_name:   Castilla-La Mancha
+```
+
+Gold geography contained:
+
+```text
+geography_level:             PROVINCE
+geography_code:              02
+geography_name:              Albacete
+province_code:               02
+province_name:               Albacete
+autonomous_community_code:   08
+autonomous_community_name:   Castilla-La Mancha
+country_code:                ES
+country_name:                España
+```
+
+The persisted deterministic geography key was:
+
+```text
+de7c6c1af5556a4de9849fa51bbd954f0b839767f95c0533184581c156793c46
+```
+
+---
+
+## 28.4 Integrated Analytical Flows
+
+### 28.4.1 Province × Hour
+
+`gold_fact_province_hourly` was validated as an integrated analytical
+product combining:
+
+- province and autonomous-community geography;
+- temperature;
+- humidity;
+- precipitation;
+- wind at 80 m and 120 m;
+- solar radiation;
+- direct normal irradiance;
+- hourly energy-generation metrics.
+
+Representative records simultaneously contained real weather and
+multiple energy technologies.
+
+The analytical grain remains:
+
+```text
+Province × hour
+```
+
+### 28.4.2 Spain and Peninsula × 15 Minutes
+
+At:
+
+```text
+2026-07-28 01:00:00
+```
+
+the Spain record contained:
+
+```text
+geography_key:                                  COUNTRY:ES
+wind_generation_energy_mwh_15min:               1086.0833333333333
+solar_photovoltaic_generation_energy_mwh_15min: 33.83333333333333
+hydraulic_generation_energy_mwh_15min:          1111.5833333333333
+real_demand_energy_mwh_15min:                   NULL
+```
+
+The Peninsula record contained:
+
+```text
+geography_key:                  PENINSULA:ES-PEN
+real_demand_energy_mwh_15min:   6819.0
+generation metrics:             NULL
+```
+
+This validates the analytical rule:
+
+```text
+Spain != Peninsula
+```
+
+Generation with Spain scope is not assigned to the Peninsula record, and
+Peninsula demand is not assigned to the Spain record.
+
+### 28.4.3 Autonomous Community × Month
+
+`gold_fact_installed_capacity_monthly` was queried successfully at:
+
+```text
+Autonomous Community × month
+```
+
+The July 2026 data contained real installed-capacity values for
+autonomous communities and technologies.
+
+Capacity remains expressed in MW.
+
+No artificial province-level disaggregation is performed.
+
+---
+
+## 28.5 Analytical Queries and Reproducibility
+
+### 28.5.1 Solar Radiation and Photovoltaic Generation
+
+Province-level queries combined:
+
+- solar radiation;
+- direct normal irradiance;
+- photovoltaic generation.
+
+Representative results contained 94 paired observations per province in
+the selected sample.
+
+Examples of observed correlations were:
+
+```text
+Alacant/Alicante
+radiation vs photovoltaic generation: 0.9971
+DNI vs photovoltaic generation:       0.9570
+
+Zaragoza
+radiation vs photovoltaic generation: 0.9649
+DNI vs photovoltaic generation:       0.9686
+```
+
+These values demonstrate analytical query capability and observed
+association only. They are not interpreted as evidence of causality.
+
+### 28.5.2 Precipitation and Hydraulic Generation
+
+Province-level precipitation and hydraulic-generation metrics were
+queried together successfully.
+
+Examples included:
+
+```text
+Araba/Álava   correlation: -0.0484
+Albacete      correlation: -0.3317
+Almería       correlation:  0.0128
+Burgos        correlation:  0.0476
+```
+
+Some provinces returned `NULL` correlation where the selected
+precipitation series did not contain sufficient variability.
+
+No value was substituted for these mathematically undefined results.
+
+### 28.5.3 Territorial Comparison
+
+Wind conditions and wind generation were aggregated by autonomous
+community.
+
+The query returned 14 autonomous communities with simultaneous valid
+wind-speed and wind-generation observations.
+
+The reduced result set is caused by the analytical query requiring both
+metrics to be non-NULL; it does not represent the geographical master
+cardinality.
+
+### 28.5.4 Generation Mix Evolution
+
+Daily queries successfully combined:
+
+- wind generation;
+- photovoltaic generation;
+- solar thermal generation;
+- hydraulic generation;
+- nuclear generation;
+- combined-cycle generation;
+- official ESIOS total generation.
+
+Real results were obtained for:
+
+```text
+2026-07-28
+2026-07-29
+2026-07-30
+2026-07-31
+```
+
+`total_generation_mwh` is preserved as the official ESIOS total metric.
+It is not reconstructed by summing selected technology columns.
+
+A `2026-08-17` weather-covered record remained present with energy
+metrics equal to `NULL`.
+
+This is consistent with the validated FULL OUTER JOIN policy:
+
+```text
+NULL != 0
+```
+
+Missing energy coverage is preserved as missing data rather than being
+replaced by zero or causing the weather record to be discarded.
+
+### 28.5.5 Spark and Trino Reproducibility
+
+A previously validated analytical query for Albacete produced the same
+result through Spark and Trino:
+
+```text
+province_code:            02
+province_name:            Albacete
+observations:             94
+average wind speed:       13.872
+average wind generation:  283.021
+correlation:              0.1405
+```
+
+This validates reproducible consumption of the persisted Iceberg Gold
+layer from both analytical engines.
+
+---
+
+## 28.6 Cross-Layer Audit and Documentation
+
+The 4.6 evidence was consolidated in this document without introducing
+new analytical rules or changing previously validated layer semantics.
+
+A consistency audit was performed across the recorded 4.5 and 4.6
+evidence. The audit confirmed:
+
+- Bronze, Silver, and Gold table inventories are consistent with the
+  validated catalog state;
+- representative Bronze -> Silver -> Gold traces preserve the validated
+  values, units, and geographical semantics;
+- ESIOS temporal alignment is recorded as a configured Gold concern;
+- installed capacity remains MW and interval energy remains MWh;
+- Spain and Peninsula remain distinct analytical scopes;
+- NULL values are preserved as missing data and are not rewritten as zero;
+- analytical results recorded in 4.6 are consistent with the previously
+  validated Gold integration and Trino evidence;
+- the document distinguishes earlier full-suite execution evidence from
+  the later final pre-commit test execution.
+
+No contradictory transformation rule, unit rule, geography rule, or
+validated row-count claim was introduced by the 4.6 documentation update.
+
+---
+
+## 28.7 Current 4.6 Checkpoint
+
+The current validated 4.6 status is:
+
+```text
+4.6.1  Objective and validation scope                  COMPLETED
+4.6.2  Lakehouse inventory and consultability          COMPLETED AND VALIDATED
+4.6.3  Bronze -> Silver -> Gold traceability            COMPLETED AND VALIDATED
+4.6.4  Integrated analytical flows                     COMPLETED AND VALIDATED
+4.6.5  Analytical queries and reproducibility          COMPLETED AND VALIDATED
+4.6.6  Cross-layer audit and documentation             COMPLETED AND VALIDATED
+4.6.7  Closure criteria and deliverables               PENDING
+```

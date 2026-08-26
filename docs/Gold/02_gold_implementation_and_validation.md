@@ -1950,11 +1950,11 @@ Formal closure of 4.5.13 remains pending.
 
 ---
 
-# 28. 4.6 — Lakehouse Integration and Query Validation
+# 28. Lakehouse Integration and Query Validation
 
 ## 28.1 Status and Scope
 
-Section 4.6 validates the Lakehouse as an integrated analytical system.
+This section validates the Lakehouse as an integrated analytical system.
 
 No new tables, indicators, temporal grains, geographical grains, metric
 definitions, unit conversions, interpolation rules, or analytical
@@ -2454,11 +2454,11 @@ layer from both analytical engines.
 
 ## 28.6 Cross-Layer Audit and Documentation
 
-The 4.6 evidence was consolidated in this document without introducing
+The Lakehouse integration evidence was consolidated in this document without introducing
 new analytical rules or changing previously validated layer semantics.
 
-A consistency audit was performed across the recorded 4.5 and 4.6
-evidence. The audit confirmed:
+A consistency audit was performed across the recorded Gold implementation
+and Lakehouse integration evidence. The audit confirmed:
 
 - Bronze, Silver, and Gold table inventories are consistent with the
   validated catalog state;
@@ -2468,26 +2468,63 @@ evidence. The audit confirmed:
 - installed capacity remains MW and interval energy remains MWh;
 - Spain and Peninsula remain distinct analytical scopes;
 - NULL values are preserved as missing data and are not rewritten as zero;
-- analytical results recorded in 4.6 are consistent with the previously
+- analytical results recorded in this integration section are consistent with the previously
   validated Gold integration and Trino evidence;
 - the document distinguishes earlier full-suite execution evidence from
   the later final pre-commit test execution.
 
 No contradictory transformation rule, unit rule, geography rule, or
-validated row-count claim was introduced by the 4.6 documentation update.
+validated row-count claim was introduced by the Lakehouse integration documentation update.
 
 ---
 
-## 28.7 Current 4.6 Checkpoint
+## 28.7 Final Validation Checkpoint
 
-The current validated 4.6 status is:
+The final validation status is:
 
 ```text
-4.6.1  Objective and validation scope                  COMPLETED
-4.6.2  Lakehouse inventory and consultability          COMPLETED AND VALIDATED
-4.6.3  Bronze -> Silver -> Gold traceability            COMPLETED AND VALIDATED
-4.6.4  Integrated analytical flows                     COMPLETED AND VALIDATED
-4.6.5  Analytical queries and reproducibility          COMPLETED AND VALIDATED
-4.6.6  Cross-layer audit and documentation             COMPLETED AND VALIDATED
-4.6.7  Closure criteria and deliverables               PENDING
+Objective and validation scope                  COMPLETED
+Lakehouse inventory and consultability          COMPLETED AND VALIDATED
+Bronze -> Silver -> Gold traceability            COMPLETED AND VALIDATED
+Integrated analytical flows                     COMPLETED AND VALIDATED
+Analytical queries and reproducibility           COMPLETED AND VALIDATED
+Cross-layer audit and documentation              COMPLETED AND VALIDATED
+Closure criteria and deliverables                COMPLETED AND VALIDATED
 ```
+
+## 28.8 Closure Criteria and Deliverables
+
+**COMPLETED AND VALIDATED**
+
+The Lakehouse integration and query-validation work is formally closed.
+
+Validated closure evidence includes:
+
+- Bronze, Silver, and Gold layer consultability;
+- representative Bronze -> Silver -> Gold traceability;
+- Province × hour analytical integration;
+- Spain/Peninsula × 15-minute analytical integration;
+- Autonomous Community × month analytical integration;
+- preservation of MW and MWh semantics;
+- preservation of NULL semantics;
+- Spain and Peninsula scope separation;
+- analytical queries over real persisted data;
+- Spark and Trino result reproducibility;
+- documentation of the validated evidence;
+- successful Git commit;
+- synchronization with `origin/main`;
+- clean working tree after synchronization.
+
+The validation commit is:
+
+```text
+5305076 Document and validate Lakehouse integration
+```
+
+At closure, the local `main` branch was reported as up to date with
+`origin/main`, with no pending changes in the working tree.
+
+No new tables, indicators, grains, metrics, or transformation rules were
+introduced during this validation work.
+
+The next planned activity is Iceberg optimization.

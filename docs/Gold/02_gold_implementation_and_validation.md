@@ -1,4 +1,3 @@
-
 # Gold Layer Implementation and Validation
 
 ## 1. Purpose
@@ -1909,9 +1908,9 @@ Together they document:
 
 ---
 
-# 27. Current Gold Checkpoint
+# 27. Final Gold Checkpoint
 
-The current validated Gold implementation checkpoint is:
+The final validated Gold implementation checkpoint is:
 
 ```text
 4.5.1   Gold structure preparation              COMPLETED
@@ -1926,7 +1925,7 @@ The current validated Gold implementation checkpoint is:
 4.5.10  Documentation                           COMPLETED
 4.5.11  Final Gold audit                        COMPLETED AND VALIDATED
 4.5.12  Git closure                             COMPLETED AND VALIDATED
-4.5.13  Formal Gold closure                     PENDING
+4.5.13  Formal Gold closure                     COMPLETED AND VALIDATED
 ```
 
 The later final pre-commit Gold automated validation executed successfully with:
@@ -1949,7 +1948,11 @@ The implementation commit was later confirmed as synchronized with
 
 Therefore, 4.5.12 is completed and validated.
 
-Formal closure of 4.5.13 remains pending.
+The final cross-layer validation recorded later in this document confirms
+that the persisted Gold layer remains structurally consistent,
+consultable from Spark and Trino, documented, and synchronized with the
+repository state used for the final audit. Gold is therefore formally
+closed and 4.5.13 is completed and validated.
 
 ---
 
@@ -2750,3 +2753,248 @@ The validated engineering conclusion is:
 
 The same physical metrics can be reassessed as the Lakehouse accumulates
 more data, files, snapshots, and manifests.
+
+---
+
+# 30. Final Lakehouse Implementation Validation and Closure
+
+## 30.1 Purpose
+
+This section records the final cross-layer validation of the implemented
+Lakehouse before closing the implementation scope documented in this
+file.
+
+The purpose of this final audit is not to repeat the detailed Silver and
+Gold validation already recorded above. It confirms that the complete
+implemented state remains operational, internally consistent,
+queryable, documented, and synchronized with the repository state used
+for the final audit.
+
+No new tables, metrics, indicators, grains, transformation rules, or
+optimization operations are introduced during this final validation.
+
+## 30.2 Final Service State
+
+The final Docker Compose inspection confirmed the following services
+running:
+
+- Airflow scheduler;
+- Airflow webserver;
+- MinIO;
+- PostgreSQL;
+- Spark master;
+- Spark worker;
+- Superset;
+- Trino.
+
+The services explicitly reporting Docker health status returned:
+
+```text
+PostgreSQL   healthy
+Superset     healthy
+Trino        healthy
+```
+
+Spark master and worker, Airflow scheduler and webserver, and MinIO were
+also running successfully.
+
+This validates that the infrastructure required by the implemented
+Lakehouse remained operational at final audit time.
+
+## 30.3 Final Catalog Inventory
+
+### Spark
+
+Spark discovered the two project namespaces:
+
+```text
+gold
+silver
+```
+
+The Silver namespace contained exactly 12 tables:
+
+```text
+silver_aemet_current_observations
+silver_aemet_daily_climatology
+silver_aemet_stations
+silver_cnig_autonomous_communities
+silver_cnig_municipalities
+silver_cnig_provinces
+silver_esios_energy_hourly
+silver_esios_installed_capacity_monthly
+silver_esios_power_5min
+silver_open_meteo_15min
+silver_open_meteo_historical_forecast
+silver_open_meteo_hourly
+```
+
+The Gold namespace contained exactly 6 tables:
+
+```text
+gold_dim_geography
+gold_dim_time
+gold_fact_country_15min
+gold_fact_country_5min
+gold_fact_installed_capacity_monthly
+gold_fact_province_hourly
+```
+
+### Trino
+
+Trino discovered the Iceberg schemas:
+
+```text
+gold
+information_schema
+silver
+system
+```
+
+Trino returned the same 12 Silver tables and the same 6 Gold tables.
+
+The final catalog inventory is therefore consistent across Spark and
+Trino.
+
+## 30.4 Final Persisted Row Counts
+
+All 18 persisted Silver and Gold tables were counted through Spark.
+
+### Silver
+
+| Table | Rows |
+|---|---:|
+| `silver_aemet_current_observations` | 9,688 |
+| `silver_aemet_daily_climatology` | 2,420 |
+| `silver_aemet_stations` | 921 |
+| `silver_cnig_autonomous_communities` | 19 |
+| `silver_cnig_municipalities` | 8,132 |
+| `silver_cnig_provinces` | 52 |
+| `silver_esios_energy_hourly` | 30,107 |
+| `silver_esios_installed_capacity_monthly` | 123 |
+| `silver_esios_power_5min` | 13,824 |
+| `silver_open_meteo_15min` | 353,664 |
+| `silver_open_meteo_historical_forecast` | 88,416 |
+| `silver_open_meteo_hourly` | 88,416 |
+
+All 12 Silver tables contained persisted data.
+
+### Gold
+
+| Table | Rows |
+|---|---:|
+| `gold_fact_province_hourly` | 5,604 |
+| `gold_fact_installed_capacity_monthly` | 19 |
+| `gold_fact_country_15min` | 776 |
+| `gold_fact_country_5min` | 2,304 |
+| `gold_dim_time` | 1,649 |
+| `gold_dim_geography` | 73 |
+
+The six Gold row counts match the previously validated persisted state.
+
+No Gold count changed during the Iceberg physical optimization
+assessment.
+
+## 30.5 Final Spark and Trino Reproducibility Check
+
+A final representative analytical query was executed independently
+through Spark and Trino using Albacete (`province_code = '02'`).
+
+The query calculated:
+
+- number of valid paired observations;
+- average wind speed at 80 m;
+- average wind generation;
+- correlation between wind speed and wind generation.
+
+Spark returned:
+
+```text
+02 | Albacete | 94 | 13.872 | 283.021 | 0.1405
+```
+
+Trino returned:
+
+```text
+02 | Albacete | 94 | 13.872 | 283.021 | 0.1405
+```
+
+The results are identical.
+
+This reconfirms final analytical reproducibility over the same persisted
+Iceberg Gold state.
+
+## 30.6 Iceberg Physical-State Confirmation
+
+The preceding Iceberg assessment established that the current physical
+state does not justify data-file compaction, snapshot expiration,
+manifest rewrite, or partition redesign.
+
+The final physical state remained equal to the measured baseline:
+
+- 18 active Gold data files in total;
+- 2 snapshots per Gold table;
+- 2 manifests per Gold table;
+- unchanged partition-row counts;
+- unchanged Gold logical row counts;
+- unchanged Spark consultability;
+- unchanged Trino consultability.
+
+No physical maintenance operation was executed because no measured
+fragmentation problem justified one.
+
+## 30.7 Documentation and Repository State
+
+Immediately before this final closure-document update, Git reported:
+
+```text
+On branch main
+Your branch is up to date with 'origin/main'.
+
+nothing to commit, working tree clean
+```
+
+The repository references were:
+
+```text
+e5c8e6e (HEAD -> main, origin/main, origin/HEAD) Document Iceberg optimization assessment
+238975c Finalize Lakehouse integration documentation
+5305076 Document and validate Lakehouse integration
+```
+
+This confirms that the implementation, integration validation, and
+Iceberg assessment were committed and synchronized before the final
+closure documentation was prepared.
+
+This final document update is the only expected repository change
+resulting from the closure itself.
+
+## 30.8 Final Closure
+
+**COMPLETED AND VALIDATED**
+
+The Lakehouse implementation scope documented in this file is formally
+closed.
+
+Final validated state:
+
+```text
+Infrastructure services                    OPERATIONAL
+Silver catalog                             12 TABLES VALIDATED
+Gold catalog                                6 TABLES VALIDATED
+Silver persisted data                      VALIDATED
+Gold persisted data                        VALIDATED
+Spark consultability                       VALIDATED
+Trino consultability                       VALIDATED
+Spark / Trino reproducibility              VALIDATED
+Bronze -> Silver -> Gold traceability      VALIDATED
+Gold analytical integration                VALIDATED
+Iceberg physical assessment                VALIDATED
+Documentation                              COMPLETED
+Repository state before closure update     CLEAN AND SYNCHRONIZED
+```
+
+The implementation is ready for the subsequent visualization work.
+
+The visualization layer itself is not claimed as completed or validated
+by this document.

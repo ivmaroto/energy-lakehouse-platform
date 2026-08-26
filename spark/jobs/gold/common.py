@@ -41,6 +41,11 @@ TABLE_SILVER_AEMET_CURRENT = (
     "silver_aemet_current_observations"
 )
 
+TABLE_SILVER_AEMET_STATIONS = (
+    f"{CATALOG}.{SILVER_NAMESPACE}."
+    "silver_aemet_stations"
+)
+
 TABLE_SILVER_OPEN_METEO_HOURLY = (
     f"{CATALOG}.{SILVER_NAMESPACE}."
     "silver_open_meteo_hourly"
@@ -79,6 +84,7 @@ TABLE_SILVER_CNIG_AUTONOMOUS_COMMUNITIES = (
 
 GOLD_SOURCE_TABLES = (
     TABLE_SILVER_AEMET_CURRENT,
+    TABLE_SILVER_AEMET_STATIONS,
     TABLE_SILVER_OPEN_METEO_HOURLY,
     TABLE_SILVER_OPEN_METEO_15MIN,
     TABLE_SILVER_ESIOS_ENERGY_HOURLY,
@@ -298,3 +304,61 @@ def get_esios_time_gap_hours() -> int:
         )
 
     return value
+
+
+# ============================================================================
+# Gold geographical configuration
+# ============================================================================
+
+def get_peninsula_excluded_province_codes() -> list[str]:
+    """
+    Return the approved province codes excluded from the Peninsular scope.
+
+    The values are loaded from Gold configuration and must not be
+    hardcoded inside transformation or persistence jobs.
+    """
+    config = load_gold_config()
+
+    config_key = (
+        "peninsula_excluded_province_codes"
+    )
+
+    if config_key not in config:
+        raise ValueError(
+            "Gold configuration is missing "
+            "'peninsula_excluded_province_codes'."
+        )
+
+    province_codes = config[
+        config_key
+    ]
+
+    if (
+        not isinstance(
+            province_codes,
+            list,
+        )
+        or
+        not province_codes
+    ):
+        raise ValueError(
+            "Gold configuration "
+            "'peninsula_excluded_province_codes' "
+            "must be a non-empty list."
+        )
+
+    if not all(
+        isinstance(
+            province_code,
+            str,
+        )
+        and province_code
+        for province_code
+        in province_codes
+    ):
+        raise ValueError(
+            "Every Peninsula excluded province code "
+            "must be a non-empty string."
+        )
+
+    return province_codes

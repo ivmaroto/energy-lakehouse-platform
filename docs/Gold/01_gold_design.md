@@ -181,7 +181,7 @@ It supports analyses such as:
 
 -   wind conditions versus wind generation;
 -   solar radiation versus photovoltaic generation;
--   DNI versus solar thermal generation;
+-   DNI versus solar photovoltaic generation;
 -   precipitation versus hydroelectric generation;
 -   territorial differences;
 -   provincial electricity generation mix.
@@ -835,8 +835,17 @@ Natural keys:
 -   `(time_grain, gold_timestamp)` for submonthly grains;
 -   `(time_grain, year_month)` for `MONTH`.
 
-The literal serialization format may be fixed during implementation
-while preserving these properties.
+The implemented `time_key` is deterministic and generated using
+SHA-256 from the combination of:
+
+`time_grain + canonical temporal value`
+
+The canonical temporal value is:
+
+-   `gold_timestamp` for `FIVE_MINUTES`, `FIFTEEN_MINUTES`, and `HOUR`;
+-   `year_month` for `MONTH`.
+
+Monthly members do not use an artificial timestamp.
 
 ## 9.4 Partitioning
 
@@ -916,10 +925,20 @@ The validated national Gold keys are:
 
 These two keys are canonical and must remain distinct.
 
-The literal serialization for Province and Autonomous Community keys
-must preserve the same deterministic, stable, reproducible, and unique
-properties. It must not be invented or changed without implementation
-evidence and explicit approval.
+For Province and Autonomous Community members, the implemented
+`geography_key` is deterministic and generated using SHA-256 from the
+combination of geographical level and canonical geographical code.
+
+Conceptually:
+
+`PROVINCE + province_code`
+
+`AUTONOMOUS_COMMUNITY + autonomous_community_code`
+
+The national keys remain explicit canonical values and are not hashed:
+
+-   Spain: `COUNTRY:ES`
+-   Peninsula: `PENINSULA:ES-PEN`
 
 ## 10.5 Territorial Hierarchy
 
@@ -1082,11 +1101,29 @@ The physical Gold dimensions are:
 -   `gold_dim_time`
 -   `gold_dim_geography`
 
-Relationships follow:
+The geographical relationship is physically materialized through
+`geography_key`:
+
+`gold_dim_geography.geography_key → fact.geography_key`
+
+This relationship follows:
 
 `dimension 1 → N fact`
 
-There are no direct fact-to-fact relationships.
+The temporal dimension is conformant but is not referenced through a
+materialized `time_key` foreign-key column in the fact tables.
+
+Temporal correspondence is established through:
+
+-   `gold_timestamp` for `gold_fact_province_hourly`,
+    `gold_fact_country_15min`, and `gold_fact_country_5min`;
+-   `year_month` for `gold_fact_installed_capacity_monthly`.
+
+Therefore, `gold_dim_time` acts as a common analytical temporal
+dimension without adding a physical `time_key` column to the approved
+fact-table schemas.
+
+There are no direct fact-to-fact physical relationships.
 
 Each fact table must preserve the uniqueness of its own grain:
 
@@ -1113,15 +1150,15 @@ flowchart TB
     F3["gold_fact_country_15min<br/>Spain/Peninsula × 15 min<br/>Weather + energy"]
     F4["gold_fact_country_5min<br/>Spain/Peninsula × 5 min<br/>Energy"]
 
-    DT -->|1:N| F1
-    DT -->|1:N| F2
-    DT -->|1:N| F3
-    DT -->|1:N| F4
+    DT -.->|logical temporal conformance| F1
+    DT -.->|logical temporal conformance| F2
+    DT -.->|logical temporal conformance| F3
+    DT -.->|logical temporal conformance| F4
 
-    DG -->|1:N| F1
-    DG -->|1:N| F2
-    DG -->|1:N| F3
-    DG -->|1:N| F4
+    DG -->|1:N via geography_key| F1
+    DG -->|1:N via geography_key| F2
+    DG -->|1:N via geography_key| F3
+    DG -->|1:N via geography_key| F4
 ```
 
 ------------------------------------------------------------------------
@@ -1139,25 +1176,36 @@ Flow:
 
 ## 16.2 `gold_dim_geography`
 
-Initial complete load from:
+The dimension is deterministically rebuilt from the validated
+geographical sources required by the current Gold execution and
+persisted using `MERGE` by `geography_key`.
+
+Its canonical content is derived from:
 
 `Silver CNIG + Spain + Peninsula`
 
-After validation, the dimension is not rebuilt during normal Gold
-executions.
+Existing members are matched and updated when applicable, while new
+members are inserted.
 
-It is updated only through an explicit operation if the official
-geographical master is updated in the future.
+Re-running the same validated source state must not create duplicate
+geographical members.
 
 ## 16.3 `gold_dim_time`
 
-Initial generation covers the required Gold temporal range.
+The required temporal members are deterministically derived from the
+current Gold fact datasets for the four approved temporal grains and
+persisted using `MERGE` by `time_key`.
 
-Subsequent executions add only new required temporal members.
+Existing members are matched and new required temporal members are
+inserted without creating duplicates.
 
-## 16.4 Incremental Fact Loads
+The monthly grain is represented by `year_month` and does not fabricate
+an hourly timestamp.
 
-After the initial build, all fact tables use `MERGE` by natural key.
+## 16.4 Incremental Gold Persistence
+
+After the initial build, all six Gold tables use `MERGE` by their
+approved natural or deterministic key.
 
   ------------------------------------------------------------------------------------
   Table                                    MERGE natural key
@@ -1169,6 +1217,10 @@ After the initial build, all fact tables use `MERGE` by natural key.
   `gold_fact_country_15min`                `(geography_key, gold_timestamp)`
 
   `gold_fact_country_5min`                 `(geography_key, gold_timestamp)`
+
+  `gold_dim_time`                          `time_key`
+
+  `gold_dim_geography`                     `geography_key`
   ------------------------------------------------------------------------------------
 
 Behavior:
@@ -1177,7 +1229,14 @@ Behavior:
 
 `NOT MATCH → INSERT`
 
+`gold_created_at` is populated when a row is first inserted and is not
+updated by subsequent matched `MERGE` operations.
+
 Blind append is prohibited.
+
+A repeated execution using the same validated Silver state may create a
+new physical Iceberg snapshot, but it must preserve the same logical Gold
+state.
 
 No execution frequency is defined here because no such frequency has
 been approved as part of this design.
@@ -1551,14 +1610,19 @@ Required:
 
 ## 18.19 Dimension-to-Fact Integrity
 
-Each fact row must resolve to exactly one compatible member of the
-corresponding dimensions.
-
-Conceptually:
-
-`fact.time_key → gold_dim_time.time_key`
+Each fact row must resolve to exactly one compatible geographical member
+through:
 
 `fact.geography_key → gold_dim_geography.geography_key`
+
+Temporal integrity is validated through correspondence with the
+appropriate `gold_dim_time` member:
+
+-   `(time_grain, gold_timestamp)` for submonthly facts;
+-   `(MONTH, year_month)` for the monthly installed-capacity fact.
+
+The fact tables do not materialize a physical `time_key` foreign-key
+column.
 
 A fact must never reference a geography incompatible with its grain.
 
@@ -1664,24 +1728,99 @@ explicit approval.
 
 ## 21.1 Current implementation checkpoint
 
-The implementation has been validated against this design through the
-following completed Gold steps:
+The Gold implementation has been validated against this design through
+the following completed steps:
 
 -   **4.5.2 — Silver → Gold transformations:** completed and validated;
--   **4.5.3 — Gold unit-test suite:** completed and validated with
-    `88 passed`;
--   **4.5.4 — physical Gold table creation:** completed and validated.
+-   **4.5.3 — Gold automated tests:** completed and validated with
+    `111 passed`;
+-   **4.5.4 — physical Gold table creation:** completed and validated;
+-   **4.5.5 — Gold persistence in Iceberg/MinIO:** completed and
+    validated;
+-   **4.5.6 — persisted Gold data quality:** completed and validated;
+-   **4.5.7 — analytical integration:** completed and validated;
+-   **4.5.8 — Trino consumption:** completed and validated;
+-   **4.5.9 — end-to-end validation:** completed and validated.
 
-At the end of 4.5.4:
+The 6 approved Gold tables are physically persisted as Apache Iceberg
+tables in MinIO.
 
--   namespace `lakehouse.gold` exists;
--   the 6 approved physical tables exist;
--   all 6 tables are registered as Apache Iceberg tables;
--   the physical schemas match the schemas defined in this document;
--   the partition specifications match the approved design;
--   table creation uses `CREATE TABLE IF NOT EXISTS`;
--   a second execution preserved the original Iceberg metadata version,
-    demonstrating that existing tables were not unnecessarily recreated;
--   the tables remain empty at this checkpoint.
+Validated persisted row counts are:
 
-**4.5.5 — persistence of real Gold data remains pending.**
+| Table | Rows |
+|---|---:|
+| `gold_fact_province_hourly` | 5,604 |
+| `gold_fact_installed_capacity_monthly` | 19 |
+| `gold_fact_country_15min` | 776 |
+| `gold_fact_country_5min` | 2,304 |
+| `gold_dim_time` | 1,649 |
+| `gold_dim_geography` | 73 |
+
+Physical Iceberg validation confirmed:
+
+-   data files in Parquet format;
+-   Iceberg metadata JSON files;
+-   manifest files;
+-   snapshot manifest lists;
+-   Iceberg snapshots;
+-   physical `data/` and `metadata/` objects in MinIO;
+-   the approved partition specifications.
+
+A second execution using the same Silver state preserved the same
+logical row counts, introduced no natural-key duplicates, and preserved
+the original `gold_created_at` values.
+
+Persisted quality validation confirmed:
+
+-   zero `NULL` natural keys;
+-   zero duplicate natural keys;
+-   correct temporal grains;
+-   valid geographical mappings;
+-   expected source-dependent `NULL` coverage;
+-   preservation of original ESIOS signs;
+-   exact reconciliation of the selected ESIOS metrics with Silver;
+-   correct MW-to-MWh interval conversion;
+-   correct 5-minute to 15-minute energy aggregation.
+
+The validated geographical dimension contains:
+
+-   52 Province members;
+-   19 Autonomous Community members;
+-   1 Country member;
+-   1 Peninsula member.
+
+Trino successfully discovered and queried all six Gold tables through
+the Iceberg catalog.
+
+Analytical queries were validated for:
+
+-   wind speed versus wind generation at Province × hour;
+-   temperature versus electricity demand at Peninsula × 15 minutes;
+-   observed generation versus installed capacity at Autonomous
+    Community × month.
+
+End-to-end traceability was validated with a real observation:
+
+-   Province: `02 — Albacete`;
+-   ESIOS indicator:
+    `1159 — Generación medida Eólica terrestre`;
+-   Silver timestamp: `2026-07-28 00:00:00`;
+-   Silver value: `430.464 MWh`;
+-   Gold timestamp after the approved temporal alignment:
+    `2026-07-28 01:00:00`;
+-   Gold value: `430.464 MWh`;
+-   the same Gold observation was retrieved through Trino.
+
+Analytical reproducibility was also verified by executing the same
+Albacete wind-analysis query through Spark and Trino.
+
+Both engines returned:
+
+-   observations: `94`;
+-   average wind speed at 80 m: `13.872`;
+-   average wind generation: `283.021 MWh`;
+-   correlation: `0.1405`.
+
+Therefore the validated execution path is:
+
+`Silver Iceberg → Gold transformation → Gold Iceberg → MinIO → Trino`

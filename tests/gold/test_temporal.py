@@ -24,6 +24,7 @@ from gold.temporal import (
     aggregate_esios_energy_5min_to_15min,
     aggregate_open_meteo_wind_to_hourly_point,
     apply_esios_time_gap,
+    add_deterministic_time_key,
 )
 
 
@@ -622,6 +623,129 @@ def main() -> None:
     print("=" * 80)
 
     spark.stop()
+
+def test_deterministic_time_key_is_stable_for_same_timestamp(
+    spark,
+):
+    timestamp = datetime(
+        2026,
+        8,
+        25,
+        18,
+        15,
+        0,
+    )
+
+    df = spark.createDataFrame(
+        [
+            (timestamp,),
+            (timestamp,),
+        ],
+        [
+            "gold_timestamp",
+        ],
+    )
+
+    result = (
+        add_deterministic_time_key(
+            df,
+            time_grain="FIFTEEN_MINUTES",
+        )
+        .select(
+            "time_key"
+        )
+        .distinct()
+        .collect()
+    )
+
+    assert len(result) == 1
+    assert len(result[0]["time_key"]) == 64
+
+
+def test_deterministic_time_key_changes_for_different_timestamps(
+    spark,
+):
+    df = spark.createDataFrame(
+        [
+            (
+                datetime(
+                    2026,
+                    8,
+                    25,
+                    18,
+                    0,
+                    0,
+                ),
+            ),
+            (
+                datetime(
+                    2026,
+                    8,
+                    25,
+                    18,
+                    15,
+                    0,
+                ),
+            ),
+        ],
+        [
+            "gold_timestamp",
+        ],
+    )
+
+    result = (
+        add_deterministic_time_key(
+            df,
+            time_grain="FIFTEEN_MINUTES",
+        )
+        .select(
+            "time_key"
+        )
+        .distinct()
+        .collect()
+    )
+
+    assert len(result) == 2
+
+
+def test_deterministic_time_key_separates_different_grains(
+    spark,
+):
+    timestamp = datetime(
+        2026,
+        8,
+        25,
+        18,
+        0,
+        0,
+    )
+
+    df = spark.createDataFrame(
+        [
+            (timestamp,),
+        ],
+        [
+            "gold_timestamp",
+        ],
+    )
+
+    hour_key = (
+        add_deterministic_time_key(
+            df,
+            time_grain="HOUR",
+        )
+        .first()["time_key"]
+    )
+
+    fifteen_minute_key = (
+        add_deterministic_time_key(
+            df,
+            time_grain="FIFTEEN_MINUTES",
+        )
+        .first()["time_key"]
+    )
+
+    assert hour_key != fifteen_minute_key
 
 
 if __name__ == "__main__":

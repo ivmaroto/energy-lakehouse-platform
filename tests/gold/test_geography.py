@@ -26,6 +26,7 @@ from gold.geography import (
     aggregate_hourly_wind_points_to_province,
     prepare_cnig_autonomous_communities,
     validate_required_columns,
+    add_deterministic_geography_key,
 )
 
 from gold.temporal import (
@@ -540,6 +541,106 @@ def main() -> None:
 
     spark.stop()
 
+
+def test_deterministic_geography_key_is_stable_for_same_province(
+    spark,
+):
+    df = spark.createDataFrame(
+        [
+            ("20",),
+            ("20",),
+        ],
+        [
+            "province_code",
+        ],
+    )
+
+    result = (
+        add_deterministic_geography_key(
+            df,
+            geography_level="PROVINCE",
+            geography_code_column="province_code",
+        )
+        .select(
+            "geography_key"
+        )
+        .distinct()
+        .collect()
+    )
+
+    assert len(result) == 1
+    assert len(result[0]["geography_key"]) == 64
+
+
+def test_deterministic_geography_key_changes_for_different_provinces(
+    spark,
+):
+    df = spark.createDataFrame(
+        [
+            ("20",),
+            ("28",),
+        ],
+        [
+            "province_code",
+        ],
+    )
+
+    result = (
+        add_deterministic_geography_key(
+            df,
+            geography_level="PROVINCE",
+            geography_code_column="province_code",
+        )
+        .select(
+            "geography_key"
+        )
+        .distinct()
+        .collect()
+    )
+
+    assert len(result) == 2
+
+
+def test_deterministic_geography_key_separates_province_and_ccaa(
+    spark,
+):
+    province_df = spark.createDataFrame(
+        [
+            ("01",),
+        ],
+        [
+            "code",
+        ],
+    )
+
+    ccaa_df = spark.createDataFrame(
+        [
+            ("01",),
+        ],
+        [
+            "code",
+        ],
+    )
+
+    province_key = (
+        add_deterministic_geography_key(
+            province_df,
+            geography_level="PROVINCE",
+            geography_code_column="code",
+        )
+        .first()["geography_key"]
+    )
+
+    ccaa_key = (
+        add_deterministic_geography_key(
+            ccaa_df,
+            geography_level="AUTONOMOUS_COMMUNITY",
+            geography_code_column="code",
+        )
+        .first()["geography_key"]
+    )
+
+    assert province_key != ccaa_key
 
 if __name__ == "__main__":
     main()

@@ -707,3 +707,69 @@ def normalize_gold_autonomous_communities(
         )
 
     return result
+
+
+# ============================================================================
+# Deterministic Gold geography keys
+# ============================================================================
+
+def add_deterministic_geography_key(
+    df: DataFrame,
+    *,
+    geography_level: str,
+    geography_code_column: str,
+    target_column: str = "geography_key",
+) -> DataFrame:
+    """
+    Add a deterministic SHA-256 Gold geography identifier.
+
+    This helper is used for geographical levels whose Gold key
+    serialization had not previously been fixed:
+
+        PROVINCE
+        AUTONOMOUS_COMMUNITY
+
+    Spain and Peninsula keep their already validated canonical keys:
+
+        COUNTRY:ES
+        PENINSULA:ES-PEN
+
+    The generated identifier is deterministic, stable and reproducible
+    from:
+
+        geography_level + geography_code
+    """
+    validate_required_columns(
+        df,
+        {
+            geography_code_column,
+        },
+        "Gold deterministic geography key",
+    )
+
+    if geography_level not in {
+        "PROVINCE",
+        "AUTONOMOUS_COMMUNITY",
+    }:
+        raise ValueError(
+            "Deterministic hashed geography keys are only approved "
+            "for PROVINCE and AUTONOMOUS_COMMUNITY."
+        )
+
+    return df.withColumn(
+        target_column,
+        F.sha2(
+            F.concat_ws(
+                "||",
+                F.lit(
+                    geography_level
+                ),
+                F.col(
+                    geography_code_column
+                ).cast(
+                    "string"
+                ),
+            ),
+            256,
+        ),
+    )

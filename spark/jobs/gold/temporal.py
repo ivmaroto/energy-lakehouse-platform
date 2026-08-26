@@ -356,3 +356,86 @@ def aggregate_esios_energy_5min_to_15min(
             "gold_timestamp",
         )
     )
+
+# ============================================================================
+# Deterministic Gold time keys
+# ============================================================================
+
+def add_deterministic_time_key(
+    df: DataFrame,
+    *,
+    time_grain: str,
+    timestamp_column: str = "gold_timestamp",
+    year_month_column: str = "year_month",
+    target_column: str = "time_key",
+) -> DataFrame:
+    """
+    Add the deterministic Gold time identifier.
+
+    Approved grains:
+
+        FIVE_MINUTES
+        FIFTEEN_MINUTES
+        HOUR
+        MONTH
+
+    Submonthly keys are generated from:
+
+        time_grain + canonical timestamp
+
+    Monthly keys are generated from:
+
+        MONTH + year_month
+    """
+    valid_grains = {
+        "FIVE_MINUTES",
+        "FIFTEEN_MINUTES",
+        "HOUR",
+        "MONTH",
+    }
+
+    if time_grain not in valid_grains:
+        raise ValueError(
+            f"Unsupported Gold time grain: {time_grain}"
+        )
+
+    if time_grain == "MONTH":
+        if year_month_column not in df.columns:
+            raise ValueError(
+                "Missing year_month column required "
+                "for MONTH time_key."
+            )
+
+        temporal_value = F.col(
+            year_month_column
+        ).cast(
+            "string"
+        )
+
+    else:
+        if timestamp_column not in df.columns:
+            raise ValueError(
+                "Missing timestamp column required "
+                f"for {time_grain} time_key."
+            )
+
+        temporal_value = F.date_format(
+            F.col(
+                timestamp_column
+            ),
+            "yyyy-MM-dd'T'HH:mm:ss",
+        )
+
+    return df.withColumn(
+        target_column,
+        F.sha2(
+            F.concat_ws(
+                "||",
+                F.lit(
+                    time_grain
+                ),
+                temporal_value,
+            ),
+            256,
+        ),
+    )

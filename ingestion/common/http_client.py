@@ -8,7 +8,13 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from ingestion.common.config import HTTP_MAX_RETRIES, HTTP_TIMEOUT
+from ingestion.common.config import (
+    HTTP_MAX_RETRIES,
+    HTTP_RETRY_BACKOFF_FACTOR,
+    HTTP_RETRY_BACKOFF_MAX_SECONDS,
+    HTTP_TIMEOUT,
+)
+
 from ingestion.common.exceptions import (
     APIAuthenticationError,
     APIConnectionError,
@@ -31,9 +37,11 @@ class HTTPClient:
     """
 
     def __init__(
-        self,
-        timeout: int = HTTP_TIMEOUT,
-        max_retries: int = HTTP_MAX_RETRIES,
+            self,
+            timeout: int = HTTP_TIMEOUT,
+            max_retries: int = HTTP_MAX_RETRIES,
+            backoff_factor: float = HTTP_RETRY_BACKOFF_FACTOR,
+            backoff_max: int = HTTP_RETRY_BACKOFF_MAX_SECONDS,
     ) -> None:
         self.timeout = timeout
         self.session = requests.Session()
@@ -43,16 +51,32 @@ class HTTPClient:
             connect=max_retries,
             read=max_retries,
             status=max_retries,
-            backoff_factor=1,
-            status_forcelist=(429, 500, 502, 503, 504),
+            backoff_factor=backoff_factor,
+            backoff_max=backoff_max,
+            status_forcelist=(
+                429,
+                500,
+                502,
+                503,
+                504,
+            ),
             allowed_methods=("GET",),
             raise_on_status=False,
+            respect_retry_after_header=True,
         )
 
-        adapter = HTTPAdapter(max_retries=retry_strategy)
+        adapter = HTTPAdapter(
+            max_retries=retry_strategy
+        )
 
-        self.session.mount("https://", adapter)
-        self.session.mount("http://", adapter)
+        self.session.mount(
+            "https://",
+            adapter,
+        )
+        self.session.mount(
+            "http://",
+            adapter,
+        )
 
     def get(
         self,

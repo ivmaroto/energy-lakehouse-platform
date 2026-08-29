@@ -30,6 +30,76 @@ class EsiosIngestion:
         self.client = client or EsiosClient()
         self.storage = storage or MinIOBronzeStorage()
 
+    @staticmethod
+    def _validate_indicator_values(
+        data,
+        *,
+        indicator_id: int,
+        dataset: str,
+    ) -> None:
+        """
+        Validate that an ESIOS response contains real observations.
+
+        A successful HTTP response with an empty values array must not
+        be considered a successful Bronze ingestion.
+        """
+
+        if not isinstance(
+            data,
+            dict,
+        ):
+            raise RuntimeError(
+                "Invalid ESIOS response for "
+                f"indicator={indicator_id}, "
+                f"dataset={dataset}: "
+                "expected JSON object."
+            )
+
+        indicator = data.get(
+            "indicator"
+        )
+
+        if not isinstance(
+            indicator,
+            dict,
+        ):
+            raise RuntimeError(
+                "Invalid ESIOS response for "
+                f"indicator={indicator_id}, "
+                f"dataset={dataset}: "
+                "missing indicator object."
+            )
+
+        values = indicator.get(
+            "values"
+        )
+
+        if not isinstance(
+            values,
+            list,
+        ):
+            raise RuntimeError(
+                "Invalid ESIOS response for "
+                f"indicator={indicator_id}, "
+                f"dataset={dataset}: "
+                "missing values array."
+            )
+
+        if not values:
+            raise RuntimeError(
+                "ESIOS returned no observations for "
+                f"indicator={indicator_id}, "
+                f"dataset={dataset}."
+            )
+
+        logger.info(
+            "ESIOS response validated: "
+            "indicator=%s dataset=%s values=%s",
+            indicator_id,
+            dataset,
+            len(values),
+        )
+
     def ingest_historical(
         self,
         *,
@@ -45,7 +115,7 @@ class EsiosIngestion:
     ) -> list[Path | str]:
         """
         Retrieve historical values for an ESIOS indicator in chunks
-        and persist every chunk independently in Bronze.
+        and persist every validated chunk independently in Bronze.
         """
 
         chunks = split_date_range(
@@ -65,7 +135,10 @@ class EsiosIngestion:
 
         output_paths: list[Path | str] = []
 
-        for chunk_number, (chunk_start, chunk_end) in enumerate(
+        for chunk_number, (
+            chunk_start,
+            chunk_end,
+        ) in enumerate(
             chunks,
             start=1,
         ):
@@ -88,16 +161,28 @@ class EsiosIngestion:
                 geo_agg=geo_agg,
             )
 
+            self._validate_indicator_values(
+                data,
+                indicator_id=indicator_id,
+                dataset=dataset,
+            )
+
             output_path = self.storage.save_json(
                 data,
                 source=self.SOURCE,
                 dataset=dataset,
                 ingestion_mode="historical",
-                requested_start_date=chunk_start.isoformat(),
-                requested_end_date=chunk_end.isoformat(),
+                requested_start_date=(
+                    chunk_start.isoformat()
+                ),
+                requested_end_date=(
+                    chunk_end.isoformat()
+                ),
             )
 
-            output_paths.append(output_path)
+            output_paths.append(
+                output_path
+            )
 
         logger.info(
             "ESIOS historical ingestion completed. "
@@ -122,7 +207,7 @@ class EsiosIngestion:
     ) -> Path | str:
         """
         Retrieve an incremental temporal window for an ESIOS indicator
-        and persist it in Bronze.
+        and persist it in Bronze only after validating real observations.
 
         Date values can be used for daily windows.
         Datetime values can be used for high-frequency windows
@@ -148,13 +233,23 @@ class EsiosIngestion:
             geo_agg=geo_agg,
         )
 
+        self._validate_indicator_values(
+            data,
+            indicator_id=indicator_id,
+            dataset=dataset,
+        )
+
         output_path = self.storage.save_json(
             data,
             source=self.SOURCE,
             dataset=dataset,
             ingestion_mode="incremental",
-            requested_start_date=start_date.isoformat(),
-            requested_end_date=end_date.isoformat(),
+            requested_start_date=(
+                start_date.isoformat()
+            ),
+            requested_end_date=(
+                end_date.isoformat()
+            ),
         )
 
         logger.info(

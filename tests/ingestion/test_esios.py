@@ -274,13 +274,19 @@ def test_incremental_ingestion_accepts_exact_datetime_window():
 
     client.get_indicator.return_value = {
         "indicator": {
-            "id": 1293,
-            "values": [],
+            "id": 1159,
+            "values": [
+                {
+                    "value": 8.186,
+                }
+            ],
         }
     }
 
     storage.save_json.return_value = (
-        "bronze/esios/demand_real_5min/test.json"
+        "bronze/esios/"
+        "generacion_medida_eolica_terrestre/"
+        "test.json"
     )
 
     ingestion = EsiosIngestion(
@@ -290,31 +296,33 @@ def test_incremental_ingestion_accepts_exact_datetime_window():
 
     start_datetime = datetime(
         2026,
-        8,
-        13,
+        1,
+        15,
         10,
+        0,
         0,
         tzinfo=timezone.utc,
     )
 
     end_datetime = datetime(
         2026,
-        8,
-        13,
+        1,
+        15,
         10,
-        5,
+        59,
+        59,
         tzinfo=timezone.utc,
     )
 
     result = ingestion.ingest_incremental(
-        indicator_id=1293,
-        dataset="demand_real_5min",
+        indicator_id=1159,
+        dataset="generacion_medida_eolica_terrestre",
         start_date=start_datetime,
         end_date=end_datetime,
     )
 
     client.get_indicator.assert_called_once_with(
-        indicator_id=1293,
+        indicator_id=1159,
         start_date=start_datetime,
         end_date=end_datetime,
         time_trunc=None,
@@ -327,16 +335,68 @@ def test_incremental_ingestion_accepts_exact_datetime_window():
     storage.save_json.assert_called_once_with(
         client.get_indicator.return_value,
         source="esios",
-        dataset="demand_real_5min",
+        dataset="generacion_medida_eolica_terrestre",
         ingestion_mode="incremental",
         requested_start_date=(
-            "2026-08-13T10:00:00+00:00"
+            "2026-01-15T10:00:00+00:00"
         ),
         requested_end_date=(
-            "2026-08-13T10:05:00+00:00"
+            "2026-01-15T10:59:59+00:00"
         ),
     )
 
     assert result == (
-        "bronze/esios/demand_real_5min/test.json"
+        "bronze/esios/"
+        "generacion_medida_eolica_terrestre/"
+        "test.json"
     )
+
+
+def test_incremental_ingestion_rejects_empty_values():
+    client = Mock()
+    storage = Mock()
+
+    client.get_indicator.return_value = {
+        "indicator": {
+            "id": 1159,
+            "values": [],
+        }
+    }
+
+    ingestion = EsiosIngestion(
+        client=client,
+        storage=storage,
+    )
+
+    start_datetime = datetime(
+        2026,
+        8,
+        24,
+        0,
+        0,
+        0,
+        tzinfo=timezone.utc,
+    )
+
+    end_datetime = datetime(
+        2026,
+        8,
+        24,
+        23,
+        59,
+        59,
+        tzinfo=timezone.utc,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="ESIOS returned no observations",
+    ):
+        ingestion.ingest_incremental(
+            indicator_id=1159,
+            dataset="generacion_medida_eolica_terrestre",
+            start_date=start_datetime,
+            end_date=end_datetime,
+        )
+
+    storage.save_json.assert_not_called()

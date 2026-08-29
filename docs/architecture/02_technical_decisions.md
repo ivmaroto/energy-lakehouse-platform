@@ -2,224 +2,907 @@
 
 ## 1. Design Principles
 
-The architecture of the platform has been designed according to the following principles:
+The architecture of the Energy Lakehouse Platform is based on the following
+principles.
 
-- **Open Source first**  
-  The platform is based entirely on Open Source technologies, avoiding dependency on proprietary cloud services or commercial licenses.
+### Open Source first
 
-- **Reproducibility**  
-  The complete environment must be deployable locally using Docker Compose, allowing the platform to be recreated consistently on another compatible machine.
+The platform is based entirely on Open Source technologies and avoids
+dependency on proprietary cloud services or commercial analytical platforms.
 
-- **Modularity**  
-  Each component has a clearly defined responsibility, making it possible to replace, update, or scale individual services without redesigning the entire platform.
+### Reproducibility
 
-- **Scalability**  
-  Although the initial deployment is local, the selected technologies support future execution in distributed or cloud environments.
+The complete infrastructure is deployable locally using Docker Compose.
 
-- **Separation of responsibilities**  
-  Data ingestion, processing, storage, orchestration, metadata management, querying, and visualization are handled by specialized components.
+Source code, configuration templates, infrastructure definitions and technical
+documentation are maintained in Git so that the environment can be reproduced
+on another compatible machine.
 
-- **Maintainability**  
-  Configuration, source code, infrastructure definitions, and technical documentation are version-controlled in Git.
+### Modularity
 
-- **Incremental development**  
-  The platform is implemented progressively, starting with historical data ingestion and later supporting periodic incremental updates.
+Each platform component has a clearly defined responsibility.
 
-## 2. Technology Stack
+The architecture separates:
 
-### Python
+```text
+source ingestion
+storage
+distributed processing
+table management
+metadata
+workflow orchestration
+SQL querying
+visualization
+```
 
-Python has been selected as the primary programming language due to its extensive ecosystem for data engineering and its excellent support for API integration, automation, and data processing.
+This reduces coupling between components and allows individual services to
+evolve independently.
 
-Within this project, Python is responsible for:
+### Separation of responsibilities
 
-- Connecting to public APIs.
-- Managing configuration and authentication.
-- Performing historical and incremental data ingestion.
-- Supporting the orchestration workflows.
-- Executing auxiliary tasks required by the platform.
+The platform deliberately separates:
 
-Python also provides seamless integration with Apache Spark through PySpark, allowing the project to combine traditional programming with distributed data processing.
+```text
+Python        -> source ingestion
+MinIO        -> object storage
+Spark        -> distributed processing
+Iceberg      -> managed analytical tables
+PostgreSQL   -> platform/catalog metadata
+Airflow      -> workflow orchestration
+Trino        -> interactive SQL querying
+Superset     -> visualization
+```
 
-### Apache Spark
+### Source fidelity
 
-Apache Spark has been selected as the distributed data processing engine of the platform.
+The platform must not manufacture temporal or geographical detail that is not
+provided by the source.
 
-Spark provides the scalability and performance required to process large datasets efficiently while supporting complex data transformation workflows. Although the initial volume of data is expected to be moderate, using Spark aligns the project with modern Data Engineering architectures and enables future scalability without requiring significant architectural changes.
+Examples:
 
-The project uses PySpark to integrate Spark's distributed processing capabilities with the Python ecosystem.
+```text
+Autonomous Community data
+must not be artificially expanded to provinces.
+
+Missing observations
+must not be replaced by synthetic values.
+
+A source NULL
+must not automatically be interpreted as zero.
+```
+
+### Progressive refinement
+
+The Lakehouse follows the Medallion Architecture:
+
+```text
+Bronze
+   ↓
+Silver
+   ↓
+Gold
+```
+
+Each layer has a different responsibility.
+
+### Maintainability
+
+Configuration values that may change independently from source code are
+externalized whenever appropriate.
+
+Credentials remain outside Git.
+
+Validated source mappings such as ESIOS indicators and geographical aliases are
+stored in dedicated configuration files rather than being duplicated across
+processing or orchestration code.
+
+### Scalability
+
+The current deployment is local, but the selected processing, table and object
+storage technologies support future execution on larger or distributed
+infrastructures without changing the logical Lakehouse architecture.
+
+---
+
+# 2. Python
+
+Python is the primary programming language used for source acquisition and
+supporting platform logic.
+
+Within the project, Python is responsible for:
+
+- communicating with external APIs;
+- authentication and configuration;
+- historical and incremental ingestion;
+- temporal-range handling;
+- HTTP retries and error management;
+- technical source validation;
+- Bronze persistence;
+- auxiliary orchestration functionality.
+
+The source connectors are implemented independently for:
+
+```text
+AEMET
+Open-Meteo
+REE / ESIOS
+CNIG / IGN
+```
+
+Shared infrastructure functionality is centralized under the common ingestion
+package.
+
+Python also provides the integration point with Apache Spark through PySpark.
+
+---
+
+# 3. Apache Spark
+
+Apache Spark has been selected as the distributed processing engine of the
+Lakehouse.
+
+The initial platform is deployed locally, and the data volume does not require a
+large distributed cluster. Spark is nevertheless used intentionally because
+the project implements a Data Engineering architecture based on distributed
+processing concepts and because the same processing model can scale beyond the
+local environment.
 
 Within the platform, Apache Spark is responsible for:
 
-- Reading raw data from the Lakehouse.
-- Validating and cleaning datasets.
-- Performing data transformations.
-- Standardizing data from different sources.
-- Integrating meteorological and energy datasets.
-- Writing Apache Iceberg tables.
-- Supporting SQL-based transformations and processing through Spark SQL.
+- reading Bronze source data from MinIO;
+- parsing source payloads;
+- validating and typing data;
+- temporal normalization;
+- natural-key deduplication;
+- geographical normalization;
+- distributed aggregations;
+- Bronze-to-Silver transformations;
+- Silver-to-Gold transformations;
+- meteorological and energy integration;
+- creating and writing Apache Iceberg tables.
 
-### Spark SQL
+Spark is therefore used as a **processing engine**, not as the Business
+Intelligence query backend.
 
-Spark SQL is used as part of the Apache Spark processing layer.
+---
 
-It provides SQL capabilities within Spark jobs and allows transformations to be expressed using SQL when appropriate. This complements the PySpark DataFrame API and provides flexibility when implementing transformations between the Bronze, Silver, and Gold layers.
+# 4. PySpark and Spark SQL
 
-Unlike the initial architecture design, Spark SQL is not used as the primary interactive analytical query layer. This responsibility is assigned to Trino, allowing processing workloads and analytical query workloads to remain separated.
+PySpark provides the primary programming interface used by the Spark
+transformation jobs.
 
-Within the platform, Spark SQL is responsible for:
+The DataFrame API is used for transformation logic including:
 
-- Supporting SQL-based data transformations.
-- Querying intermediate datasets during processing.
-- Complementing PySpark processing workflows.
-- Working with Apache Iceberg tables from the Spark processing layer.
+- column normalization;
+- joins;
+- aggregations;
+- deduplication;
+- geographical mapping;
+- analytical fact construction.
 
-### Apache Iceberg
+Spark SQL is available as part of the Spark processing layer when an SQL
+representation is more appropriate.
 
-Apache Iceberg has been selected as the Lakehouse table format for the platform.
+The project deliberately does not use Spark SQL as the final interactive query
+layer.
 
-Iceberg provides advanced table management capabilities that overcome many of the limitations of traditional data lakes. Features such as schema evolution, partition evolution, ACID transactions, and time travel make it well suited for analytical workloads and modern Data Engineering architectures.
+The separation is:
 
-Using Iceberg also separates the logical representation of the data from the underlying storage, allowing the platform to manage datasets efficiently while maintaining consistency and scalability.
+```text
+Data processing:
+PySpark / Spark SQL
 
-The use of Iceberg also enables different processing and query engines, such as Apache Spark and Trino, to operate over the same Lakehouse tables.
+Interactive analytics:
+Trino
+```
 
-Within the project, Apache Iceberg is responsible for:
+This prevents visualization workloads from depending directly on the Spark
+processing cluster.
 
-- Storing structured datasets in the Lakehouse.
-- Managing table metadata.
-- Supporting schema evolution.
-- Enabling efficient partition management.
-- Providing reliable and consistent analytical tables.
-- Providing a common table layer accessible from Spark and Trino.
+---
 
-### MinIO
+# 5. Apache Iceberg
 
-MinIO has been selected as the object storage solution for the Lakehouse.
+Apache Iceberg has been selected as the table format for the structured
+Lakehouse layers.
 
-As an S3-compatible object storage system, MinIO provides a lightweight and efficient platform for storing analytical datasets while maintaining compatibility with modern Data Lake and Lakehouse technologies. Its compatibility with the Amazon S3 API allows integration with Apache Spark, Apache Iceberg, and Trino.
+A critical implementation decision is that Iceberg is used for:
 
-Using MinIO also enables the entire platform to run locally without relying on external cloud storage services, making the project fully reproducible and independent of proprietary infrastructure.
+```text
+Silver
+Gold
+```
 
-Within the platform, MinIO is responsible for:
+but **not for the raw Bronze landing layer**.
 
-- Storing all Lakehouse data.
-- Providing S3-compatible object storage.
-- Persisting Apache Iceberg data files and metadata.
-- Serving as the central storage layer for analytical datasets.
+Bronze data is preserved as source objects in MinIO.
 
-### PostgreSQL
+The resulting architecture is:
 
-PostgreSQL has been selected as the relational database management system for storing platform metadata.
+```text
+Raw source payloads
+        │
+        ▼
+MinIO / Bronze objects
+        │
+        ▼
+Apache Spark
+        │
+        ▼
+Apache Iceberg Silver
+        │
+        ▼
+Apache Spark
+        │
+        ▼
+Apache Iceberg Gold
+```
 
-Rather than storing the main analytical datasets, PostgreSQL supports the internal operation of the platform by managing metadata required by different services. It provides a reliable, lightweight, and widely adopted solution that integrates with the components of the architecture.
+Iceberg provides the common managed table layer shared by Spark and Trino.
 
-Its robustness, Open Source nature, and broad ecosystem make it an appropriate choice for local deployments while remaining suitable for production environments.
+Relevant capabilities include:
 
-Within the platform, PostgreSQL is responsible for:
+- schema management;
+- partition management;
+- transactional table writes;
+- metadata-based table management;
+- interoperability between processing and query engines.
 
-- Storing Apache Airflow metadata.
-- Supporting the Apache Iceberg JDBC catalog.
-- Providing persistent metadata storage for platform services.
-- Supporting metadata required by Apache Superset.
+The current physical Lakehouse contains:
 
-### Apache Airflow
+```text
+9 Silver Iceberg tables
+4 Gold Iceberg tables
+```
 
-Apache Airflow has been selected as the workflow orchestration platform for the project.
+---
 
-Airflow enables the automation, scheduling, and monitoring of the complete data pipeline, ensuring that ingestion, transformation, and loading tasks are executed in the correct order. Its Directed Acyclic Graph (DAG) approach provides a clear and maintainable way to define data workflows while supporting dependency management, retries, logging, and error handling.
+# 6. MinIO
 
-Using Airflow allows the platform to execute both historical and incremental data loading processes in a reliable and reproducible manner.
+MinIO has been selected as the S3-compatible object-storage layer.
 
-Within the platform, Apache Airflow is responsible for:
+It allows the complete Lakehouse to operate locally without requiring
+proprietary cloud object storage.
 
-- Scheduling data ingestion workflows.
-- Orchestrating data processing tasks.
-- Managing task dependencies.
-- Handling retries and execution failures.
-- Logging workflow execution.
-- Monitoring pipeline status.
+MinIO stores two different types of data.
 
-### Trino
+### Bronze source objects
 
-Trino has been selected as the distributed SQL query engine for the analytical layer of the platform.
+Raw acquisitions are persisted under the Bronze hierarchy with ingestion
+metadata.
 
-The incorporation of Trino introduces a dedicated query layer between the Lakehouse storage and the visualization layer. This separates data processing workloads from interactive analytical workloads.
+Conceptually:
 
-Apache Spark remains responsible for distributed data processing and transformations, while Trino provides SQL access to the analytical datasets stored as Apache Iceberg tables.
+```text
+bronze/
+└── <source>/
+    └── <dataset>/
+        └── year=YYYY/
+            └── month=MM/
+                └── day=DD/
+```
 
-This separation of responsibilities improves the modularity of the architecture and prevents the Business Intelligence layer from depending directly on the Spark processing engine.
+### Apache Iceberg storage
 
-Trino also provides a standard SQL interface that can be consumed by analytical tools such as Apache Superset.
+MinIO also stores:
+
+- Silver data files;
+- Silver Iceberg metadata;
+- Gold data files;
+- Gold Iceberg metadata.
+
+MinIO therefore provides the shared physical storage layer while Bronze and
+Iceberg represent different logical storage models.
+
+---
+
+# 7. PostgreSQL
+
+PostgreSQL has been selected as the relational metadata database used by
+platform services.
+
+It does not contain the main analytical datasets.
+
+Its responsibilities include:
+
+- Apache Airflow metadata;
+- Apache Iceberg JDBC catalog metadata;
+- relational metadata required by platform services where configured.
+
+The analytical datasets remain in MinIO and are managed through Apache Iceberg.
+
+This separation prevents PostgreSQL from becoming a duplicate analytical
+storage system.
+
+---
+
+# 8. Apache Airflow
+
+Apache Airflow has been selected as the workflow orchestration platform.
+
+Airflow is responsible for coordinating execution, not implementing analytical
+transformations.
+
+Its responsibilities include:
+
+- triggering ingestion processes;
+- coordinating task dependencies;
+- coordinating Bronze, Silver and Gold stages;
+- handling task retries;
+- recording workflow execution status;
+- exposing operational logs;
+- scheduling recurring workloads.
+
+Spark transformations remain implemented in dedicated Spark jobs.
+
+The architectural relationship is therefore:
+
+```text
+Airflow
+   │
+   ├──► Python ingestion
+   │
+   ├──► Spark Silver jobs
+   │
+   └──► Spark Gold jobs
+```
+
+This keeps orchestration logic separated from transformation logic.
+
+---
+
+# 9. Trino
+
+Trino has been selected as the distributed SQL query engine for analytical
+access to the Lakehouse.
+
+Its incorporation establishes a dedicated query layer between Apache Iceberg
+and downstream analytical consumers.
+
+The design is:
+
+```text
+PROCESSING
+
+Spark
+  │
+  ▼
+Apache Iceberg
+
+
+QUERYING
+
+Apache Iceberg
+      │
+      ▼
+    Trino
+      │
+      ▼
+   Superset
+```
 
 Within the platform, Trino is responsible for:
 
-- Providing distributed SQL access to Apache Iceberg tables.
-- Querying analytical datasets stored in the Lakehouse.
-- Serving as the SQL access layer between the Lakehouse and Apache Superset.
-- Supporting interactive analytical queries.
-- Decoupling analytical query workloads from Spark processing workloads.
+- querying persisted Apache Iceberg tables;
+- providing interactive SQL access;
+- inspecting Silver and Gold datasets;
+- validating persisted analytical results;
+- exposing Gold datasets to Apache Superset.
 
-### Apache Superset
+This decouples Business Intelligence workloads from Spark.
 
-Apache Superset has been selected as the Business Intelligence platform for the project.
+The shared Iceberg catalog allows Spark and Trino to operate over the same
+tables while retaining different operational responsibilities.
 
-Superset provides a web-based environment for exploring data, building interactive dashboards, and creating visualizations without requiring proprietary software. As an Open Source solution, it aligns with the project's objective of building a complete Lakehouse platform using freely available technologies.
+---
 
-Through its integration with Trino, Superset enables users to analyze the processed datasets and explore relationships between meteorological and energy variables using charts, maps, filters, and time-series visualizations.
+# 10. Apache Superset
 
-This architecture prevents Superset from querying the Spark processing engine directly and provides a dedicated analytical SQL layer through Trino.
+Apache Superset has been selected as the Business Intelligence and visualization
+platform.
 
-Within the platform, Apache Superset is responsible for:
+Its role is to consume curated analytical information rather than implement
+Lakehouse transformation logic.
 
-- Creating interactive dashboards.
-- Visualizing analytical datasets.
-- Supporting exploratory data analysis.
-- Presenting Key Performance Indicators (KPIs).
-- Providing web-based access to analytical results.
+Superset accesses analytical data through:
 
-### Docker Compose
+```text
+Superset
+   │
+   ▼
+ Trino
+   │
+   ▼
+Apache Iceberg Gold
+```
 
-Docker Compose has been selected as the deployment and service orchestration mechanism for the local platform.
+Superset is therefore not connected directly to the Spark processing engine.
 
-It allows all infrastructure components to be defined and managed from a single declarative configuration file, making the complete environment reproducible and easier to deploy, stop, restart, and maintain.
+The intended analytical functionality includes:
 
-Using Docker Compose also isolates the different platform services while providing a shared network and persistent storage configuration. This approach simplifies local development and avoids the need to install and configure each technology directly on the host operating system.
+- interactive dashboards;
+- time-series visualizations;
+- geographical comparisons;
+- meteorological and energy analysis;
+- filtering and exploratory analysis;
+- KPI presentation.
 
-Custom Docker images are used where additional dependencies or configuration are required, including Apache Spark, Apache Airflow, and Apache Superset.
+Transformation and business logic should remain in Gold rather than being
+duplicated inside dashboard definitions whenever possible.
 
-Within the platform, Docker Compose is responsible for:
+---
 
-- Defining all platform services.
-- Managing service dependencies.
-- Creating the shared Docker network.
-- Configuring persistent volumes.
-- Exposing the required service ports.
-- Injecting environment variables and configuration values.
-- Building the custom platform images.
-- Reproducing the complete platform on another compatible machine.
+# 11. Docker Compose
 
-## 3. Overall Architecture Rationale
+Docker Compose has been selected as the local infrastructure deployment
+mechanism.
 
-The selected technology stack provides a complete Open Source solution for designing and implementing a modern Lakehouse platform.
+The platform contains containerized services for:
 
-Each component has a well-defined responsibility within the architecture:
+```text
+PostgreSQL
+MinIO
+Spark Master
+Spark Worker
+Trino
+Airflow
+Superset
+```
 
-- Python handles data ingestion and API integration.
-- Apache Spark performs distributed data processing.
-- Spark SQL supports SQL-based transformations within the Spark processing layer.
-- Apache Iceberg provides the Lakehouse table format.
-- MinIO provides S3-compatible object storage.
-- PostgreSQL stores platform metadata and supports the Iceberg catalog.
-- Apache Airflow orchestrates data workflows.
-- Trino provides distributed SQL access to the Lakehouse.
-- Apache Superset provides analytical visualization and Business Intelligence.
-- Docker Compose provides reproducible local infrastructure deployment.
+Docker Compose provides:
 
-A key architectural decision is the separation between **data processing** and **interactive analytical querying**.
+- service definitions;
+- service dependencies;
+- shared networking;
+- persistent volumes;
+- environment-variable injection;
+- host port mappings;
+- custom image builds;
+- reproducible local deployment.
 
-Apache Spark and Spark SQL are responsible for processing and transforming the datasets across the Bronze, Silver, and Gold layers. Trino is responsible for exposing the resulting analytical datasets through SQL, while Apache Superset consumes this query layer to provide dashboards and visualizations.
+Custom images are used where project-specific dependencies are required,
+including Spark, Airflow and Superset.
 
-This separation of responsibilities results in a modular, maintainable, and scalable architecture while keeping the platform deployable locally using Docker Compose.
+The complete platform can be managed using:
 
-The selected technologies are widely adopted in modern Data Engineering environments and provide a solid foundation for future extensions without requiring significant architectural changes.
+```bash
+docker compose up -d
+docker compose ps -a
+docker compose down
+```
+
+---
+
+# 12. CNIG / IGN as Canonical Geography
+
+CNIG / IGN has been selected as the canonical territorial reference for the
+platform.
+
+This decision prevents individual source systems from defining incompatible
+geographical dimensions.
+
+The geographical source masters contain:
+
+```text
+provinces
+municipalities
+```
+
+The autonomous-community master is derived during Silver processing from the
+canonical territorial information.
+
+The validated geographical structure includes:
+
+```text
+52 province-level entities
+19 autonomous communities
+8132 municipalities
+```
+
+Official geographical codes are preserved as strings so that leading zeroes are
+not lost.
+
+Source geographical information is mapped to CNIG only when the source provides
+sufficient information to do so.
+
+Missing geography is never manufactured.
+
+---
+
+# 13. Analytical Geographical Grain
+
+The platform does not enforce a universal geographical grain.
+
+The final analytical grains are determined by the real source capabilities.
+
+## Hourly integrated fact
+
+The principal analytical product is:
+
+```text
+Province × hour
+```
+
+implemented as:
+
+```text
+gold_fact_province_hourly
+```
+
+Province is used because both the meteorological preparation and the selected
+hourly ESIOS generation data can support that integration level.
+
+Autonomous-community attributes are retained as hierarchical information.
+
+## Installed capacity
+
+Installed capacity remains at:
+
+```text
+Autonomous Community × month
+```
+
+implemented as:
+
+```text
+gold_fact_installed_capacity_monthly
+```
+
+Monthly installed capacity is not artificially distributed among provinces.
+
+The general geographical rule is therefore:
+
+```text
+Use Province when the validated source supports Province.
+
+Otherwise preserve the real higher-level geography.
+```
+
+---
+
+# 14. ESIOS Indicator Selection
+
+The ESIOS connector remains generic, while the selected analytical indicator
+catalogue is externalized in:
+
+```text
+config/esios_indicators.json
+```
+
+The final active ESIOS scope contains:
+
+```text
+11 hourly generation indicators
+9 monthly installed-capacity indicators
+```
+
+The previously evaluated 5-minute ESIOS analytical flow is not part of the
+current physical Silver or Gold model.
+
+This reduced scope keeps the implemented analytical model aligned with the
+validated final use cases.
+
+---
+
+# 15. Open-Meteo Source Strategy
+
+Open-Meteo is used as the reproducible meteorological source for historical
+analysis.
+
+The active physical datasets are:
+
+```text
+weather_hourly
+weather_15min
+```
+
+Different Open-Meteo services are used according to the requested temporal
+product.
+
+### Historical hourly data
+
+```text
+Archive API
+```
+
+### Historical 15-minute data
+
+```text
+Historical Forecast API
+```
+
+### Current / incremental data
+
+```text
+Forecast API
+```
+
+This distinction was introduced because the standard Forecast API cannot be
+used as a generic replacement for historical 15-minute acquisition.
+
+The AEMET station catalogue supplies the point catalogue and coordinates used
+for Open-Meteo acquisition.
+
+The current validated catalogue contains:
+
+```text
+926 locations
+```
+
+---
+
+# 16. AEMET Source Strategy
+
+AEMET provides the official meteorological reference used by the platform.
+
+The active source scope is:
+
+```text
+stations
+current_observations
+```
+
+The station master acts as the official point catalogue.
+
+Current observations provide recent conventional meteorological information.
+
+They are not treated as an arbitrary historical source.
+
+Historical meteorological coverage used by the main analytical flow is
+therefore supplied by Open-Meteo.
+
+---
+
+# 17. Silver Physical Model
+
+The current Silver layer contains exactly 9 physical Apache Iceberg tables.
+
+### AEMET
+
+```text
+silver_aemet_stations
+silver_aemet_current_observations
+```
+
+### Open-Meteo
+
+```text
+silver_open_meteo_hourly
+silver_open_meteo_15min
+```
+
+### CNIG
+
+```text
+silver_cnig_provinces
+silver_cnig_autonomous_communities
+silver_cnig_municipalities
+```
+
+### ESIOS
+
+```text
+silver_esios_energy_hourly
+silver_esios_installed_capacity_monthly
+```
+
+Silver is responsible for normalized reusable datasets and does not perform the
+final cross-domain analytical integration.
+
+---
+
+# 18. Gold Physical Model
+
+The final Gold physical model contains exactly 4 Apache Iceberg tables:
+
+```text
+gold_fact_province_hourly
+gold_fact_installed_capacity_monthly
+gold_dim_geography
+gold_dim_time
+```
+
+No separate country-level 5-minute or 15-minute Gold facts are part of the
+current physical implementation.
+
+---
+
+# 19. Meteorology and Energy Integration
+
+The principal analytical integration occurs in:
+
+```text
+gold_fact_province_hourly
+```
+
+The meteorological preparation produces:
+
+```text
+Province × hour
+```
+
+and the selected hourly ESIOS preparation produces:
+
+```text
+Province × hour
+```
+
+Uniqueness is validated before integration.
+
+The two blocks are joined using a:
+
+```text
+FULL OUTER JOIN
+```
+
+on:
+
+```text
+province_code
+gold_timestamp
+```
+
+This decision preserves valid observations from either source.
+
+Therefore:
+
+```text
+weather available + energy missing
+→ keep row, energy metrics remain NULL
+
+energy available + weather missing
+→ keep row, weather metrics remain NULL
+
+both available
+→ integrate both domains in the same row
+```
+
+Missing source information is never converted into artificial zero values.
+
+---
+
+# 20. Processing and Query Separation
+
+One of the most important architectural decisions is the explicit separation
+between processing and interactive querying.
+
+```text
+              PROCESSING
+
+Bronze
+   │
+   ▼
+ Spark
+   │
+   ▼
+Silver
+   │
+   ▼
+ Spark
+   │
+   ▼
+ Gold
+
+
+               QUERYING
+
+ Gold
+   │
+   ▼
+ Trino
+   │
+   ▼
+Superset
+```
+
+Advantages of this decision include:
+
+- BI workloads do not depend on Spark execution;
+- Spark can remain focused on transformation jobs;
+- Trino provides a standard SQL interface;
+- Apache Iceberg provides the common table abstraction;
+- additional SQL consumers can access the same curated data in the future.
+
+---
+
+# 21. Validated Architecture
+
+The core data-processing architecture has been validated using real source
+data through:
+
+```text
+External sources
+      │
+      ▼
+Python ingestion
+      │
+      ▼
+MinIO / Bronze
+      │
+      ▼
+Spark / Silver
+      │
+      ▼
+Apache Iceberg
+      │
+      ▼
+Spark / Gold
+      │
+      ▼
+Apache Iceberg
+      │
+      ▼
+Trino
+```
+
+The validated current physical model contains:
+
+```text
+Silver tables = 9
+Gold tables   = 4
+```
+
+The main Gold fact was validated with:
+
+```text
+8147 total Province × hour rows
+8100 rows containing meteorological information
+6768 rows containing energy information
+6721 rows containing both domains
+0 duplicate Province × hour keys
+```
+
+The installed-capacity fact was validated with:
+
+```text
+19 Autonomous Community × month rows
+0 duplicate Autonomous Community × month keys
+```
+
+These results validate the core architectural decisions from source acquisition
+through analytical SQL access.
+
+---
+
+# 22. Overall Architecture Rationale
+
+The selected technology stack provides a complete Open Source Data Engineering
+platform with clearly separated responsibilities.
+
+```text
+Python
+→ API integration and ingestion
+
+MinIO
+→ raw and Lakehouse object storage
+
+Apache Spark / PySpark
+→ distributed transformations
+
+Apache Iceberg
+→ managed Silver and Gold tables
+
+PostgreSQL
+→ platform and catalog metadata
+
+Apache Airflow
+→ workflow orchestration
+
+Trino
+→ analytical SQL access
+
+Apache Superset
+→ dashboards and visualization
+
+Docker Compose
+→ reproducible local infrastructure
+```
+
+The architecture combines raw-data preservation, distributed transformation,
+managed analytical tables and an independent SQL consumption layer while
+remaining fully deployable on a local environment.
+
+The main design decisions ensure that the platform does not invent missing
+source detail, retains source traceability, separates transformation from
+interactive querying and provides reusable analytical products at the
+geographical and temporal grains actually supported by the validated data.

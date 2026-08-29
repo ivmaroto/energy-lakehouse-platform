@@ -1,519 +1,992 @@
-# Incremental Ingestion
+# Bronze Storage
 
 ## 1. Overview
 
-After the initial historical load, the Energy Lakehouse Platform uses
-incremental ingestion processes to keep meteorological and energy datasets
-updated.
+The Bronze layer is the raw persistence layer of the Energy Lakehouse Platform.
 
-Incremental ingestion retrieves the temporal window required by each dataset
-according to its publication frequency instead of repeatedly downloading the
-complete historical dataset.
+Its purpose is to preserve information acquired from external sources before
+cleaning, normalization, deduplication, geographical harmonization and
+analytical transformations are applied.
 
-The process is implemented independently for:
+The current Bronze layer receives information from four source domains:
 
-- AEMET OpenData.
-- Open-Meteo.
-- REE / ESIOS.
+- AEMET OpenData;
+- Open-Meteo;
+- REE / ESIOS;
+- CNIG / IGN.
 
-Incremental ingestion is orchestrated through Apache Airflow and persists the
-acquired source data in the Bronze layer hosted in MinIO.
+Both historical and recent/current acquisition processes use the same logical
+Bronze storage layer.
+
+The production-like storage backend is MinIO, which provides an S3-compatible
+object-storage interface.
+
+Bronze is deliberately implemented as raw object storage rather than as Apache
+Iceberg tables.
 
 ---
 
 ## 2. Objectives
 
-The incremental ingestion process has the following objectives:
+The Bronze layer has the following objectives:
 
-- Retrieve newly available data from each external source.
-- Minimize unnecessary API requests.
-- Avoid repeatedly downloading complete historical datasets.
-- Preserve source information in the Bronze layer.
-- Support controlled re-execution of temporal windows.
-- Detect and handle invalid requests and API failures.
-- Support different ingestion frequencies according to dataset characteristics.
-- Provide traceable source data for subsequent Silver processing.
+- preserve source information with minimal modification;
+- separate providers and datasets;
+- record ingestion metadata;
+- preserve source traceability;
+- support historical acquisition;
+- support recent/current acquisition;
+- provide reusable input for Silver processing;
+- allow incomplete acquisitions to be recovered where supported;
+- avoid applying analytical business logic during ingestion.
 
----
-
-## 3. General Process
-
-The implemented incremental ingestion workflow follows this general pattern:
-
-```text
-Airflow schedule
-      |
-      v
-+----------------------+
-| Determine execution  |
-| temporal window      |
-+----------+-----------+
-           |
-           v
-+----------------------+
-| External API request |
-+----------+-----------+
-           |
-           v
-+----------------------+
-| Technical validation |
-+----------+-----------+
-           |
-           v
-+----------------------+
-| Bronze persistence   |
-|      in MinIO        |
-+----------+-----------+
-           |
-           v
-+----------------------+
-| Airflow task status  |
-+----------------------+
-```
-
-Each dataset is processed independently because publication frequency,
-temporal granularity and data availability differ between providers.
+Bronze is not the analytical consumption layer of the platform.
 
 ---
 
-## 4. Incremental Frequencies
+## 3. Data Flow
 
-The implemented ingestion strategy supports several execution frequencies:
-
-| Frequency | Main use |
-|---|---|
-| 5 minutes | High-frequency ESIOS energy indicators |
-| 15 minutes | Open-Meteo meteorological observations |
-| Hourly | AEMET observations and selected ESIOS indicators |
-| Daily | AEMET daily datasets and radiation data |
-| Monthly | ESIOS installed-capacity datasets |
-
-The Airflow orchestration layer separates these workloads according to their
-required execution frequency.
-
-The main implemented DAGs are:
+The Bronze persistence flow is:
 
 ```text
-esios_5min
-open_meteo_15min
-hourly_ingestion
-daily_ingestion
-monthly_ingestion
+AEMET ────────────┐
+Open-Meteo ───────┤
+REE / ESIOS ──────┼──► Python ingestion
+CNIG / IGN ───────┘
+                         │
+                         ▼
+                  Technical validation
+                         │
+                         ▼
+                  Common storage layer
+                         │
+                         ▼
+                    MinIO / Bronze
+                         │
+                         ▼
+                    Apache Spark
+                         │
+                         ▼
+                  Silver / Iceberg
 ```
 
-This separation prevents datasets with different publication characteristics
-from being unnecessarily requested at the same frequency.
+The common persistence functionality is implemented in:
+
+```text
+ingestion/common/storage.py
+```
+
+This keeps MinIO persistence separate from source-specific API logic.
 
 ---
 
-## 5. Temporal Windows
+## 4. Current Bronze Source Scope
 
-Incremental ingestion uses explicit temporal windows.
-
-For high-frequency datasets, the ingestion layer supports exact UTC
-`datetime` boundaries rather than only calendar dates.
-
-Example:
-
-```text
-ESIOS 5-minute window
-
-2025-08-13 00:00 UTC
-        |
-        +--------------------+
-                             |
-                     2025-08-13 00:05 UTC
-```
-
-Open-Meteo 15-minute ingestion similarly supports exact temporal boundaries.
-
-Example:
-
-```text
-2026-08-13 10:00 UTC
-        |
-        +--------------------+
-                             |
-                     2026-08-13 10:15 UTC
-```
-
-Datetime values supplied with another timezone are normalized to UTC before
-building the corresponding API request where required.
-
-Daily and monthly datasets use larger temporal windows appropriate to their
-publication frequency.
-
----
-
-## 6. AEMET Incremental Ingestion
-
-AEMET incremental ingestion currently covers several types of meteorological
-information.
-
-### Conventional observations
-
-Current conventional observations are retrieved periodically and persisted in:
-
-```text
-bronze/aemet/current_observations/
-```
-
-This dataset contains meteorological variables such as:
-
-- Temperature.
-- Relative humidity.
-- Precipitation.
-- Wind speed and direction.
-- Atmospheric pressure.
-
-### Daily climatological values
-
-Daily climatological values are retrieved for configured AEMET stations.
-
-The list of stations used by the Airflow DAG is externalized through the
-Airflow variable:
-
-```text
-AEMET_DAILY_STATIONS
-```
-
-This avoids embedding the definitive station configuration directly in the
-DAG source code.
-
-The resulting data is persisted in:
-
-```text
-bronze/aemet/daily_climatological_values/
-```
-
-### Radiation
-
-AEMET radiation data is acquired as source text/CSV information and preserved
-in Bronze without applying analytical transformations.
-
-The resulting files are persisted in:
-
-```text
-bronze/aemet/radiation/
-```
-
-The radiation parser is tested independently and will be used by subsequent
-processing stages.
-
----
-
-## 7. Open-Meteo Incremental Ingestion
-
-Open-Meteo provides the high-frequency meteorological dataset used by the
-platform.
-
-The implemented 15-minute ingestion supports exact datetime windows and
-retrieves the meteorological variables required by the analytical use case.
-
-The validated dataset includes variables such as:
-
-- Temperature.
-- Relative humidity.
-- Dew point.
-- Precipitation.
-- Cloud cover.
-- Atmospheric pressure.
-- Wind speed and direction at 10 m.
-- Wind gusts.
-- Wind speed and direction at 80 m.
-- Wind speed and direction at 120 m.
-- Shortwave radiation.
-- Direct radiation.
-- Diffuse radiation.
-- Direct normal irradiance.
-- Sunshine duration.
-
-The resulting dataset is persisted in:
-
-```text
-bronze/open_meteo/weather_15min/
-```
-
-A full-day validation returned 96 observations, corresponding to one record
-every 15 minutes.
-
-Open-Meteo access does not require an API credential for the access pattern
-used by this project.
-
----
-
-## 8. REE / ESIOS Incremental Ingestion
-
-REE / ESIOS incremental ingestion retrieves energy information using selected
-indicator identifiers.
-
-The ingestion layer supports both calendar-date windows and exact UTC datetime
-windows.
-
-This allows the same connector to support datasets with different temporal
-granularities.
-
-A validated example is indicator `1293`, used during the 5-minute incremental
-validation.
-
-A complete day returned 288 observations:
-
-```text
-24 hours * 12 observations/hour = 288 observations
-```
-
-The same ingestion implementation is also used for hourly and monthly ESIOS
-datasets by supplying the corresponding temporal window and dataset
-configuration.
-
----
-
-## 9. Airflow Orchestration
-
-Incremental ingestion is integrated with Apache Airflow.
-
-Airflow is responsible for:
-
-- Scheduling ingestion tasks.
-- Separating workloads by execution frequency.
-- Executing ingestion code inside the containerized environment.
-- Recording task execution status.
-- Supporting retries and operational monitoring.
-
-The ingestion modules remain independent Python components and can therefore
-also be executed and tested outside Airflow.
-
-The integration has been validated from inside the Airflow scheduler container,
-including a complete execution path:
-
-```text
-Airflow container
-      |
-      v
-Python ingestion module
-      |
-      v
-External API
-      |
-      v
-MinIO
-      |
-      v
-Bronze object
-```
-
----
-
-## 10. Bronze Append-Only Strategy
-
-The Bronze layer uses an append-only strategy.
-
-Each successful ingestion execution creates a new object containing:
-
-- Source data.
-- Source identifier.
-- Dataset identifier.
-- Ingestion mode.
-- Ingestion timestamp.
-- Requested temporal boundaries when applicable.
-
-Object names contain the ingestion timestamp, preserving the traceability of
-each acquisition.
-
-For example:
+The current final source scope is:
 
 ```text
 bronze/
-`-- esios/
-    `-- demand_real_5min/
-        `-- year=2026/
-            `-- month=08/
-                `-- day=15/
-                    `-- esios_demand_real_5min_<timestamp>.json
+├── aemet/
+│   ├── stations/
+│   └── current_observations/
+│
+├── open_meteo/
+│   ├── weather_hourly/
+│   └── weather_15min/
+│
+├── esios/
+│   ├── <hourly-generation-dataset>/
+│   └── <monthly-installed-capacity-dataset>/
+│
+└── cnig/
+    ├── provinces/
+    └── municipalities/
 ```
 
-The partition path represents the ingestion date.
+The exact object hierarchy below each dataset also includes ingestion-date
+partitions.
 
-The requested source-data period is preserved separately in the Bronze
-metadata.
-
----
-
-## 11. Re-execution and Idempotency
-
-Bronze is intentionally not physically idempotent.
-
-If exactly the same temporal window is executed twice, both acquisitions are
-preserved as separate Bronze objects because each execution has its own
-ingestion timestamp.
-
-This behaviour was explicitly validated using the same ESIOS indicator,
-dataset and 5-minute temporal window in two consecutive executions.
-
-The validation confirmed:
+Datasets evaluated during earlier implementation stages but not retained in the
+final physical scope include:
 
 ```text
-Same requested window: True
-Same source data:      True
-Different Bronze objects
+AEMET daily climatology
+AEMET radiation
+Open-Meteo historical forecast as a separate dataset
+ESIOS 5-minute power
+electricity demand
 ```
 
-This behaviour is consistent with the Bronze layer objective of preserving raw
-source acquisitions and maintaining ingestion traceability.
-
-A retry therefore does not overwrite or corrupt an existing Bronze object.
+These datasets must not be treated as part of the final Bronze contract.
 
 ---
 
-## 12. Duplicate Handling
+## 5. Temporal Partitioning
 
-Because Bronze is append-only, repeated executions may produce duplicated
-business observations across different Bronze objects.
+Bronze objects are organized using the ingestion-date hierarchy:
 
-These duplicates are intentionally preserved in Bronze.
+```text
+bronze/
+└── <source>/
+    └── <dataset>/
+        └── year=YYYY/
+            └── month=MM/
+                └── day=DD/
+                    └── <object>
+```
 
-Definitive duplicate detection and deduplication will be performed during
-Silver processing using appropriate business and temporal keys for each
-dataset.
+The:
+
+```text
+year
+month
+day
+```
+
+values represent the **ingestion date**.
+
+They do not necessarily represent:
+
+- the observation timestamp;
+- the requested historical interval;
+- the source publication date.
+
+For example, historical January observations downloaded in August remain stored
+under the August ingestion-date path.
+
+The requested source interval is retained separately in Bronze metadata.
+
+This distinction is important because physical storage location and analytical
+observation time represent different concepts.
+
+---
+
+## 6. Bronze Object Metadata
+
+JSON Bronze objects use a wrapper containing technical ingestion metadata and
+the source payload.
+
+Conceptually:
+
+```json
+{
+  "metadata": {
+    "source": "<source>",
+    "dataset": "<dataset>",
+    "ingestion_mode": "<mode>",
+    "ingestion_timestamp": "<timestamp>",
+    "requested_start_date": "<value or null>",
+    "requested_end_date": "<value or null>"
+  },
+  "data": {}
+}
+```
+
+Additional source-specific metadata can be included where required for
+traceability.
+
+Examples include:
+
+```text
+AEMET
+→ station information
+
+Open-Meteo
+→ location_id
+→ latitude
+→ longitude
+
+ESIOS
+→ indicator_id
+```
+
+Reference/master datasets may not require the same temporal metadata as
+observation datasets.
+
+---
+
+## 7. Source Preservation
+
+Bronze follows a raw-data preservation principle.
+
+The ingestion layer may perform technical operations required for reliable
+storage, such as:
+
+- request validation;
+- response validation;
+- serialization;
+- addition of ingestion metadata;
+- storage-path generation;
+- source/dataset identification.
+
+Bronze does not perform:
+
+- cross-source joins;
+- geographical harmonization;
+- analytical temporal aggregation;
+- business metric calculation;
+- unit reinterpretation;
+- source fallback;
+- KPI calculation;
+- Gold analytical integration.
+
+Those operations belong to Silver and Gold.
+
+---
+
+## 8. AEMET Bronze Storage
+
+The final active AEMET Bronze datasets are:
+
+```text
+stations
+current_observations
+```
+
+### Stations
+
+The station catalogue acts as meteorological point master.
+
+The current validated catalogue contains:
+
+```text
+926 stations
+```
+
+These coordinates are also used by Open-Meteo.
+
+### Current observations
+
+`current_observations` contains recent/current official AEMET meteorological
+observations.
+
+These observations retain their actual source timestamps.
+
+They are not rewritten to match an arbitrary historical execution interval.
+
+---
+
+## 9. Open-Meteo Bronze Storage
+
+The final Open-Meteo Bronze datasets are:
+
+```text
+weather_hourly
+weather_15min
+```
+
+Both datasets operate over the validated AEMET point catalogue:
+
+```text
+926 locations
+```
+
+The source API used depends on the requested temporal product.
+
+### Historical hourly
+
+```text
+Open-Meteo Archive API
+```
+
+### Historical 15-minute
+
+```text
+Open-Meteo Historical Forecast API
+```
+
+### Current / recent
+
+```text
+Open-Meteo Forecast API
+```
+
+The resulting Bronze structure remains the same logical dataset regardless of
+the source endpoint used to acquire the observations.
+
+---
+
+## 10. Open-Meteo Coverage State
+
+Open-Meteo historical acquisition contains additional Bronze-state logic.
+
+The implementation can inspect already persisted objects and determine whether
+the requested temporal interval is complete for a given location.
+
+The relevant implementation is:
+
+```text
+ingestion/open_meteo/bronze_state.py
+```
+
+A location is not considered complete only because an object exists.
+
+Its temporal coverage must correspond to the requested interval.
+
+This allows the batch process to distinguish between:
+
+```text
+complete
+incomplete
+missing
+```
+
+locations.
+
+---
+
+## 11. Open-Meteo Resumable Acquisition
+
+Large Open-Meteo executions process hundreds of locations.
+
+The batch implementation therefore supports resuming incomplete executions.
 
 Conceptually:
 
 ```text
-Bronze
-  |
-  |-- acquisition A ----\
-  |                      +----> Silver transformation
-  |-- acquisition B ----/            |
-                                    deduplication
-                                        |
-                                        v
-                               canonical records
+926 requested locations
+         │
+         ▼
+Inspect Bronze state
+         │
+         ├── complete → skip
+         │
+         └── incomplete / missing → acquire
 ```
 
-This separates source traceability from analytical data quality.
+This prevents an interrupted historical load from unnecessarily repeating all
+completed locations.
+
+For this reason, Bronze persistence must not be described as a single universal
+append-only rule independent of source behaviour.
+
+The persistence and recovery semantics are source-aware.
 
 ---
 
-## 13. Error Handling
+## 12. Open-Meteo Temporal Completeness
 
-Invalid temporal ranges are rejected before Bronze persistence.
-
-For example, an ESIOS request where:
+For the validated historical interval:
 
 ```text
-start_datetime > end_datetime
+2026-01-10 → 2026-01-15
 ```
 
-raises:
+the expected observations per location were:
+
+### Hourly
 
 ```text
-InvalidDateRangeError
+6 days × 24
+= 144 observations
 ```
 
-This behaviour was validated during Phase 3.
+### 15-minute
 
-Other failures handled by the common ingestion architecture include:
+```text
+6 days × 24 × 4
+= 576 observations
+```
 
-- Network connectivity errors.
-- HTTP errors.
-- Authentication failures.
-- Request timeouts.
-- Temporary API unavailability.
-- Invalid API responses.
-- Missing expected response information.
+The completed historical Bronze acquisition covered:
 
-Failures are recorded through the common logging mechanism.
+```text
+926 / 926 hourly locations
+926 / 926 15-minute locations
+```
 
-A failed execution does not modify previously persisted Bronze data.
+The downstream Silver counts confirmed that coverage:
 
----
+```text
+926 × 144
+= 133344 hourly rows
+```
 
-## 14. Technical Validation
-
-The connectors perform technical validation before or during acquisition.
-
-This includes, where applicable:
-
-- Valid temporal ranges.
-- Valid coordinates.
-- Valid indicator identifiers.
-- Successful HTTP responses.
-- Expected API response structures.
-- Presence of the required AEMET dataset URL.
-- Valid source payloads.
-
-Business-level quality rules and cross-source consistency checks belong to
-later Lakehouse processing stages.
+```text
+926 × 576
+= 533376 fifteen-minute rows
+```
 
 ---
 
-## 15. Bronze Persistence
+## 13. ESIOS Bronze Storage
 
-Incremental data from all three sources is persisted in MinIO under the common
-Bronze hierarchy:
+REE / ESIOS Bronze data is organized by configured dataset.
+
+The final active configuration contains:
+
+```text
+11 hourly generation indicators
+9 monthly installed-capacity indicators
+```
+
+The indicator catalogue is stored in:
+
+```text
+config/esios_indicators.json
+```
+
+Each acquisition retains its corresponding:
+
+```text
+indicator_id
+dataset
+requested temporal interval
+ingestion metadata
+source payload
+```
+
+The current physical Bronze scope does not contain an analytical 5-minute ESIOS
+family.
+
+---
+
+## 14. ESIOS Empty-Data Protection
+
+A successful ESIOS HTTP response is not sufficient for Bronze persistence to be
+considered successful.
+
+The ingestion implementation validates:
+
+```text
+indicator.values
+```
+
+before accepting the dataset.
+
+If:
+
+```text
+indicator.values = []
+```
+
+the acquisition fails rather than persisting the empty payload as if valid
+observations had been obtained.
+
+This avoids confusing:
+
+```text
+HTTP success
+```
+
+with:
+
+```text
+source data available
+```
+
+The orchestration policy for legitimate recent-source publication delays is a
+separate concern and is not implemented by the Bronze storage layer.
+
+---
+
+## 15. CNIG / IGN Bronze Storage
+
+CNIG / IGN provides the geographical reference masters.
+
+The current Bronze datasets are:
+
+```text
+provinces
+municipalities
+```
+
+These datasets are reference information rather than analytical time series.
+
+They subsequently feed the Silver geographical model:
+
+```text
+silver_cnig_provinces
+silver_cnig_autonomous_communities
+silver_cnig_municipalities
+```
+
+CNIG is therefore part of Bronze source storage even though its data lifecycle
+differs from meteorological and electricity observations.
+
+---
+
+## 16. Re-execution Behaviour
+
+Bronze preserves source acquisition traceability.
+
+Repeated requests can therefore result in overlapping source observations.
+
+However, re-execution behaviour is not identical for every source.
+
+For example:
+
+```text
+Open-Meteo
+→ can inspect existing temporal coverage
+→ can skip complete locations
+→ can resume missing locations
+```
+
+Other acquisitions may create new source objects on repeated execution.
+
+Therefore, the architecture does not rely on physical Bronze uniqueness as the
+final deduplication mechanism.
+
+Business-level canonicalization occurs in Silver.
+
+---
+
+## 17. Duplicate Handling
+
+Bronze can contain repeated business observations originating from overlapping
+or repeated acquisitions.
+
+This is acceptable because Bronze represents source acquisitions rather than the
+canonical analytical dataset.
+
+Silver applies source-specific natural keys to produce normalized records.
+
+Conceptually:
+
+```text
+Bronze object A ──┐
+                  │
+Bronze object B ──┼──► Spark parsing
+                  │
+Bronze object C ──┘
+                        │
+                        ▼
+                 Natural-key logic
+                        │
+                        ▼
+                   Deduplication
+                        │
+                        ▼
+                      Silver
+```
+
+This separation allows Bronze to retain acquisition evidence while Silver
+maintains logical dataset consistency.
+
+---
+
+## 18. Error Safety
+
+Technical validation is performed before successful Bronze persistence whenever
+possible.
+
+Handled failure categories include:
+
+- invalid temporal ranges;
+- connection failures;
+- request timeouts;
+- authentication errors;
+- invalid JSON;
+- malformed API responses;
+- missing expected source structures;
+- incomplete Open-Meteo temporal coverage;
+- empty ESIOS values;
+- MinIO persistence errors.
+
+A failed request must not be represented as a successfully acquired dataset.
+
+Existing valid Bronze data remains available for subsequent processing.
+
+---
+
+## 19. MinIO Storage
+
+MinIO provides the production-like S3-compatible storage backend.
+
+Bronze data is stored under the configured Lakehouse bucket using the:
 
 ```text
 bronze/
-|
-|-- aemet/
-|   |-- current_observations/
-|   |-- daily_climatological_values/
-|   `-- radiation/
-|
-|-- open_meteo/
-|   `-- weather_15min/
-|
-`-- esios/
-    |-- demand_real_5min/
-    |-- generacion_medida_eolica_terrestre/
-    |-- potencia_instalada_eolica/
-    `-- ...
 ```
 
-JSON datasets are wrapped with ingestion metadata and source data.
+prefix.
 
-AEMET radiation source text is persisted as CSV/raw text in order to preserve
-the original acquired representation.
+MinIO has been validated for:
+
+- object writing;
+- object enumeration;
+- object reading;
+- historical Bronze persistence;
+- current-source Bronze persistence;
+- downstream Spark access.
+
+The Bronze layer therefore operates as real object storage rather than only as a
+local filesystem development abstraction.
 
 ---
 
-## 16. Historical and Incremental Relationship
+## 20. Historical Bronze Execution
 
-Historical and incremental ingestion reuse the same source-specific connector
-architecture.
+A complete historical Bronze execution was performed using real source data for:
 
 ```text
-                  +------------------+
-Historical ------>|                  |
-                  | Source Connector |------> Bronze / MinIO
-Incremental ----->|                  |
-                  +------------------+
+2026-01-10 → 2026-01-15
 ```
 
-The principal difference is the temporal range and execution strategy supplied
-to each acquisition.
+The final execution reported:
 
-This avoids maintaining duplicated API implementations for historical and
-incremental processing.
+```text
+BRONZE HISTORICAL LOAD COMPLETED
+```
+
+with:
+
+```text
+AEMET stations
+= 1 object
+
+CNIG masters
+= 2 objects
+
+ESIOS hourly
+= 11 files
+
+ESIOS monthly
+= 9 files
+
+Open-Meteo locations
+= 926
+
+Open-Meteo hourly
+= 926 files
+
+Open-Meteo 15-minute
+= 926 files
+
+AEMET current observations
+= 1 file
+```
+
+This is the current principal real-data Bronze validation.
 
 ---
 
-## 17. Validation Results
+## 21. Relationship with Silver
 
-Phase 3 validation confirmed the following:
+Bronze is the direct input to the Silver processing layer.
 
-- Exact ESIOS datetime windows can be requested successfully.
-- Open-Meteo 15-minute windows can be requested successfully.
-- Datetimes are normalized to UTC where required.
-- AEMET conventional observations can be ingested successfully.
-- AEMET daily climatological data can be ingested successfully.
-- AEMET radiation data can be persisted in raw CSV form.
-- Incremental workloads execute successfully through Airflow.
-- Airflow containerized ingestion can persist directly to MinIO.
-- Bronze objects contain ingestion metadata and source payloads.
-- Re-execution preserves both acquisitions in Bronze.
-- Duplicate business observations are deferred to Silver deduplication.
-- Invalid temporal ranges are rejected before persistence.
+The transformation flow is:
 
-The incremental ingestion layer is therefore considered technically validated
-for Phase 3.
+```text
+Bronze
+   │
+   ▼
+Apache Spark
+   │
+   ├── source parsing
+   ├── explicit typing
+   ├── timestamp normalization
+   ├── geographical normalization
+   ├── natural-key deduplication
+   └── data-quality validation
+   │
+   ▼
+Apache Iceberg Silver
+```
+
+The current final Silver model contains exactly:
+
+```text
+9 tables
+```
+
+Bronze itself remains raw object storage.
+
+---
+
+## 22. Relationship with Apache Iceberg
+
+Apache Iceberg is not used for Bronze.
+
+The architecture is:
+
+```text
+Bronze
+Raw objects in MinIO
+        │
+        ▼
+      Spark
+        │
+        ▼
+Silver
+Apache Iceberg
+        │
+        ▼
+      Spark
+        │
+        ▼
+Gold
+Apache Iceberg
+```
+
+This distinction is intentional.
+
+Bronze optimizes for source preservation and reprocessing.
+
+Silver and Gold optimize for structured analytical processing.
+
+---
+
+## 23. Relationship with Gold
+
+Bronze does not directly construct the analytical Gold products.
+
+The complete path is:
+
+```text
+Bronze
+  │
+  ▼
+Silver
+  │
+  ▼
+Gold
+```
+
+The final Gold model contains:
+
+```text
+gold_fact_province_hourly
+gold_fact_installed_capacity_monthly
+gold_dim_geography
+gold_dim_time
+```
+
+The principal Gold fact integrates meteorological and electricity-generation
+data at:
+
+```text
+Province × hour
+```
+
+The installed-capacity fact operates at:
+
+```text
+Autonomous Community × month
+```
+
+These analytical structures are deliberately absent from Bronze.
+
+---
+
+## 24. Relationship with Airflow
+
+Apache Airflow coordinates ingestion executions but does not implement the
+storage layer itself.
+
+The relationship is:
+
+```text
+Airflow
+   │
+   ▼
+Python ingestion
+   │
+   ▼
+Common storage component
+   │
+   ▼
+MinIO / Bronze
+```
+
+Airflow Bronze-ingestion capability has previously been validated.
+
+The final complete Airflow-controlled:
+
+```text
+Bronze
+→ Silver
+→ Gold
+```
+
+runtime execution remains part of the orchestration closure.
+
+---
+
+## 25. Version Control
+
+Generated Bronze data is not committed to Git.
+
+Git contains:
+
+- ingestion source code;
+- Spark source code;
+- Airflow DAG definitions;
+- tests;
+- configuration templates;
+- documentation;
+- infrastructure definitions.
+
+Runtime Bronze objects remain in MinIO.
+
+The local:
+
+```text
+.env
+```
+
+also remains outside source control.
+
+Real credentials must never be committed.
+
+---
+
+## 26. Current Bronze-to-Silver Validation
+
+The validated historical Bronze execution produced the following Silver counts:
+
+```text
+silver_aemet_stations
+= 926
+
+silver_aemet_current_observations
+= 9786
+
+silver_open_meteo_hourly
+= 133344
+
+silver_open_meteo_15min
+= 533376
+
+silver_cnig_provinces
+= 52
+
+silver_cnig_autonomous_communities
+= 19
+
+silver_cnig_municipalities
+= 8132
+
+silver_esios_energy_hourly
+= 38443
+
+silver_esios_installed_capacity_monthly
+= 123
+```
+
+The exact Open-Meteo counts validate complete historical Bronze coverage for the
+requested six-day interval.
+
+---
+
+## 27. End-to-End Validation
+
+The Bronze data was successfully consumed through the complete processing chain:
+
+```text
+Real external sources
+        │
+        ▼
+MinIO / Bronze
+        │
+        ▼
+Spark / Silver
+        │
+        ▼
+Apache Iceberg
+        │
+        ▼
+Spark / Gold
+        │
+        ▼
+Apache Iceberg
+        │
+        ▼
+Trino
+```
+
+The resulting Gold tables contained:
+
+```text
+gold_dim_geography
+= 71 rows
+
+gold_dim_time
+= 158 rows
+
+gold_fact_installed_capacity_monthly
+= 19 rows
+
+gold_fact_province_hourly
+= 8147 rows
+```
+
+The principal hourly fact contained:
+
+```text
+8100 rows with weather
+6768 rows with energy
+6721 rows with weather and energy
+```
+
+and:
+
+```text
+0 duplicate Province × hour keys
+```
+
+This confirms that Bronze objects persisted in MinIO are valid inputs to the
+implemented Lakehouse processing chain.
+
+---
+
+## 28. Current Validation Status
+
+The current Bronze storage status is:
+
+```text
+MinIO Bronze backend
+= VALIDATED
+
+Source-based organization
+= VALIDATED
+
+Dataset-based organization
+= VALIDATED
+
+Ingestion-date partitioning
+= VALIDATED
+
+Bronze metadata
+= VALIDATED
+
+AEMET Bronze persistence
+= VALIDATED
+
+Open-Meteo Bronze persistence
+= VALIDATED
+
+ESIOS Bronze persistence
+= VALIDATED
+
+CNIG Bronze persistence
+= VALIDATED
+
+Historical Bronze acquisition
+= VALIDATED
+
+Open-Meteo temporal coverage checks
+= VALIDATED
+
+Open-Meteo resumable acquisition
+= VALIDATED
+
+ESIOS empty-response protection
+= VALIDATED
+
+Bronze → Silver processing
+= VALIDATED
+
+Silver → Gold processing
+= VALIDATED
+
+Gold → Trino querying
+= VALIDATED
+
+Complete final Airflow E2E runtime
+= PENDING ORCHESTRATION VALIDATION
+```
+
+The Bronze storage layer is therefore implemented and operational for the
+current project scope.

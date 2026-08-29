@@ -2,435 +2,649 @@
 
 ## 1. Purpose
 
-This document describes the implementation and technical validation of the Silver layer of the Energy Lakehouse Platform.
+This document describes the implementation and technical validation of the
+Silver layer of the Energy Lakehouse Platform.
 
-The Silver layer transforms the raw datasets stored in the Bronze layer into normalized, typed, deduplicated and queryable datasets persisted as Apache Iceberg tables.
+The Silver layer transforms raw Bronze acquisitions into normalized, typed,
+deduplicated and queryable Apache Iceberg datasets.
 
-The implemented processing flow is:
+The implemented processing path is:
 
 ```text
-Bronze (MinIO / S3-compatible storage)
-→ PySpark transformations
-→ geographical normalization against CNIG when applicable
-→ Apache Iceberg Silver tables
-→ MinIO persistent storage
-→ Trino SQL access
+Bronze / MinIO
+      │
+      ▼
+Apache Spark / PySpark
+      │
+      ├── parsing
+      ├── typing
+      ├── timestamp normalization
+      ├── geographical normalization
+      ├── natural-key deduplication
+      └── data-quality validation
+      │
+      ▼
+Apache Iceberg / Silver
+      │
+      ▼
+MinIO
+      │
+      ▼
+Trino
 ```
 
-The implementation preserves the original data granularity whenever possible. Aggregation and analytical selection are delegated to the Gold layer.
+Silver preserves the real source granularity.
+
+Analytical aggregation, source precedence and meteorology-energy integration are
+performed later in Gold.
 
 ---
 
-## 2. Implemented Silver Tables
+## 2. Final Implemented Silver Model
 
-A total of 12 Apache Iceberg tables have been implemented and physically validated.
+The final physical Silver model contains exactly:
+
+```text
+9 Apache Iceberg tables
+```
 
 ### AEMET
 
-| Table | Validated rows |
-|---|---:|
-| `silver_aemet_stations` | 921 |
-| `silver_aemet_daily_climatology` | 2,420 |
-| `silver_aemet_current_observations` | 9,688 |
+```text
+silver_aemet_stations
+silver_aemet_current_observations
+```
 
 ### Open-Meteo
 
-| Table | Validated rows |
-|---|---:|
-| `silver_open_meteo_hourly` | 88,416 |
-| `silver_open_meteo_historical_forecast` | 88,416 |
-| `silver_open_meteo_15min` | 353,664 |
-
-### CNIG
-
-| Table | Validated rows |
-|---|---:|
-| `silver_cnig_provinces` | 52 |
-| `silver_cnig_autonomous_communities` | 19 |
-| `silver_cnig_municipalities` | 8,132 |
-
-### ESIOS
-
-| Table | Validated rows |
-|---|---:|
-| `silver_esios_energy_hourly` | 30,107 |
-| `silver_esios_power_5min` | 13,824 |
-| `silver_esios_installed_capacity_monthly` | 123 |
-
-The complete Silver namespace was subsequently reconstructed and the 12 tables were again confirmed from Trino.
-
----
-
-## 3. Apache Iceberg Persistence
-
-The 12 Silver datasets are persisted as managed Apache Iceberg tables.
-
-The validated warehouse location is:
-
 ```text
-s3://energy-lakehouse/warehouse/silver/
-```
-
-Physical persistence was verified directly in MinIO.
-
-For the inspected Iceberg table, the physical structure contained:
-
-- `data/` for the persisted data files;
-- `metadata/` for Apache Iceberg metadata;
-- Iceberg metadata JSON files;
-- Avro manifest and snapshot files;
-- physical data partitions.
-
-For example, `silver_open_meteo_hourly` is physically partitioned using the Iceberg transformation:
-
-```text
-days(observation_timestamp)
-```
-
-The tables were also validated as Apache Iceberg tables through their physical metadata and catalog representation.
-
-The physical-schema validation confirmed for all 12 tables:
-
-```text
-PROVIDER_OK = True
-LOCATION_OK = True
-```
-
-The validated Silver warehouse locations use:
-
-```text
-s3://energy-lakehouse/warehouse/silver/
-```
-
----
-
-## 4. Partitioning
-
-The physical partitioning validated for the Silver tables follows the designed temporal granularities.
-
-| Table | Validated partitioning |
-|---|---|
-| `silver_aemet_stations` | none |
-| `silver_aemet_daily_climatology` | `months(observation_date)` |
-| `silver_aemet_current_observations` | `days(observation_timestamp)` |
-| `silver_open_meteo_hourly` | `days(observation_timestamp)` |
-| `silver_open_meteo_historical_forecast` | `days(observation_timestamp)` |
-| `silver_open_meteo_15min` | `days(observation_timestamp)` |
-| `silver_cnig_provinces` | none |
-| `silver_cnig_autonomous_communities` | none |
-| `silver_cnig_municipalities` | none |
-| `silver_esios_energy_hourly` | `days(observation_timestamp)` |
-| `silver_esios_power_5min` | `days(observation_timestamp)` |
-| `silver_esios_installed_capacity_monthly` | `months(observation_timestamp)` |
-
-The physical-schema validation confirmed:
-
-```text
-TABLE_COUNT = 12
-MISSING_TABLES = []
-```
-
-For every table:
-
-```text
-PARTITION_OK = True
-PROVIDER_OK = True
-LOCATION_OK = True
-```
-
-Reference/master datasets that do not require temporal partitioning are stored without temporal partitions.
-
----
-
-## 5. Geographical Normalization
-
-CNIG is implemented as the canonical geographical master for province and autonomous-community normalization.
-
-The implemented resolution process is:
-
-```text
-source province
-→ deterministic normalization
-→ controlled alias fallback when required
-→ CNIG province
-→ CNIG autonomous community
-```
-
-### 5.1 Deterministic normalization
-
-Province names are normalized before comparison with the CNIG master.
-
-The normalization process handles differences such as capitalization and diacritics without changing the geographical meaning of the source value.
-
-Validated examples include:
-
-```text
-ALMERIA      → Almería
-ARABA/ALAVA  → Araba/Álava
-AVILA        → Ávila
-CACERES      → Cáceres
-CADIZ        → Cádiz
-CORDOBA      → Córdoba
-JAEN         → Jaén
-LEON         → León
-MALAGA       → Málaga
-```
-
-### 5.2 Controlled aliases
-
-Cases that cannot be resolved exclusively through deterministic normalization use the controlled configuration:
-
-```text
-config/province_aliases.json
-```
-
-The validated aliases are:
-
-```text
-ALICANTE               → Alacant/Alicante
-BALEARES               → Illes Balears
-CASTELLON              → Castelló/Castellón
-STA. CRUZ DE TENERIFE  → Santa Cruz de Tenerife
-VALENCIA                → València/Valencia
-```
-
-Persisted Silver validation confirmed the following mappings:
-
-| Source province | Province code | Canonical province | Autonomous-community code | Canonical autonomous community |
-|---|---|---|---|---|
-| `ALICANTE` | `03` | `Alacant/Alicante` | `10` | `Comunitat Valenciana` |
-| `BALEARES` | `07` | `Illes Balears` | `04` | `Illes Balears` |
-| `CASTELLON` | `12` | `Castelló/Castellón` | `10` | `Comunitat Valenciana` |
-| `STA. CRUZ DE TENERIFE` | `38` | `Santa Cruz de Tenerife` | `05` | `Canarias` |
-| `VALENCIA` | `46` | `València/Valencia` | `10` | `Comunitat Valenciana` |
-
-### 5.3 Canonical geographical columns
-
-The geographical enrichment materializes:
-
-```text
-province_code
-province_name
-autonomous_community_code
-autonomous_community_name
-```
-
-in the five applicable meteorological Silver tables:
-
-```text
-silver_aemet_stations
-silver_aemet_daily_climatology
 silver_open_meteo_hourly
-silver_open_meteo_historical_forecast
 silver_open_meteo_15min
 ```
 
-The original source province fields remain available for traceability.
-
-`silver_aemet_current_observations` is not enriched through this province-name mechanism because its validated source schema does not contain the province field required by the matching process.
-
-### 5.4 Persisted geographical validation
-
-Persisted-data validation was executed against the five enriched meteorological tables.
-
-Validated result:
+### CNIG / IGN
 
 ```text
-silver_aemet_stations                    921 rows     0 unmatched provinces     0 unmatched autonomous communities
-silver_aemet_daily_climatology          2420 rows     0 unmatched provinces     0 unmatched autonomous communities
-silver_open_meteo_historical_forecast  88416 rows     0 unmatched provinces     0 unmatched autonomous communities
-silver_open_meteo_hourly               88416 rows     0 unmatched provinces     0 unmatched autonomous communities
-silver_open_meteo_15min               353664 rows     0 unmatched provinces     0 unmatched autonomous communities
+silver_cnig_provinces
+silver_cnig_autonomous_communities
+silver_cnig_municipalities
 ```
 
-Therefore, all records in the five applicable persisted Silver tables were successfully resolved to their canonical CNIG province and autonomous community.
+### REE / ESIOS
 
-The physical-schema validation also confirmed that the expected canonical geographical columns are present in the applicable tables.
+```text
+silver_esios_energy_hourly
+silver_esios_installed_capacity_monthly
+```
+
+The following previous tables are no longer part of the final physical model:
+
+```text
+silver_aemet_daily_climatology
+silver_open_meteo_historical_forecast
+silver_esios_power_5min
+```
+
+They must therefore not be counted as current Silver products.
 
 ---
 
-## 6. Data Quality Validation
+## 3. Final Silver Row Counts
 
-Data quality controls were executed against the Silver tables after their physical persistence in Apache Iceberg.
+The current real end-to-end validation produced the following Silver counts:
 
-The validation covered:
+| Table | Rows |
+|---|---:|
+| `silver_aemet_stations` | 926 |
+| `silver_aemet_current_observations` | 9,786 |
+| `silver_open_meteo_hourly` | 133,344 |
+| `silver_open_meteo_15min` | 533,376 |
+| `silver_cnig_provinces` | 52 |
+| `silver_cnig_autonomous_communities` | 19 |
+| `silver_cnig_municipalities` | 8,132 |
+| `silver_esios_energy_hourly` | 38,443 |
+| `silver_esios_installed_capacity_monthly` | 123 |
 
-- expected row counts;
-- null natural keys;
-- duplicate natural keys;
-- null observation timestamps or dates;
-- null ingestion timestamps;
-- invalid geographical coordinates;
-- geographical correspondence against CNIG where applicable;
-- temporal granularity.
-
-All 12 persisted Silver tables matched their expected row counts.
-
-No duplicate natural keys were detected in any of the validated tables.
-
-No null natural keys were detected.
-
-No null mandatory observation timestamps or dates were detected.
-
-No null ingestion timestamps were detected.
-
-No invalid coordinates were detected in the datasets where coordinate validation was applicable.
-
-The five meteorological tables requiring canonical province enrichment produced zero unmatched provinces and zero unmatched autonomous communities.
-
-### Open-Meteo temporal validation
-
-The persisted Open-Meteo datasets preserved their expected temporal granularities:
-
-| Dataset | Expected granularity | Temporal differences | Matching | Differences |
-|---|---:|---:|---:|---:|
-| `silver_open_meteo_hourly` | 60 min | 87,495 | 87,495 | 0 |
-| `silver_open_meteo_historical_forecast` | 60 min | 87,495 | 87,495 | 0 |
-| `silver_open_meteo_15min` | 15 min | 352,743 | 352,743 | 0 |
-
-### ESIOS temporal validation
-
-The persisted ESIOS 5-minute dataset preserved its expected temporal granularity:
-
-| Dataset | Expected granularity | Temporal differences | Matching | Differences |
-|---|---:|---:|---:|---:|
-| `silver_esios_power_5min` | 5 min | 13,812 | 13,812 | 0 |
-
-For `silver_esios_energy_hourly`, the validation produced:
-
-```text
-Total temporal differences = 29,765
-60-minute differences      = 29,399
-Non-60-minute differences  = 366
-```
-
-A separate inspection of these differences confirmed gaps greater than one hour across several source datasets.
-
-These gaps are preserved in Silver rather than synthetically filled. Silver normalizes and preserves the available source observations; it does not generate missing observations.
+These counts were obtained from the final persisted Silver tables through
+Trino.
 
 ---
 
-## 7. Idempotent Silver Writes
+## 4. Real Validation Interval
 
-Silver persistence uses natural-key-based merge operations against the Apache Iceberg tables.
+The principal historical end-to-end validation used:
 
-Idempotency was validated by executing the Silver write process again after data had already been persisted.
+```text
+2026-01-10 → 2026-01-15
+```
 
-The second execution maintained the same target row counts for the previously populated tables instead of inserting duplicate records.
+The interval contains six complete days.
 
-The complete write execution finished successfully for all 12 Silver tables.
+This period was selected because the final configured ESIOS indicator set was
+verified to contain actual data for the requested interval.
 
-| Table | Source rows | Target rows after merge |
-|---|---:|---:|
-| `silver_aemet_stations` | 921 | 921 |
-| `silver_aemet_daily_climatology` | 2,420 | 2,420 |
-| `silver_aemet_current_observations` | 9,688 | 9,688 |
-| `silver_open_meteo_hourly` | 88,416 | 88,416 |
-| `silver_open_meteo_historical_forecast` | 88,416 | 88,416 |
-| `silver_open_meteo_15min` | 353,664 | 353,664 |
-| `silver_cnig_provinces` | 52 | 52 |
-| `silver_cnig_autonomous_communities` | 19 | 19 |
-| `silver_cnig_municipalities` | 8,132 | 8,132 |
-| `silver_esios_energy_hourly` | 30,107 | 30,107 |
-| `silver_esios_power_5min` | 13,824 | 13,824 |
-| `silver_esios_installed_capacity_monthly` | 123 | 123 |
-
-This validation demonstrates that rerunning the Silver persistence process does not produce duplicate rows for the same natural keys.
+The same real Bronze acquisition was subsequently processed through Silver and
+Gold.
 
 ---
 
-## 8. Complete Silver Reconstruction
+## 5. Apache Iceberg Persistence
 
-After incorporating the canonical geographical normalization, the Silver tables were reconstructed from the implemented Silver processing code.
+Silver is physically implemented using Apache Iceberg.
 
-The reconstruction completed successfully with:
+The storage relationship is:
 
 ```text
-SILVER ICEBERG TABLE CREATION COMPLETE
+Apache Spark
+     │
+     ▼
+Apache Iceberg
+     │
+     ▼
+MinIO
+     ▲
+     │
+   Trino
 ```
 
-Trino subsequently exposed exactly the 12 expected tables:
+Spark creates and writes the managed Silver tables.
+
+Trino accesses the same persisted Iceberg catalog independently for SQL
+validation and analytical consumption.
+
+Silver data is stored in the Lakehouse warehouse under the Silver namespace.
+
+The persisted tables contain the Apache Iceberg physical structures required
+for table management, including:
+
+```text
+data files
+metadata
+snapshots
+manifests
+```
+
+Bronze itself remains raw object storage and is not implemented as Iceberg.
+
+---
+
+## 6. Catalog Validation
+
+The final Silver namespace is available through:
+
+```text
+iceberg.silver
+```
+
+The catalog exposes exactly the final nine tables:
 
 ```text
 silver_aemet_current_observations
-silver_aemet_daily_climatology
 silver_aemet_stations
 silver_cnig_autonomous_communities
 silver_cnig_municipalities
 silver_cnig_provinces
 silver_esios_energy_hourly
 silver_esios_installed_capacity_monthly
-silver_esios_power_5min
 silver_open_meteo_15min
-silver_open_meteo_historical_forecast
 silver_open_meteo_hourly
 ```
 
-After persistence, the validated row counts were:
+The obsolete Silver tables are not part of the current final catalog.
 
-```text
-silver_aemet_stations                     921
-silver_aemet_daily_climatology           2420
-silver_aemet_current_observations        9688
-
-silver_open_meteo_hourly                88416
-silver_open_meteo_historical_forecast  88416
-silver_open_meteo_15min                353664
-
-silver_cnig_provinces                      52
-silver_cnig_autonomous_communities         19
-silver_cnig_municipalities               8132
-
-silver_esios_energy_hourly              30107
-silver_esios_power_5min                 13824
-silver_esios_installed_capacity_monthly   123
-```
-
-This reconstruction verifies that the implemented Silver code is capable of recreating the expected Silver table structure and repopulating the persisted datasets.
+**Status: VALIDATED**
 
 ---
 
-## 9. Trino Catalog Validation
+## 7. Partitioning
 
-The Silver namespace and its Apache Iceberg tables were validated from Trino.
+The implemented partitioning follows the real temporal nature of each dataset.
 
-The `iceberg` catalog exposed the Silver schema and all 12 implemented Silver tables.
+| Table | Partitioning |
+|---|---|
+| `silver_aemet_stations` | none |
+| `silver_aemet_current_observations` | day |
+| `silver_open_meteo_hourly` | day |
+| `silver_open_meteo_15min` | day |
+| `silver_cnig_provinces` | none |
+| `silver_cnig_autonomous_communities` | none |
+| `silver_cnig_municipalities` | none |
+| `silver_esios_energy_hourly` | day |
+| `silver_esios_installed_capacity_monthly` | month |
 
-Real SQL queries were executed directly against persisted Iceberg tables.
+Reference/master tables do not require temporal partitioning.
 
-For example:
+Observation tables use their normalized observation timestamp.
 
-```sql
-SELECT COUNT(*)
-FROM iceberg.silver.silver_open_meteo_hourly;
-```
+---
 
-returned:
+## 8. Natural Keys
+
+The final Silver natural keys are:
+
+| Table | Natural key |
+|---|---|
+| `silver_aemet_stations` | `station_id` |
+| `silver_aemet_current_observations` | `station_id + observation_timestamp` |
+| `silver_open_meteo_hourly` | `station_id + observation_timestamp` |
+| `silver_open_meteo_15min` | `station_id + observation_timestamp` |
+| `silver_cnig_provinces` | `province_code` |
+| `silver_cnig_autonomous_communities` | `autonomous_community_code` |
+| `silver_cnig_municipalities` | `municipality_ine_code` |
+| `silver_esios_energy_hourly` | `indicator_id + esios_geo_id + observation_timestamp` |
+| `silver_esios_installed_capacity_monthly` | `indicator_id + esios_geo_id + observation_timestamp` |
+
+These keys are used to prevent repeated Bronze acquisitions from multiplying the
+same logical Silver record.
+
+---
+
+## 9. AEMET Implementation
+
+### `silver_aemet_stations`
+
+The AEMET station master is normalized into:
 
 ```text
-88416
+silver_aemet_stations
 ```
 
-The complete persisted row-count validation from Trino returned:
+The current validated catalogue contains:
 
 ```text
-silver_esios_installed_capacity_monthly   123
-silver_esios_power_5min                 13824
-silver_esios_energy_hourly              30107
-silver_cnig_municipalities               8132
-silver_cnig_autonomous_communities         19
-silver_cnig_provinces                      52
-silver_open_meteo_15min                353664
-silver_open_meteo_historical_forecast  88416
-silver_open_meteo_hourly                88416
-silver_aemet_current_observations        9688
-silver_aemet_stations                     921
-silver_aemet_daily_climatology           2420
+926 rows
 ```
 
-Schema inspection through Trino also confirmed the canonical geographical fields in the applicable meteorological tables.
+The structural source identifier is normalized to:
 
-For example, `silver_aemet_stations` contains:
+```text
+station_id
+```
+
+Coordinates are converted into numeric latitude and longitude fields.
+
+The station master is also used as the meteorological location catalogue for
+Open-Meteo.
+
+Where source province information is available, canonical geography is resolved
+against CNIG.
+
+Natural key:
+
+```text
+station_id
+```
+
+---
+
+### `silver_aemet_current_observations`
+
+The current AEMET observation dataset is normalized into:
+
+```text
+silver_aemet_current_observations
+```
+
+Structural normalization includes:
+
+```text
+idema
+→ station_id
+
+fint
+→ observation_timestamp
+
+lat
+→ latitude
+
+lon
+→ longitude
+```
+
+The remaining AEMET meteorological source fields are preserved without
+prematurely translating them into Gold analytical metrics.
+
+Current validated row count:
+
+```text
+9786
+```
+
+Natural key:
+
+```text
+station_id
++
+observation_timestamp
+```
+
+The source contains recent/current observations and is not interpreted as a
+generic historical reconstruction source.
+
+---
+
+## 10. Open-Meteo Implementation
+
+Open-Meteo acquisition uses the AEMET station catalogue.
+
+Current validated location count:
+
+```text
+926
+```
+
+The final Silver implementation contains two Open-Meteo tables.
+
+---
+
+### `silver_open_meteo_hourly`
+
+Grain:
+
+```text
+Station × hour
+```
+
+Natural key:
+
+```text
+station_id
++
+observation_timestamp
+```
+
+The table includes normalized meteorological information such as:
+
+```text
+temperature_2m
+relative_humidity_2m
+precipitation
+shortwave_radiation
+direct_normal_irradiance
+```
+
+as well as station and canonical geographical information.
+
+The validated historical row count is:
+
+```text
+133344
+```
+
+This matches exactly:
+
+```text
+926 locations
+×
+144 hourly observations
+=
+133344 rows
+```
+
+for the validated six-day interval.
+
+---
+
+### `silver_open_meteo_15min`
+
+Grain:
+
+```text
+Station × 15 minutes
+```
+
+Natural key:
+
+```text
+station_id
++
+observation_timestamp
+```
+
+The dataset retains the high-frequency variables required for Gold, including:
+
+```text
+wind_speed_80m
+wind_direction_80m
+
+wind_speed_120m
+wind_direction_120m
+
+shortwave_radiation
+direct_normal_irradiance
+```
+
+The validated row count is:
+
+```text
+533376
+```
+
+This matches exactly:
+
+```text
+926 locations
+×
+576 observations
+=
+533376 rows
+```
+
+for the validated six-day interval.
+
+No 15-minute-to-hour aggregation is performed in Silver.
+
+---
+
+## 11. Open-Meteo Temporal Validation
+
+For:
+
+```text
+2026-01-10 → 2026-01-15
+```
+
+the expected temporal coverage was:
+
+### Hourly
+
+```text
+6 × 24
+= 144 records/location
+```
+
+### 15-minute
+
+```text
+6 × 24 × 4
+= 576 records/location
+```
+
+The persisted Silver counts exactly matched both calculations.
+
+Therefore:
+
+```text
+silver_open_meteo_hourly
+= COMPLETE FOR VALIDATED INTERVAL
+
+silver_open_meteo_15min
+= COMPLETE FOR VALIDATED INTERVAL
+```
+
+**Status: VALIDATED**
+
+---
+
+## 12. CNIG Implementation
+
+CNIG / IGN is the canonical geographical master of the platform.
+
+The final Silver geographical model contains:
+
+```text
+silver_cnig_provinces
+silver_cnig_autonomous_communities
+silver_cnig_municipalities
+```
+
+Validated cardinalities are:
+
+```text
+provinces
+= 52
+
+autonomous communities
+= 19
+
+municipalities
+= 8132
+```
+
+---
+
+### `silver_cnig_provinces`
+
+Natural key:
+
+```text
+province_code
+```
+
+Official codes are stored as strings.
+
+The table provides the canonical relationship between:
+
+```text
+Province
+→ Autonomous Community
+```
+
+---
+
+### `silver_cnig_autonomous_communities`
+
+Derived from the canonical CNIG territorial information.
+
+Natural key:
+
+```text
+autonomous_community_code
+```
+
+Validated rows:
+
+```text
+19
+```
+
+---
+
+### `silver_cnig_municipalities`
+
+The validated mapping includes:
+
+```text
+municipality_ine_code
+← COD_INE
+
+municipality_code
+← COD_GEO
+
+province_code
+← COD_PROV
+```
+
+Natural key:
+
+```text
+municipality_ine_code
+```
+
+`municipality_code` is not used as the canonical natural key because the source
+contains repeated:
+
+```text
+COD_GEO = 00000
+```
+
+values.
+
+Validated rows:
+
+```text
+8132
+```
+
+---
+
+## 13. Geographical Normalization
+
+CNIG is used to resolve canonical province and Autonomous Community information.
+
+The implemented resolution model is:
+
+```text
+Source geographical value
+        │
+        ▼
+Deterministic normalization
+        │
+        ▼
+Controlled alias fallback
+        │
+        ▼
+CNIG canonical Province
+        │
+        ▼
+CNIG Autonomous Community
+```
+
+Deterministic normalization handles differences in:
+
+- capitalization;
+- whitespace;
+- diacritics.
+
+No fuzzy geographical inference is used.
+
+---
+
+## 14. Province Alias Configuration
+
+Known naming differences are maintained in:
+
+```text
+config/province_aliases.json
+```
+
+Validated mappings include:
+
+```text
+ALICANTE
+→ Alacant/Alicante
+
+BALEARES
+→ Illes Balears
+
+CASTELLON
+→ Castelló/Castellón
+
+STA. CRUZ DE TENERIFE
+→ Santa Cruz de Tenerife
+
+VALENCIA
+→ València/Valencia
+```
+
+These aliases are explicit controlled mappings and are applied only after
+deterministic normalization fails.
+
+---
+
+## 15. Canonical Geography
+
+Where applicable, normalized datasets use:
 
 ```text
 province_code
@@ -439,164 +653,594 @@ autonomous_community_code
 autonomous_community_name
 ```
 
-and `silver_open_meteo_hourly` contains the same four canonical geographical fields.
+The source geographical representation can remain available separately for
+traceability.
 
-This confirms that the Silver tables created and populated through Spark are accessible from Trino through the shared Iceberg catalog.
+The key principle is:
+
+```text
+Source geography is normalized,
+not invented.
+```
+
+Province-level detail is only retained or derived when justified by the source
+and canonical reference.
 
 ---
 
-## 10. Physical Schema Validation
+## 16. ESIOS Implementation
 
-Automated physical validation was executed against the 12 persisted Apache Iceberg tables.
-
-The validation checked:
-
-- table existence;
-- expected table count;
-- physical schemas;
-- canonical geographical columns where applicable;
-- Iceberg partitioning;
-- table provider;
-- physical warehouse location.
-
-Validated result:
+The final ESIOS Silver implementation contains two physical tables:
 
 ```text
-TABLE_COUNT = 12
-MISSING_TABLES = []
+silver_esios_energy_hourly
+silver_esios_installed_capacity_monthly
 ```
 
-For all 12 tables:
+The obsolete:
 
 ```text
-CANONICAL_GEOGRAPHY_SCHEMA_OK = True
-PARTITION_OK = True
-PROVIDER_OK = True
-LOCATION_OK = True
+silver_esios_power_5min
 ```
 
-No validation result returned `False`.
+is not part of the final model.
 
-This confirms that the physical Iceberg implementation matches the approved Silver table structure, including the canonical geographical enrichment where applicable.
+The final active indicator scope is configured in:
+
+```text
+config/esios_indicators.json
+```
+
+and contains:
+
+```text
+11 hourly generation indicators
+9 monthly installed-capacity indicators
+```
 
 ---
 
-## 11. Automated Tests
+## 17. `silver_esios_energy_hourly`
 
-The Silver implementation includes unit, integration, physical-schema, persisted-data and end-to-end validation tests.
-
-The Silver test directory contains tests covering:
-
-- common Silver functionality;
-- AEMET transformations;
-- AEMET integration with real Bronze data;
-- Open-Meteo transformations;
-- Open-Meteo integration with real Bronze data;
-- CNIG transformations;
-- CNIG integration with real Bronze data;
-- ESIOS transformations;
-- ESIOS integration with real Bronze data;
-- geographical normalization;
-- Iceberg integration;
-- Silver integration;
-- physical Iceberg table validation;
-- persisted Silver data validation;
-- end-to-end Silver validation.
-
-Additional inspection scripts were used during implementation to inspect real Bronze schemas and investigate source-data characteristics such as ESIOS hourly temporal gaps.
-
-Earlier validated unit-test executions included:
+Purpose:
 
 ```text
-AEMET      = 7 passed
-Open-Meteo = 7 passed
-ESIOS      = 7 passed
+normalized hourly electricity-generation observations
 ```
 
-Integration tests were additionally executed against real Bronze datasets before persistence.
-
-Following the geographical-normalization implementation and the final Silver corrections, the complete Silver test suite was executed successfully.
-
-Validated final result:
+Natural key:
 
 ```text
-73 passed
+indicator_id
++
+esios_geo_id
++
+observation_timestamp
 ```
 
-No failing Silver tests remained in the final validated execution.
+The normalized structure retains information such as:
+
+```text
+indicator_id
+dataset
+indicator_name
+indicator_short_name
+
+magnitude_id
+magnitude_name
+
+time_id
+time_name
+
+observation_timestamp
+
+esios_geo_id
+esios_geo_name
+
+value
+
+source
+ingestion_timestamp
+```
+
+The source geography is preserved.
+
+Province-level information is not fabricated for records that do not provide
+Province-level geography.
+
+Current validated row count:
+
+```text
+38443
+```
 
 ---
 
-## 12. End-to-End Validation
+## 18. `silver_esios_installed_capacity_monthly`
 
-A complete Silver end-to-end validation was executed using real Bronze data.
-
-The validated processing path was:
+Purpose:
 
 ```text
-Bronze data in MinIO
-→ PySpark Silver transformations
-→ canonical geographical enrichment where applicable
-→ persisted Apache Iceberg Silver tables
-→ SQL queries against persisted tables
+normalized monthly installed-capacity observations
 ```
 
-For each of the 12 Silver datasets, the validation compared:
-
-- rows produced by the Bronze-to-Silver transformation;
-- rows persisted in the corresponding Iceberg table;
-- expected validated row count;
-- source and target column order;
-- SQL row count obtained from the persisted Iceberg table.
-
-All 12 datasets produced:
+Natural key:
 
 ```text
-SOURCE_TARGET_COUNT_MATCH = True
-EXPECTED_COUNT_MATCH = True
-COLUMN_ORDER_MATCH = True
+indicator_id
++
+esios_geo_id
++
+observation_timestamp
 ```
 
-SQL queries against all 12 persisted Iceberg tables also returned their expected validated row counts.
-
-The execution completed with:
+Current active scope:
 
 ```text
-SILVER END-TO-END VALIDATION COMPLETE
+9 indicators
 ```
 
-without validation exceptions.
+Current validated row count:
 
-The later full reconstruction and geographical validation additionally confirmed that the canonical geographical enrichment remains valid in the physically persisted tables.
+```text
+123
+```
+
+The validated analytical geography is:
+
+```text
+Autonomous Community
+```
+
+Installed-capacity values remain power metrics expressed in:
+
+```text
+MW
+```
+
+They are not artificially distributed to provinces.
 
 ---
 
-## 13. Final Validation Result
+## 19. ESIOS Source Semantics
 
-The implemented Silver layer has been technically validated across the complete processing chain.
+Silver preserves the ESIOS magnitude and time metadata required to maintain
+correct analytical semantics.
 
-The validation confirms:
+The project distinguishes between:
 
-- 12 Apache Iceberg Silver tables implemented;
-- real Bronze data transformed with PySpark;
-- natural-key deduplication applied;
-- expected schemas and partitioning validated;
-- CNIG used as the canonical geographical master;
-- deterministic province normalization implemented;
-- controlled province aliases externalized in `config/province_aliases.json`;
-- canonical province and autonomous-community fields persisted where applicable;
-- zero unmatched provinces in the five applicable meteorological tables;
-- zero unmatched autonomous communities in the five applicable meteorological tables;
-- data-quality controls executed;
-- expected temporal granularities preserved;
-- known source-data gaps detected and preserved without synthetic filling;
-- data physically persisted in MinIO;
-- Iceberg metadata and physical data files present;
-- idempotent Silver writes validated;
-- Silver tables accessible through Trino;
-- all 12 Silver tables successfully reconstructed and repopulated;
-- physical schema, partitioning, provider and location validation successful for all 12 tables;
-- end-to-end Bronze-to-Silver processing validated;
-- final Silver automated test suite completed with `73 passed`.
+```text
+MW
+```
 
-Therefore, the implemented Silver data-processing and persistence flow is considered technically validated for the datasets and executions documented above.
+and:
+
+```text
+MWh
+```
+
+Installed capacity represents:
+
+```text
+power
+→ MW
+```
+
+Hourly generation feeds the Gold analytical energy metrics represented as:
+
+```text
+energy
+→ MWh
+```
+
+The two units are never treated as interchangeable physical quantities.
+
+---
+
+## 20. ESIOS Empty-Data Protection
+
+The ingestion layer rejects an ESIOS acquisition when:
+
+```text
+indicator.values = []
+```
+
+Therefore, the final current Silver validation is based on actual ESIOS
+observations rather than successful-but-empty API responses.
+
+For the historical validation interval:
+
+```text
+2026-01-10 → 2026-01-15
+```
+
+all configured final ESIOS datasets were verified to contain data.
+
+This enabled the real:
+
+```text
+Bronze
+→ Silver
+→ Gold
+```
+
+validation.
+
+---
+
+## 21. Data Quality Validation
+
+Silver applies quality controls including:
+
+```text
+null natural keys
+invalid mandatory timestamps
+invalid coordinates
+unresolved canonical geography where applicable
+duplicate natural keys
+mandatory-field validation
+temporal coverage anomalies
+structural inconsistencies
+```
+
+The quality principles are:
+
+```text
+NULL values are not automatically errors.
+
+Missing values are not replaced with zero.
+
+Missing observations are not synthetically generated.
+
+Plausible source values remain available.
+
+Bronze remains preserved.
+```
+
+---
+
+## 22. Deduplication and Idempotency
+
+Repeated or overlapping Bronze acquisitions can contain the same logical source
+observation.
+
+Silver therefore deduplicates using the natural keys defined for each table.
+
+Conceptually:
+
+```text
+Bronze A ──┐
+           │
+Bronze B ──┼──► PySpark
+           │       │
+Bronze C ──┘       ▼
+               Natural key
+                   │
+                   ▼
+              Deduplication
+                   │
+                   ▼
+                 Silver
+```
+
+Reprocessing input data must not create multiple canonical rows for the same
+natural key.
+
+Natural-key uniqueness is part of the Silver validation strategy.
+
+---
+
+## 23. Silver Automated Tests
+
+The Silver implementation includes tests covering areas such as:
+
+```text
+common Silver utilities
+AEMET transformations
+Open-Meteo transformations
+CNIG transformations
+ESIOS transformations
+geographical normalization
+Iceberg integration
+physical schemas
+persisted Silver data
+end-to-end Silver processing
+```
+
+The latest validated complete Silver test suite finished with:
+
+```text
+85 passed
+```
+
+No failing Silver tests remained in that validated execution.
+
+**Silver automated test status: 85 PASSED**
+
+---
+
+## 24. Final Silver Reconstruction
+
+The current Silver model was reconstructed and populated from real Bronze data.
+
+The resulting physical catalog contained exactly:
+
+```text
+9 tables
+```
+
+with:
+
+```text
+silver_aemet_stations
+= 926
+
+silver_aemet_current_observations
+= 9786
+
+silver_open_meteo_hourly
+= 133344
+
+silver_open_meteo_15min
+= 533376
+
+silver_cnig_provinces
+= 52
+
+silver_cnig_autonomous_communities
+= 19
+
+silver_cnig_municipalities
+= 8132
+
+silver_esios_energy_hourly
+= 38443
+
+silver_esios_installed_capacity_monthly
+= 123
+```
+
+This confirms that the implemented Silver processing can create and populate
+the complete final model from the current Bronze source scope.
+
+---
+
+## 25. Trino Validation
+
+The persisted Silver tables were queried through Trino.
+
+Trino exposed exactly the nine final tables in:
+
+```text
+iceberg.silver
+```
+
+and returned the expected row counts.
+
+This validates the shared catalog path:
+
+```text
+Spark
+  │
+  ▼
+Iceberg / MinIO
+  │
+  ▼
+Trino
+```
+
+The same Silver tables subsequently served as input to Gold processing.
+
+**Status: VALIDATED**
+
+---
+
+## 26. Bronze-to-Silver End-to-End Validation
+
+The validated Silver processing path was:
+
+```text
+Real Bronze objects in MinIO
+          │
+          ▼
+     Apache Spark
+          │
+          ▼
+Silver transformations
+          │
+          ▼
+Natural-key handling
+          │
+          ▼
+Geographical normalization
+          │
+          ▼
+Apache Iceberg persistence
+          │
+          ▼
+        Trino
+```
+
+All nine final Silver tables were successfully created, populated and queried.
+
+**Status: VALIDATED**
+
+---
+
+## 27. Silver-to-Gold Compatibility
+
+The final Silver data was subsequently consumed by the implemented Gold layer.
+
+The complete validated path became:
+
+```text
+Bronze
+  │
+  ▼
+Silver
+  │
+  ▼
+Gold
+  │
+  ▼
+Trino
+```
+
+Gold persistence completed successfully using the nine-table Silver model.
+
+The resulting final Gold model contains:
+
+```text
+gold_dim_geography
+gold_dim_time
+gold_fact_installed_capacity_monthly
+gold_fact_province_hourly
+```
+
+This validates Silver not only in isolation but also as the normalized contract
+required by the final analytical layer.
+
+---
+
+## 28. Final Gold Evidence Derived from Silver
+
+The main Gold fact generated from the final Silver model contains:
+
+```text
+8147 Province × hour rows
+```
+
+with:
+
+```text
+8100 rows containing weather
+
+6768 rows containing energy
+
+6721 rows containing both weather and energy
+```
+
+and:
+
+```text
+0 duplicate Province × hour keys
+```
+
+The installed-capacity fact contains:
+
+```text
+19 Autonomous Community × month rows
+```
+
+with:
+
+```text
+0 duplicate keys
+```
+
+This confirms that the final Silver datasets provide valid normalized input to
+the intended analytical products.
+
+---
+
+## 29. Removed Previous Silver Components
+
+During implementation, the model was simplified to match the final analytical
+scope.
+
+The following previous Silver tables were removed.
+
+### `silver_aemet_daily_climatology`
+
+The final historical meteorological flow is supplied by Open-Meteo while AEMET
+is retained for station master and current observations.
+
+---
+
+### `silver_open_meteo_historical_forecast`
+
+Historical 15-minute observations now feed the unified:
+
+```text
+silver_open_meteo_15min
+```
+
+dataset.
+
+A separate physical historical-forecast Silver table is no longer required.
+
+---
+
+### `silver_esios_power_5min`
+
+The final ESIOS analytical scope is:
+
+```text
+hourly electricity generation
++
+monthly installed capacity
+```
+
+The previous 5-minute ESIOS physical Silver flow is therefore outside the
+final model.
+
+---
+
+## 30. Final Validation Result
+
+The final Silver implementation has been technically validated.
+
+Current evidence confirms:
+
+```text
+Final Silver tables
+= 9
+
+AEMET station rows
+= 926
+
+AEMET current-observation rows
+= 9786
+
+Open-Meteo hourly rows
+= 133344
+
+Open-Meteo 15-minute rows
+= 533376
+
+CNIG province rows
+= 52
+
+CNIG Autonomous Community rows
+= 19
+
+CNIG municipality rows
+= 8132
+
+ESIOS hourly rows
+= 38443
+
+ESIOS monthly rows
+= 123
+
+Silver automated tests
+= 85 PASSED
+
+Apache Iceberg persistence
+= VALIDATED
+
+Trino catalog access
+= VALIDATED
+
+Bronze → Silver
+= VALIDATED
+
+Silver → Gold
+= VALIDATED
+
+Bronze → Silver → Gold → Trino
+= VALIDATED
+```
+
+The Silver layer is therefore implemented, persisted and technically validated
+for the final Energy Lakehouse Platform scope.

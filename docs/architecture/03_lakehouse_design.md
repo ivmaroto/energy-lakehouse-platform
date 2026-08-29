@@ -2,287 +2,979 @@
 
 ## 1. Lakehouse Architecture
 
-The platform follows a Lakehouse architecture, combining the flexibility of a Data Lake with the reliability and analytical capabilities traditionally associated with a Data Warehouse.
+The Energy Lakehouse Platform follows a Lakehouse architecture that combines
+raw object storage with managed analytical tables.
 
-Data is stored as Apache Iceberg tables on MinIO object storage, allowing the platform to maintain a unified storage layer for both raw and curated datasets while supporting efficient analytical workloads.
+The platform uses MinIO as the common S3-compatible storage layer, while the
+logical data model follows the Medallion Architecture:
 
-The Lakehouse is organized using the Medallion Architecture pattern, separating the data lifecycle into multiple layers with clearly defined responsibilities. This approach improves data quality, simplifies maintenance, and enables the progressive refinement of datasets from ingestion to business-ready analytics.
+```text
+Bronze
+   ↓
+Silver
+   ↓
+Gold
+```
 
-Apache Spark and Spark SQL provide the distributed processing capabilities required to transform data across the different Lakehouse layers. Apache Iceberg provides the table abstraction over the data stored in MinIO, while Trino provides the distributed SQL query layer used to expose curated analytical datasets to downstream consumers such as Apache Superset.
+The three layers do not use the same physical storage model.
 
-The Lakehouse therefore acts as the central data repository of the platform, supporting historical storage, incremental updates, distributed processing, and interactive analytical querying.
+Bronze preserves source acquisitions as raw objects in MinIO.
+
+Silver and Gold are implemented as Apache Iceberg tables stored in MinIO and
+managed through the shared Iceberg catalog.
+
+Apache Spark and PySpark provide the distributed processing capabilities
+required to transform data between layers.
+
+Trino provides the interactive SQL query layer over the structured Apache
+Iceberg datasets.
+
+Apache Superset consumes the curated Gold datasets through Trino.
+
+The resulting architecture is:
+
+```text
+External Sources
+       │
+       ▼
+Python Ingestion
+       │
+       ▼
+┌─────────────────┐
+│     Bronze      │
+│ Raw objects     │
+│     MinIO       │
+└────────┬────────┘
+         │
+         ▼
+   Apache Spark
+         │
+         ▼
+┌─────────────────┐
+│     Silver      │
+│ Apache Iceberg  │
+│     MinIO       │
+└────────┬────────┘
+         │
+         ▼
+   Apache Spark
+         │
+         ▼
+┌─────────────────┐
+│      Gold       │
+│ Apache Iceberg  │
+│     MinIO       │
+└────────┬────────┘
+         │
+         ▼
+       Trino
+         │
+         ▼
+ Apache Superset
+```
+
+This architecture preserves source traceability while progressively refining
+data into reusable and business-ready analytical products.
+
+---
 
 ## 2. Medallion Architecture
 
-The Lakehouse is organized following the Medallion Architecture pattern, which separates data into multiple layers according to its level of processing and refinement.
+The platform uses the Medallion Architecture pattern to separate data according
+to its level of processing.
 
-This approach enables data quality improvements to be applied progressively while preserving the original datasets and maintaining a clear separation between raw, curated, and business-ready data.
+### Bronze
 
-Each layer has a specific responsibility within the data lifecycle:
+Bronze contains source acquisitions with minimal modification.
 
-- **Bronze** stores the raw data ingested from the public APIs with minimal modifications.
-- **Silver** contains validated, cleaned, standardized, and integrated datasets prepared for analytical processing.
-- **Gold** stores curated datasets optimized for reporting, dashboards, KPIs, and analytical consumption.
+Its objective is to preserve the original source payload and technical
+ingestion metadata.
 
-By separating the data into these layers, the platform improves maintainability, traceability, and scalability while reducing the complexity of downstream analytical processes.
+### Silver
 
-The general data progression is:
+Silver contains normalized, typed, deduplicated and reusable datasets.
+
+Its objective is to create a consistent representation of each source without
+performing premature analytical integration.
+
+### Gold
+
+Gold contains the final analytical products.
+
+Its objective is to integrate and aggregate the Silver datasets according to
+the validated analytical use cases.
+
+The general progression is:
 
 ```text
-Public APIs
-    │
-    ▼
- Bronze
-    │
-    ▼
-Spark / Spark SQL
-    │
-    ▼
- Silver
-    │
-    ▼
-Spark / Spark SQL
-    │
-    ▼
-  Gold
-    │
-    ▼
- Trino
-    │
-    ▼
-Superset
+External Sources
+       │
+       ▼
+     Bronze
+       │
+       ▼
+Apache Spark
+       │
+       ▼
+     Silver
+       │
+       ▼
+Apache Spark
+       │
+       ▼
+      Gold
+       │
+       ▼
+     Trino
+       │
+       ▼
+   Superset
 ```
+
+---
 
 ## 3. Bronze Layer
 
-The Bronze layer is the entry point of the Lakehouse and stores data ingested directly from the public APIs.
+The Bronze layer is the raw landing area of the platform.
 
-Its primary purpose is to preserve the original information received from each data source while ensuring that the ingestion process is reliable and traceable. Only the minimum transformations required to store the data consistently are applied at this stage.
+It receives information acquired from:
 
-The Bronze layer serves as the immutable source of truth for the platform, allowing datasets to be reprocessed whenever transformation logic changes or new analytical requirements arise.
+```text
+AEMET OpenData
+Open-Meteo
+REE / ESIOS
+CNIG / IGN
+```
 
-Main responsibilities of the Bronze layer include:
+Bronze data is persisted in MinIO as source objects rather than Apache Iceberg
+tables.
 
-- Storing raw data from public APIs.
-- Preserving the original information.
-- Recording ingestion metadata.
-- Supporting historical data storage.
-- Supporting incremental data ingestion.
-- Providing the source data for downstream processing.
+The logical storage structure follows:
 
-The Bronze layer contains data originating from:
+```text
+bronze/
+└── <source>/
+    └── <dataset>/
+        └── year=YYYY/
+            └── month=MM/
+                └── day=DD/
+                    └── <object>
+```
 
-- AEMET.
-- Open-Meteo.
-- REE / ESIOS.
+The temporal directory hierarchy represents the ingestion date.
+
+The actual requested source interval is preserved independently inside the
+Bronze ingestion metadata.
+
+### Bronze responsibilities
+
+Bronze is responsible for:
+
+- preserving source payloads;
+- recording ingestion metadata;
+- separating providers and datasets;
+- supporting historical acquisition;
+- supporting incremental acquisition;
+- retaining repeated acquisitions when applicable;
+- providing the input for Silver processing.
+
+Bronze does not perform:
+
+- geographical harmonization;
+- unit reinterpretation;
+- cross-source joins;
+- analytical aggregations;
+- KPI calculation;
+- definitive business-level deduplication.
+
+Typical metadata includes:
+
+```text
+source
+dataset
+ingestion_mode
+ingestion_timestamp
+requested_start_date
+requested_end_date
+```
+
+Additional source-specific traceability fields may also be stored.
+
+---
 
 ## 4. Silver Layer
 
-The Silver layer contains validated, cleaned, standardized, and enriched datasets derived from the Bronze layer.
+The Silver layer contains the normalized and reusable datasets derived from
+Bronze.
 
-At this stage, data quality issues are addressed, data types are standardized, missing or invalid values are handled when appropriate, and datasets from different sources are prepared for integration.
+Apache Spark and PySpark perform the Bronze-to-Silver transformations.
 
-Apache Spark and Spark SQL perform the transformations required to promote datasets from Bronze to Silver.
+Silver is persisted as Apache Iceberg tables in MinIO.
 
-The objective of the Silver layer is to create reliable and consistent datasets that can be reused by multiple analytical processes without repeatedly applying the same transformations.
+### Silver responsibilities
 
-Main responsibilities of the Silver layer include:
+The Silver layer performs:
 
-- Validating ingested data.
-- Cleaning and standardizing datasets.
-- Harmonizing data formats and units.
-- Handling invalid or missing values.
-- Preparing datasets for integration.
-- Standardizing geographical and temporal dimensions.
-- Producing high-quality analytical datasets.
+- parsing of raw source payloads;
+- explicit data typing;
+- temporal normalization;
+- natural-key deduplication;
+- coordinate normalization;
+- geographical normalization against CNIG when applicable;
+- validation of mandatory fields;
+- structural data-quality controls;
+- preservation of valid missing values;
+- preparation of datasets for downstream integration.
 
-The Silver layer provides the standardized foundation required to combine meteorological and energy information in subsequent processing stages.
+Silver does not fabricate missing observations.
 
-## 5. Gold Layer
+A valid source `NULL` is not automatically interpreted as zero.
 
-The Gold layer contains curated datasets designed specifically for analytical consumption, reporting, KPI calculation, and dashboard development.
+Silver also avoids changing the real geographical or temporal granularity of a
+source unless the transformation is explicitly required by the normalized
+dataset design.
 
-Data in this layer is derived from the Silver layer and is organized according to the analytical requirements of the project. It may include integrated datasets, aggregated metrics, calculated indicators, and structures optimized for efficient analytical querying.
+---
 
-Apache Spark and Spark SQL are responsible for generating the Gold datasets from the standardized information available in the Silver layer.
+## 5. Physical Silver Model
 
-Once created, Gold datasets are stored as Apache Iceberg tables and exposed through Trino for analytical consumption.
+The current Silver implementation contains exactly **9 Apache Iceberg tables**.
 
-Apache Superset accesses these datasets through Trino rather than interacting directly with the Spark processing layer.
-
-The analytical consumption path is therefore:
-
-```text
-Silver
-   │
-   ▼
-Spark / Spark SQL
-   │
-   ▼
- Gold
-   │
-   ▼
-Apache Iceberg
-   │
-   ▼
- Trino
-   │
-   ▼
-Apache Superset
-```
-
-Main responsibilities of the Gold layer include:
-
-- Integrating meteorological and energy datasets.
-- Creating analytical aggregates and indicators.
-- Calculating Key Performance Indicators.
-- Structuring data for reporting and dashboard consumption.
-- Optimizing datasets for analytical queries.
-- Supporting comparisons between Autonomous Communities.
-- Supporting temporal analysis.
-- Providing consistent and reusable analytical data products.
-
-The objective of the Gold layer is to ensure that downstream analytical consumers do not need to implement additional complex transformations.
-
-## 6. Apache Iceberg and Storage Model
-
-Apache Iceberg provides the table format used across the Lakehouse layers.
-
-The physical data and table metadata are stored using MinIO, which provides an S3-compatible object storage interface.
-
-This architecture separates the logical table representation from the underlying object storage.
-
-Conceptually:
+### AEMET
 
 ```text
-Apache Spark
-     │
-     ▼
-Apache Iceberg
-     │
-     ▼
-   MinIO
-     ▲
-     │
-   Trino
+silver_aemet_stations
+silver_aemet_current_observations
 ```
 
-Both Spark and Trino can therefore operate over the same Lakehouse tables while serving different purposes.
-
-Apache Spark is primarily responsible for data processing and table creation or modification, while Trino provides SQL-oriented analytical access to the resulting datasets.
-
-This separation is one of the main architectural characteristics of the platform.
-
-## 7. Data Lifecycle
-
-Data progresses through the Lakehouse following a structured refinement process based on the Medallion Architecture.
-
-The lifecycle begins in the Bronze layer, where raw data is ingested from the public APIs and stored with minimal technical transformations.
-
-The data is then promoted to the Silver layer using Apache Spark, where quality validation, cleansing, standardization, and preparation for integration are performed.
-
-Silver datasets are subsequently processed to generate the Gold analytical layer. At this stage, datasets from different domains can be integrated and transformed into aggregates, indicators, and analytical models.
-
-Once the Gold datasets are available as Apache Iceberg tables, Trino exposes them through SQL for analytical consumption.
-
-Apache Superset uses this query layer to create interactive dashboards, KPIs, reports, and exploratory visualizations.
-
-The complete lifecycle can therefore be represented as:
+### Open-Meteo
 
 ```text
-AEMET ────────┐
-Open-Meteo ───┼──► Ingestion
-REE / ESIOS ──┘        │
-                       ▼
-                    Bronze
-                       │
-                       ▼
-                Spark / Spark SQL
-                       │
-                       ▼
-                    Silver
-                       │
-                       ▼
-                Spark / Spark SQL
-                       │
-                       ▼
-                     Gold
-                       │
-                       ▼
-               Apache Iceberg
-                       │
-                       ▼
-                     Trino
-                       │
-                       ▼
-               Apache Superset
+silver_open_meteo_hourly
+silver_open_meteo_15min
 ```
 
-This layered approach preserves data lineage, improves traceability, and allows transformations to be applied progressively while maintaining a clear separation between ingestion, processing, storage, querying, and analytical consumption.
+### CNIG
 
-## 8. Processing and Query Separation
+```text
+silver_cnig_provinces
+silver_cnig_autonomous_communities
+silver_cnig_municipalities
+```
 
-A fundamental architectural decision is the separation between data processing and interactive analytical querying.
+### REE / ESIOS
 
-Apache Spark and Spark SQL are responsible for:
+```text
+silver_esios_energy_hourly
+silver_esios_installed_capacity_monthly
+```
 
-- Data validation.
-- Data cleansing.
-- Dataset standardization.
-- Data integration.
-- Bronze-to-Silver transformations.
-- Silver-to-Gold transformations.
-- Writing and maintaining Apache Iceberg tables.
+The previous experimental Silver datasets for AEMET daily climatology,
+Open-Meteo historical forecast as a separate physical table and ESIOS
+5-minute power are not part of the current physical Silver model.
+
+---
+
+## 6. Geographical Normalization
+
+CNIG / IGN is the canonical geographical reference used by the platform.
+
+The validated territorial masters contain:
+
+```text
+52 province-level entities
+19 autonomous communities
+8132 municipalities
+```
+
+Official codes are preserved as strings so leading zeroes are retained.
+
+When source data provides sufficient geographical information, Silver applies a
+normalization process such as:
+
+```text
+source geographical value
+        │
+        ▼
+deterministic normalization
+        │
+        ▼
+controlled alias resolution when required
+        │
+        ▼
+CNIG canonical province
+        │
+        ▼
+canonical autonomous community
+```
+
+The normalized geographical attributes include, where applicable:
+
+```text
+province_code
+province_name
+autonomous_community_code
+autonomous_community_name
+```
+
+The platform never manufactures geographical detail that is absent from the
+source.
+
+---
+
+## 7. Meteorological Silver Model
+
+The meteorological Silver layer preserves AEMET and Open-Meteo as separate
+sources.
+
+### AEMET
+
+The active datasets are:
+
+```text
+silver_aemet_stations
+silver_aemet_current_observations
+```
+
+The station catalogue provides the official meteorological point catalogue.
+
+The current validated catalogue contains:
+
+```text
+926 stations
+```
+
+AEMET current observations provide recent official meteorological measurements.
+
+They are not used as a generic historical source for arbitrary past periods.
+
+### Open-Meteo
+
+The active datasets are:
+
+```text
+silver_open_meteo_hourly
+silver_open_meteo_15min
+```
+
+Open-Meteo supplies the reproducible historical meteorological data required by
+the principal analytical flow.
+
+Hourly and 15-minute observations remain separate in Silver.
+
+Temporal aggregation required for analytical products is performed in Gold.
+
+---
+
+## 8. Energy Silver Model
+
+REE / ESIOS provides the electricity-system information used by the project.
+
+The final active source configuration contains:
+
+```text
+11 hourly electricity-generation indicators
+9 monthly installed-capacity indicators
+```
+
+These datasets are normalized into:
+
+```text
+silver_esios_energy_hourly
+silver_esios_installed_capacity_monthly
+```
+
+Silver preserves:
+
+- indicator identity;
+- source timestamp;
+- source geography;
+- numerical value;
+- source traceability.
+
+The previously evaluated 5-minute ESIOS flow is not part of the final physical
+Silver model.
+
+---
+
+## 9. Gold Layer
+
+The Gold layer contains the analytical products generated from Silver.
+
+Gold is implemented using Apache Spark and persisted as Apache Iceberg tables.
+
+The purpose of Gold is to centralize transformations required for analytical
+consumption so that downstream tools do not need to reproduce business logic.
+
+Gold performs operations such as:
+
+- temporal aggregation;
+- spatial aggregation;
+- metric selection;
+- cross-source integration;
+- analytical dimensional modelling;
+- metric-level source fallback;
+- construction of reusable facts and dimensions.
+
+Gold does not artificially fill unavailable source observations.
+
+---
+
+## 10. Physical Gold Model
+
+The current Gold implementation contains exactly **4 Apache Iceberg tables**:
+
+```text
+gold_fact_province_hourly
+gold_fact_installed_capacity_monthly
+gold_dim_geography
+gold_dim_time
+```
+
+No additional country-level 5-minute or 15-minute physical Gold fact tables are
+part of the current implementation.
+
+---
+
+## 11. `gold_fact_province_hourly`
+
+The principal analytical product is:
+
+```text
+gold_fact_province_hourly
+```
+
+Its grain is:
+
+```text
+Province × hour
+```
+
+The natural key is:
+
+```text
+province_code + gold_timestamp
+```
+
+The table integrates meteorological information with hourly ESIOS
+electricity-generation metrics.
+
+Examples of weather metrics include:
+
+```text
+temperature
+humidity
+precipitation
+wind_speed_80m
+wind_direction_80m
+wind_speed_120m
+wind_direction_120m
+solar_radiation
+direct_normal_irradiance
+```
+
+Examples of electricity-generation metrics include:
+
+```text
+wind_generation_mwh
+solar_photovoltaic_generation_mwh
+solar_thermal_generation_mwh
+hydraulic_generation_mwh
+nuclear_generation_mwh
+combined_cycle_generation_mwh
+gas_natural_steam_turbine_generation_mwh
+gas_natural_cogeneration_mwh
+coal_generation_mwh
+other_renewables_generation_mwh
+total_generation_mwh
+```
+
+---
+
+## 12. Weather Aggregation
+
+Meteorological observations are aggregated to the Province × hour analytical
+grain.
+
+### AEMET variables
+
+For the metrics where AEMET is applicable:
+
+```text
+temperature
+humidity
+precipitation
+```
+
+AEMET acts as the preferred source when a valid observation exists.
+
+Open-Meteo provides the fallback for the individual metric when AEMET is not
+available.
+
+The fallback is metric-specific.
+
+It does not replace the entire Province × hour weather record.
+
+Gold retains source traceability using:
+
+```text
+temperature_source
+humidity_source
+precipitation_source
+```
+
+### Open-Meteo variables
+
+Open-Meteo supplies metrics not available from the AEMET current-observation
+flow used by the analytical model, including:
+
+```text
+wind at 80 m
+wind at 120 m
+solar radiation
+direct normal irradiance
+```
+
+Open-Meteo 15-minute observations are aggregated to hourly values where
+required.
+
+Scalar values use arithmetic aggregation.
+
+Wind direction requires circular averaging rather than ordinary arithmetic
+averaging.
+
+---
+
+## 13. Weather and Energy Integration
+
+The meteorological block and the hourly energy block are independently prepared
+at:
+
+```text
+Province × hour
+```
+
+Before joining them, uniqueness is validated on:
+
+```text
+province_code
+gold_timestamp
+```
+
+The final integration uses:
+
+```text
+FULL OUTER JOIN
+```
+
+on:
+
+```text
+province_code
+gold_timestamp
+```
+
+This preserves valid observations from either source.
+
+The resulting behaviour is:
+
+```text
+Weather available
+Energy unavailable
+→ keep the row
+→ energy metrics remain NULL
+```
+
+```text
+Energy available
+Weather unavailable
+→ keep the row
+→ meteorological metrics remain NULL
+```
+
+```text
+Weather available
+Energy available
+→ integrate both domains in the same row
+```
+
+The platform does not fabricate values to force artificial source coverage.
+
+---
+
+## 14. `gold_fact_installed_capacity_monthly`
+
+Installed electricity-generation capacity is represented in:
+
+```text
+gold_fact_installed_capacity_monthly
+```
+
+Its grain is:
+
+```text
+Autonomous Community × month
+```
+
+The natural key is:
+
+```text
+autonomous_community_code + year_month
+```
+
+Installed capacity remains expressed in MW.
+
+It is not converted to MWh because MW represents power rather than energy.
+
+The table contains installed-capacity metrics for the selected ESIOS
+technologies, including:
+
+```text
+hydraulic
+wind
+solar photovoltaic
+solar thermal
+renewable total
+nuclear
+coal
+combined cycle
+other renewables
+```
+
+Installed capacity is not artificially distributed from autonomous communities
+to provinces.
+
+---
+
+## 15. Gold Dimensions
+
+The Gold layer also contains two reusable dimensions.
+
+### `gold_dim_geography`
+
+Provides geographical analytical attributes used by the facts.
+
+### `gold_dim_time`
+
+Provides temporal analytical attributes used by the Gold model.
+
+These dimensions support consistent filtering, grouping and downstream
+visualization.
+
+---
+
+## 16. Geographical Analytical Strategy
+
+The platform deliberately does not impose a single geographical level on all
+data.
+
+The approved rule is:
+
+```text
+Use Province when the validated source supports Province.
+
+Otherwise preserve the actual available geographical level.
+```
+
+The principal Gold fact therefore operates at:
+
+```text
+Province × hour
+```
+
+while installed capacity remains at:
+
+```text
+Autonomous Community × month
+```
+
+The following concepts remain distinct:
+
+```text
+Province
+Autonomous Community
+Spain
+Peninsula
+```
+
+Geographical levels are never treated as interchangeable.
+
+---
+
+## 17. Peninsula Scope
+
+Where peninsular meteorological aggregation is required by analytical logic, the
+validated Peninsula scope excludes the following province codes:
+
+```text
+07  Illes Balears
+35  Las Palmas
+38  Santa Cruz de Tenerife
+51  Ceuta
+52  Melilla
+```
+
+Peninsula weather is therefore derived from the eligible province-level
+meteorological data.
+
+Spain-wide data must not simply be relabelled as Peninsula data.
+
+---
+
+## 18. Apache Iceberg Storage Model
+
+Apache Iceberg provides the structured table abstraction for Silver and Gold.
+
+The physical relationship is:
+
+```text
+                Apache Spark
+                     │
+                     ▼
+              Apache Iceberg
+                     │
+                     ▼
+                   MinIO
+                     ▲
+                     │
+                   Trino
+```
+
+Spark is primarily responsible for:
+
+- creating tables;
+- writing transformed data;
+- updating analytical datasets.
+
+Trino is primarily responsible for:
+
+- interactive SQL querying;
+- analytical inspection;
+- downstream SQL access.
+
+Both engines operate over the same Apache Iceberg tables.
+
+---
+
+## 19. Data Lifecycle
+
+The complete data lifecycle is:
+
+```text
+AEMET ────────────┐
+Open-Meteo ───────┤
+REE / ESIOS ──────┼──► Python ingestion
+CNIG / IGN ───────┘
+                         │
+                         ▼
+                    MinIO / Bronze
+                         │
+                         ▼
+                    Apache Spark
+                         │
+                         ▼
+             Apache Iceberg / Silver
+                         │
+                         ▼
+                    Apache Spark
+                         │
+                         ▼
+              Apache Iceberg / Gold
+                         │
+                         ▼
+                       Trino
+                         │
+                         ▼
+                Apache Superset
+```
+
+Apache Airflow provides the orchestration layer that coordinates the execution
+of the pipeline.
+
+---
+
+## 20. Processing and Query Separation
+
+A fundamental architectural principle is the separation between distributed
+processing and interactive analytical querying.
+
+### Apache Spark
+
+Apache Spark and PySpark are responsible for:
+
+- Bronze-to-Silver processing;
+- Silver-to-Gold processing;
+- validation;
+- normalization;
+- deduplication;
+- geographical mapping;
+- temporal aggregation;
+- cross-source integration;
+- Iceberg persistence.
+
+### Trino
 
 Trino is responsible for:
 
-- Providing SQL access to curated Lakehouse datasets.
-- Executing interactive analytical queries.
-- Exposing Gold datasets to Apache Superset.
-- Decoupling analytical workloads from Spark processing workloads.
+- interactive SQL access;
+- querying persisted Iceberg tables;
+- analytical inspection;
+- exposing Gold datasets to Apache Superset.
 
-This separation prevents the visualization layer from depending directly on the processing engine and creates a more modular architecture.
+The analytical consumer therefore does not need to execute Spark jobs.
 
-## 9. Design Principles
+---
 
-The Lakehouse has been designed according to the following principles:
+## 21. Validated Physical Implementation
 
-- **Data immutability**
+The current Lakehouse implementation has been validated using real source data.
 
-  Raw data stored in the Bronze layer is preserved to ensure traceability and allow data to be reprocessed if transformation logic changes.
+A complete historical execution for:
 
-- **Progressive refinement**
+```text
+2026-01-10 → 2026-01-15
+```
 
-  Data quality improvements are applied incrementally as datasets move through the Medallion Architecture.
+successfully populated Bronze and produced the current Silver and Gold models.
 
-- **Single source of truth**
+### Silver validation
 
-  Each layer has a clearly defined responsibility, avoiding duplicated transformation logic across the platform.
+The final Silver namespace contains:
 
-- **Scalability**
+```text
+9 tables
+```
 
-  The architecture supports future growth in data volume, additional data sources, and new analytical use cases without requiring major structural changes.
+Relevant validated row counts include:
 
-- **Modularity**
+```text
+silver_aemet_stations = 926
+silver_aemet_current_observations = 9786
 
-  Each component of the Lakehouse can evolve independently while maintaining well-defined interfaces between layers.
+silver_open_meteo_hourly = 133344
+silver_open_meteo_15min = 533376
 
-- **Maintainability**
+silver_cnig_provinces = 52
+silver_cnig_autonomous_communities = 19
+silver_cnig_municipalities = 8132
 
-  The separation of responsibilities simplifies development, testing, debugging, and long-term maintenance.
+silver_esios_energy_hourly = 38443
+silver_esios_installed_capacity_monthly = 123
+```
 
-- **Analytical readiness**
+Open-Meteo counts correspond exactly to:
 
-  The Gold layer exposes curated datasets specifically designed for analytical consumption without requiring additional complex transformations.
+```text
+926 × 144 = 133344 hourly rows
 
-- **Processing and query separation**
+926 × 576 = 533376 fifteen-minute rows
+```
 
-  Apache Spark handles distributed data processing while Trino provides the interactive SQL query layer.
+### Gold validation
 
-- **Technology interoperability**
+The final Gold namespace contains:
 
-  Apache Iceberg provides a common Lakehouse table format that can be accessed by multiple compatible processing and analytical engines.
+```text
+4 tables
+```
 
-- **Governed analytical consumption**
+Validated row counts are:
 
-  Analytical consumers access curated Gold datasets rather than raw or intermediate Lakehouse layers.
+```text
+gold_dim_geography = 71
+gold_dim_time = 158
+gold_fact_installed_capacity_monthly = 19
+gold_fact_province_hourly = 8147
+```
+
+For the hourly integrated fact:
+
+```text
+rows with weather = 8100
+rows with energy = 6768
+rows with weather and energy = 6721
+
+duplicate Province × hour keys = 0
+```
+
+For installed capacity:
+
+```text
+rows = 19
+distinct months = 1
+duplicate Autonomous Community × month keys = 0
+rows containing capacity values = 19
+```
+
+Real rows containing both meteorological and energy metrics were also queried
+successfully through Trino.
+
+This validates the processing path:
+
+```text
+Bronze
+→ Silver
+→ Gold
+→ Trino
+```
+
+using real source data.
+
+---
+
+## 22. Design Principles
+
+The final Lakehouse design follows these principles.
+
+### Raw-data preservation
+
+Bronze preserves source acquisitions before analytical transformation.
+
+### Progressive refinement
+
+Each layer performs only the transformations appropriate to its role.
+
+### No synthetic source detail
+
+Missing geographical, temporal or measurement information is not invented.
+
+### Natural-key consistency
+
+Silver and Gold datasets use explicit natural keys to avoid duplicated logical
+records.
+
+### Source traceability
+
+Source values and relevant metadata are retained where necessary to understand
+the origin of analytical information.
+
+### Canonical geography
+
+CNIG / IGN provides the territorial reference used for normalization.
+
+### Analytical grain based on real source capabilities
+
+The platform uses Province × hour where the sources support that grain and
+preserves higher-level geographies where they do not.
+
+### Processing and query separation
+
+Spark performs distributed processing.
+
+Trino performs interactive querying.
+
+### Managed analytical tables
+
+Silver and Gold use Apache Iceberg.
+
+Bronze remains a raw object-storage layer.
+
+### Governed analytical consumption
+
+The final Business Intelligence layer consumes curated Gold datasets through
+Trino rather than reproducing processing logic in dashboards.
+
+### Open Source and reproducibility
+
+The complete architecture remains based on Open Source technologies and is
+deployable locally using Docker Compose.

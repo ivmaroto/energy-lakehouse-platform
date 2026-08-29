@@ -2,369 +2,938 @@
 
 ## 1. Overview
 
-Apache Airflow is the workflow orchestration platform responsible for automating and coordinating the execution of the data pipelines within the Lakehouse.
+Apache Airflow is the workflow-orchestration component of the Energy Lakehouse
+Platform.
 
-Rather than performing data processing itself, Airflow manages the execution order of the different processing stages, ensuring that tasks are executed only after their dependencies have been successfully completed.
+Airflow coordinates the execution of ingestion and Lakehouse-processing tasks
+but does not implement the underlying data-transformation logic.
 
-The orchestration layer supports both the initial historical data ingestion and subsequent incremental updates, providing a reliable and reproducible mechanism for executing the complete data lifecycle.
-
-By separating orchestration from data processing, the platform maintains a modular architecture where Python handles data ingestion, Apache Spark and Spark SQL perform data transformations, and Airflow coordinates workflow execution.
-
-Once analytical datasets have been generated in the Gold layer, Trino provides SQL access to them and Apache Superset consumes those datasets for visualization.
-
-## 2. Workflow Orchestration
-
-The platform adopts a workflow-based orchestration model, where the complete data lifecycle is divided into a sequence of independent but connected processing stages.
-
-Each workflow is responsible for a specific objective and is executed only when all required upstream tasks have been successfully completed. This dependency-based execution model ensures data consistency while preventing incomplete or inconsistent datasets from propagating through the Lakehouse.
-
-The orchestration process coordinates the execution of:
-
-- Historical data ingestion.
-- Incremental data ingestion.
-- Storage of source data in the Bronze layer.
-- Data processing across the Bronze, Silver, and Gold layers.
-- Data quality validation.
-- Generation and publication of analytical datasets.
-- Verification that Gold datasets are available for analytical consumption.
-
-This modular workflow design simplifies maintenance, improves fault isolation, and allows individual processes to evolve independently without affecting the overall architecture.
-
-## 3. Pipeline Structure
-
-The data pipeline is organized as a sequence of logical stages that reflect the complete lifecycle of the data within the Lakehouse.
-
-Each stage has a clearly defined responsibility, ensuring a modular and maintainable processing architecture.
-
-The pipeline is structured as follows:
-
-1. Data ingestion from public APIs using Python connectors.
-2. Storage of raw datasets in the Bronze layer.
-3. Data validation, cleansing, and standardization using Apache Spark and Spark SQL.
-4. Publication of validated datasets in the Silver layer.
-5. Data integration, aggregation, and analytical model generation.
-6. Publication of business-ready datasets in the Gold layer.
-7. Validation of Gold datasets.
-8. Availability of Gold datasets for analytical querying through Trino.
-9. Consumption of analytical datasets by Apache Superset.
-
-The general workflow can be represented as:
+The separation of responsibilities is:
 
 ```text
-Public APIs
-    │
-    ▼
-Data Ingestion
-    │
-    ▼
-  Bronze
-    │
-    ▼
-Validation
-    │
-    ▼
-Spark / Spark SQL
-    │
-    ▼
-  Silver
-    │
-    ▼
-Spark / Spark SQL
-    │
-    ▼
-   Gold
-    │
-    ▼
-Quality Checks
-    │
-    ▼
-Available through Trino
-    │
-    ▼
+Python
+→ source ingestion
+
+Apache Spark / PySpark
+→ Bronze-to-Silver processing
+→ Silver-to-Gold processing
+
+Apache Airflow
+→ execution coordination
+→ dependencies
+→ scheduling
+→ retries
+→ execution monitoring
+
+Trino
+→ analytical SQL access
+
 Apache Superset
+→ visualization
 ```
 
-Apache Airflow coordinates the ingestion, processing, validation, and publication stages. Trino and Apache Superset form the downstream analytical consumption path once the Gold datasets are available.
+The orchestration layer is designed to support both historical executions and
+subsequent recurrent or incremental executions.
 
-## 4. DAG Strategy
+The core data-processing path itself has already been validated independently
+from Airflow:
 
-Airflow workflows are implemented using Directed Acyclic Graphs (DAGs).
+```text
+External sources
+      │
+      ▼
+Bronze / MinIO
+      │
+      ▼
+Silver / Spark / Iceberg
+      │
+      ▼
+Gold / Spark / Iceberg
+      │
+      ▼
+Trino
+```
 
-DAGs define the dependencies between the different tasks required to execute the data pipelines. This provides a clear representation of the workflow and allows Airflow to control execution order, retries, scheduling, and failure management.
+Final runtime validation of this complete chain when launched and coordinated
+directly by Airflow remains part of the orchestration closure.
 
-The orchestration design allows workflows to be separated according to their responsibility.
+---
 
-The platform is designed to support DAGs for:
+## 2. Role of Airflow
 
-- Historical ingestion.
-- Incremental ingestion.
-- Bronze-to-Silver processing.
-- Silver-to-Gold processing.
-- Data quality validation.
-- End-to-end pipeline execution.
+Airflow is responsible for coordinating the data pipeline.
 
-This separation prevents the complete platform from becoming dependent on a single monolithic workflow and allows individual processes to be executed or maintained independently.
+Its responsibilities include:
 
-The exact DAG implementation can evolve during the ingestion and processing phases while preserving this orchestration model.
+- executing ingestion workflows;
+- controlling task dependencies;
+- coordinating Bronze, Silver and Gold stages;
+- scheduling recurring processes;
+- providing retry mechanisms;
+- recording task execution states;
+- exposing execution logs;
+- providing operational visibility through the Airflow interface.
 
-## 5. Historical Ingestion Workflow
+Airflow is not responsible for:
 
-The historical ingestion workflow is responsible for the initial population of the Lakehouse.
+- implementing API connector logic;
+- transforming Bronze data;
+- performing geographical normalization;
+- calculating Gold metrics;
+- executing interactive analytical queries.
 
-Its purpose is to retrieve the historical information available from the selected public APIs and populate the Bronze layer before executing the downstream transformation processes.
+Those responsibilities remain inside their corresponding platform components.
 
-A conceptual historical workflow is:
+---
+
+## 3. Orchestration Architecture
+
+The intended orchestration architecture is:
+
+```text
+                    Apache Airflow
+                          │
+          ┌───────────────┼────────────────┐
+          │               │                │
+          ▼               ▼                ▼
+   Python Ingestion   Spark Silver     Spark Gold
+          │               │                │
+          ▼               ▼                ▼
+       Bronze          Silver           Gold
+       MinIO           Iceberg          Iceberg
+                                           │
+                                           ▼
+                                         Trino
+                                           │
+                                           ▼
+                                        Superset
+```
+
+Airflow coordinates execution while each processing component remains
+independently executable and testable.
+
+This separation allows ingestion and Spark jobs to be validated outside Airflow
+before they are incorporated into an automated workflow.
+
+---
+
+## 4. Airflow Infrastructure
+
+The local Docker Compose environment includes:
+
+```text
+airflow-init
+airflow-webserver
+airflow-scheduler
+```
+
+The initialization service prepares the Airflow environment and terminates once
+initialization has completed.
+
+The long-running services are:
+
+```text
+airflow-webserver
+airflow-scheduler
+```
+
+Airflow application metadata is persisted in PostgreSQL.
+
+DAG files are mounted from:
+
+```text
+airflow/dags/
+```
+
+Execution logs are maintained as runtime artifacts and are not intended for
+source-control persistence.
+
+---
+
+## 5. Validated Airflow Infrastructure
+
+The following infrastructure elements have been validated:
+
+```text
+Airflow Webserver
+Airflow Scheduler
+PostgreSQL metadata connectivity
+DAG discovery
+Airflow web interface
+```
+
+Existing source-ingestion DAGs were previously discovered and executed during
+ingestion validation.
+
+This proves that Airflow can execute project Python ingestion code inside the
+containerized environment.
+
+It does not by itself prove that the final complete:
+
+```text
+Bronze
+→ Silver
+→ Gold
+```
+
+workflow has been executed end to end from Airflow.
+
+That distinction is preserved explicitly in this document.
+
+---
+
+## 6. Existing Ingestion Workflows
+
+The project originally implemented source- and frequency-oriented DAGs during
+the ingestion phase.
+
+These DAGs demonstrated that:
+
+- Airflow can discover project workflows;
+- Airflow can execute ingestion code;
+- ingestion tasks can communicate with external APIs;
+- ingestion tasks can persist Bronze data in MinIO;
+- retries and task states can be managed through Airflow.
+
+Some of those early workflows correspond to ingestion experiments or dataset
+families that are no longer part of the final physical analytical scope.
+
+The final current data scope is defined by the active Bronze, Silver and Gold
+models rather than by retaining every earlier experimental ingestion path.
+
+The active analytical source scope is:
+
+```text
+AEMET
+  stations
+  current_observations
+
+Open-Meteo
+  weather_hourly
+  weather_15min
+
+REE / ESIOS
+  11 hourly generation indicators
+  9 monthly installed-capacity indicators
+
+CNIG / IGN
+  provinces
+  municipalities
+```
+
+---
+
+## 7. Historical Reload Workflow
+
+The project includes an end-to-end historical orchestration DAG:
+
+```text
+airflow/dags/historical_reload.py
+```
+
+Its objective is to coordinate a historical execution through the complete
+Lakehouse processing chain.
+
+The logical workflow is:
 
 ```text
 Start
   │
-  ├──► AEMET Historical Ingestion
+  ├──► Master/reference ingestion
   │
-  ├──► Open-Meteo Historical Ingestion
+  ├──► Historical Open-Meteo ingestion
   │
-  └──► REE/ESIOS Historical Ingestion
+  ├──► Historical ESIOS ingestion
+  │
+  └──► AEMET current acquisition
              │
              ▼
-      Bronze Validation
+         Bronze ready
              │
              ▼
-      Bronze → Silver
+      Create Silver tables
              │
              ▼
-       Silver → Gold
+        Write Silver
              │
              ▼
-        Gold Validation
+       Create Gold tables
+             │
+             ▼
+         Write Gold
              │
              ▼
             End
 ```
 
-The historical workflow is primarily required during the initial population of the platform but can also be executed when a complete reload or reprocessing operation is required.
+The workflow reuses the same Python ingestion and Spark-processing
+implementations that have already been validated independently.
 
-## 6. Incremental Ingestion Workflow
+It does not duplicate transformation logic inside the DAG.
 
-After the initial historical load, Airflow coordinates periodic incremental ingestion workflows.
+---
 
-Incremental ingestion retrieves newly available data from each public source and processes only the information required to update the Lakehouse.
+## 8. Historical Parameters
 
-A conceptual incremental workflow is:
+The historical orchestration workflow supports an explicit requested temporal
+interval.
 
-```text
-Start
-  │
-  ▼
-Determine Incremental Window
-  │
-  ▼
-Retrieve New API Data
-  │
-  ▼
-Store in Bronze
-  │
-  ▼
-Validate Data
-  │
-  ▼
-Bronze → Silver
-  │
-  ▼
-Silver → Gold
-  │
-  ▼
-Validate Gold
-  │
-  ▼
-End
-```
-
-The exact incremental strategy may vary between AEMET, Open-Meteo, and REE/ESIOS according to the publication frequency and capabilities of each API.
-
-## 7. Scheduling Strategy
-
-The platform supports two complementary scheduling strategies: an initial historical data load and periodic incremental updates.
-
-The historical ingestion workflow is executed during the initial population of the platform or whenever a complete data reload is required.
-
-After the historical load, incremental workflows can be scheduled periodically to ingest newly available meteorological and energy data.
-
-The initial design targets hourly orchestration where appropriate, although the final scheduling frequency for each connector will be aligned with the actual publication frequency and limitations of its source API.
-
-Apache Airflow manages execution schedules independently from processing logic, allowing the frequency of individual workflows to be adjusted without modifying the underlying ingestion or transformation components.
-
-This approach avoids unnecessary API requests and processing when a particular source publishes information at a lower frequency.
-
-## 8. Task Dependencies
-
-Airflow task dependencies ensure that downstream processing is executed only when the required upstream datasets are available and valid.
-
-A simplified dependency chain is:
+The principal temporal parameters are:
 
 ```text
-Ingestion
-    │
-    ▼
-Bronze Storage
-    │
-    ▼
-Bronze Validation
-    │
-    ▼
-Bronze → Silver
-    │
-    ▼
-Silver Validation
-    │
-    ▼
-Silver → Gold
-    │
-    ▼
-Gold Validation
-    │
-    ▼
-Analytical Dataset Available
+start_date
+end_date
 ```
 
-If a critical upstream task fails, downstream tasks are not executed until the failure has been resolved or the corresponding retry succeeds.
+These parameters determine the requested historical interval for source
+connectors that support historical acquisition.
 
-This protects the Silver and Gold layers from incomplete or invalid upstream data.
+Different sources retain their own acquisition semantics.
 
-## 9. Error Handling
+For example:
 
-The orchestration layer includes error handling mechanisms to ensure that pipeline failures are detected, isolated, and managed without compromising previously processed data.
+```text
+Open-Meteo
+→ historical meteorological interval
 
-Apache Airflow controls task execution status and prevents downstream tasks from running when an upstream dependency has failed.
+ESIOS
+→ historical energy interval
 
-Failed tasks can be retried automatically according to configurable retry policies.
+AEMET stations
+→ master/reference acquisition
 
-The error handling strategy includes:
+AEMET current observations
+→ recent/current acquisition
+```
 
-- Automatic retries for temporary failures.
-- Clear task failure states.
-- Prevention of downstream execution after critical errors.
-- Preservation of successfully processed data.
-- Isolation of failures within the affected workflow stage.
-- Recording of error details in execution logs.
-- Source-specific handling where required.
+AEMET current observations are therefore not reinterpreted as arbitrary
+historical observations.
 
-Retry limits, retry delays, timeouts, and source-specific failure policies will be configured during pipeline implementation according to the characteristics of each connector and processing task.
+---
 
-## 10. Monitoring and Logging
+## 9. Source-Specific Historical Behaviour
 
-Monitoring and logging are essential to ensure the reliability and traceability of the orchestration layer.
+### Open-Meteo
 
-Apache Airflow provides built-in monitoring capabilities that allow workflow executions to be tracked through its web interface.
+Historical meteorological acquisition operates over the AEMET station
+catalogue.
 
-Each workflow execution records task status, execution time, dependencies, and error information, enabling rapid identification and diagnosis of issues.
+The current validated catalogue contains:
 
-The monitoring strategy includes:
+```text
+926 locations
+```
 
-- Workflow execution monitoring.
-- Task execution status tracking.
-- Execution time measurement.
-- Centralized execution logs.
-- Error reporting.
-- Historical execution records.
-- Retry monitoring.
+The source strategy is:
 
-These capabilities support operational visibility, facilitate troubleshooting, and provide execution traceability throughout the complete data pipeline.
+```text
+Hourly historical data
+→ Open-Meteo Archive API
 
-Airflow logs are generated as runtime artifacts and are excluded from Git version control.
+15-minute historical data
+→ Open-Meteo Historical Forecast API
+```
 
-## 11. Relationship with Spark
+Large station batches include source-specific retry, backoff, pacing and
+coverage-validation mechanisms.
 
-Airflow and Apache Spark have separate responsibilities within the platform.
+---
 
-Apache Airflow is responsible for:
+### REE / ESIOS
 
-- Scheduling workflows.
-- Managing task dependencies.
-- Controlling execution order.
-- Handling retries and failures.
-- Monitoring pipeline execution.
+The active historical ESIOS scope contains:
 
-Apache Spark and Spark SQL are responsible for:
+```text
+11 hourly generation indicators
+9 monthly installed-capacity indicators
+```
 
-- Data validation.
-- Data cleansing.
-- Data standardization.
-- Data integration.
-- Bronze-to-Silver transformations.
-- Silver-to-Gold transformations.
-- Writing processed Lakehouse datasets.
+Indicator configuration is externalized in:
 
-This separation ensures that Airflow remains an orchestration platform rather than becoming responsible for implementing data processing logic.
+```text
+config/esios_indicators.json
+```
 
-## 12. Relationship with Trino and Superset
+ESIOS responses are technically validated before successful Bronze persistence.
 
-Trino and Apache Superset are downstream consumers of the datasets generated by the orchestrated data pipelines.
+In particular, an indicator response with:
 
-Airflow does not replace or directly perform analytical querying.
+```text
+values = []
+```
 
-Once a workflow has successfully generated and validated the required Gold datasets, those datasets become available through Trino.
+is not considered a valid completed source acquisition by the current ingestion
+implementation.
 
-The analytical path is:
+---
+
+### CNIG / IGN
+
+CNIG provides the territorial master required by Silver geographical
+normalization.
+
+The master data is independent from the analytical historical date interval.
+
+---
+
+### AEMET
+
+AEMET provides:
+
+```text
+stations
+current_observations
+```
+
+The station catalogue is used as a meteorological location master.
+
+Current observations remain a recent/current data source.
+
+---
+
+## 10. Silver Orchestration
+
+Airflow does not contain the Bronze-to-Silver transformation logic.
+
+The actual Spark processing is maintained under:
+
+```text
+spark/jobs/silver/
+```
+
+The principal entry points are:
+
+```text
+spark/jobs/silver/create_tables.py
+spark/jobs/silver/write_silver.py
+```
+
+The resulting physical Silver model contains exactly:
+
+```text
+9 Apache Iceberg tables
+```
+
+These are:
+
+```text
+silver_aemet_stations
+silver_aemet_current_observations
+
+silver_open_meteo_hourly
+silver_open_meteo_15min
+
+silver_cnig_provinces
+silver_cnig_autonomous_communities
+silver_cnig_municipalities
+
+silver_esios_energy_hourly
+silver_esios_installed_capacity_monthly
+```
+
+Airflow's responsibility is only to invoke the appropriate processing stages
+after the required Bronze ingestion tasks have completed successfully.
+
+---
+
+## 11. Gold Orchestration
+
+Gold processing is also implemented outside Airflow.
+
+The principal Spark entry points are:
+
+```text
+spark/jobs/gold/create_tables.py
+spark/jobs/gold/write_gold.py
+```
+
+The current Gold physical model contains exactly:
+
+```text
+4 Apache Iceberg tables
+```
+
+These are:
+
+```text
+gold_fact_province_hourly
+gold_fact_installed_capacity_monthly
+gold_dim_geography
+gold_dim_time
+```
+
+The main analytical fact operates at:
+
+```text
+Province × hour
+```
+
+and integrates meteorological and hourly electricity-generation data.
+
+The monthly installed-capacity fact operates at:
+
+```text
+Autonomous Community × month
+```
+
+Airflow coordinates execution but does not replicate this analytical logic.
+
+---
+
+## 12. Task Dependencies
+
+The final orchestration must preserve the following dependency relationship:
+
+```text
+Required Bronze ingestion
+          │
+          ▼
+   Bronze available
+          │
+          ▼
+Create Silver tables
+          │
+          ▼
+     Write Silver
+          │
+          ▼
+Create Gold tables
+          │
+          ▼
+      Write Gold
+          │
+          ▼
+ Gold available
+```
+
+A downstream processing stage must not execute successfully before its required
+upstream stage has completed.
+
+This dependency strategy prevents an incomplete upstream load from being
+silently promoted through the Lakehouse.
+
+---
+
+## 13. Failure Behaviour
+
+Airflow provides task-level execution states and retry mechanisms.
+
+The orchestration strategy follows a fail-closed approach for critical
+processing stages.
+
+Conceptually:
+
+```text
+Ingestion failure
+       │
+       └──► dependent Silver processing does not continue successfully
+```
+
+```text
+Silver failure
+       │
+       └──► Gold processing does not continue successfully
+```
+
+```text
+Gold failure
+       │
+       └──► workflow is not considered successfully completed
+```
+
+Source-specific retry behaviour can also exist below Airflow.
+
+For example, Open-Meteo batch ingestion implements connector-level retries,
+backoff and resumable location processing.
+
+Airflow therefore complements rather than replaces source-specific reliability
+logic.
+
+---
+
+## 14. Retry Strategy
+
+Retries can occur at different architectural levels.
+
+### HTTP / connector level
+
+Used for temporary external-source failures such as:
+
+```text
+timeouts
+temporary HTTP errors
+rate limitations
+```
+
+### Source-specific batch level
+
+Open-Meteo includes:
+
+```text
+retry
+backoff
+pacing
+coverage validation
+resume support
+```
+
+### Airflow task level
+
+Airflow can retry a failed orchestration task according to its configured task
+policy.
+
+This layered strategy prevents all transient failures from being handled by a
+single component.
+
+---
+
+## 15. Monitoring and Logging
+
+Apache Airflow provides operational visibility over workflow executions.
+
+Available information includes:
+
+- DAG execution status;
+- task execution status;
+- dependency state;
+- execution timestamps;
+- retry attempts;
+- task logs;
+- failure information;
+- historical DAG runs.
+
+The Airflow web interface is therefore the operational control point for
+orchestrated executions.
+
+Application-specific ingestion and Spark logs remain generated by their
+respective components and are visible through the execution environment.
+
+---
+
+## 16. Incremental Orchestration
+
+The architecture is designed to support subsequent incremental or recent-data
+executions.
+
+The general intended model is:
+
+```text
+Requested execution window
+          │
+          ▼
+      Source ingestion
+          │
+          ▼
+         Bronze
+          │
+          ▼
+         Silver
+          │
+          ▼
+          Gold
+```
+
+The exact source window cannot be assumed to behave identically for all
+providers.
+
+External sources may differ in:
+
+- publication latency;
+- available latest timestamp;
+- temporal granularity;
+- historical availability.
+
+Therefore, the orchestration layer must respect the real data availability of
+each source rather than fabricate observations up to the requested end time.
+
+---
+
+## 17. Checkpoint Status
+
+A persistent business-level checkpoint system containing fields such as:
+
+```text
+dataset_name
+last_successful_timestamp
+status
+updated_at
+```
+
+was considered during orchestration design.
+
+However, such a persistent checkpoint table is **not part of the currently
+validated implementation**.
+
+Current Bronze metadata already records information such as:
+
+```text
+ingestion_timestamp
+requested_start_date
+requested_end_date
+ingestion_mode
+```
+
+Airflow itself also records DAG and task execution metadata.
+
+These mechanisms must not be described as equivalent to a persistent
+dataset-level business checkpoint.
+
+A dedicated checkpoint subsystem can be considered as future operational
+enhancement if required.
+
+---
+
+## 18. Processing and Orchestration Separation
+
+The project deliberately avoids embedding transformation code inside DAG
+definitions.
+
+The separation is:
+
+```text
+airflow/dags/
+→ workflow definitions
+→ dependencies
+→ parameters
+→ scheduling
+
+ingestion/
+→ API acquisition
+→ Bronze persistence
+
+spark/jobs/silver/
+→ Bronze-to-Silver logic
+
+spark/jobs/gold/
+→ Silver-to-Gold logic
+```
+
+This improves:
+
+- testability;
+- maintainability;
+- reuse;
+- separation of concerns;
+- independent execution of each processing component.
+
+---
+
+## 19. Relationship with Trino
+
+Trino is not an orchestration engine.
+
+It provides the SQL query layer after Spark has persisted the required Apache
+Iceberg tables.
+
+The relationship is:
+
+```text
+Airflow
+   │
+   ▼
+Spark processing
+   │
+   ▼
+Apache Iceberg Gold
+   │
+   ▼
+Trino
+```
+
+Trino can then be used to verify that the final analytical datasets are present
+and queryable.
+
+The independently executed E2E validation has already demonstrated that the
+four Gold tables can be queried successfully through Trino.
+
+---
+
+## 20. Relationship with Superset
+
+Apache Superset is a downstream analytical consumer.
+
+The intended final path is:
 
 ```text
 Airflow-orchestrated pipeline
           │
           ▼
-        Gold
-          │
-          ▼
-   Apache Iceberg
+         Gold
           │
           ▼
         Trino
           │
           ▼
- Apache Superset
+       Superset
 ```
 
-Trino provides the SQL query layer, while Apache Superset provides visualization and interactive analytical capabilities.
+Airflow does not execute dashboard queries or implement visualization logic.
 
-This architecture maintains a clear separation between orchestration, processing, querying, and visualization.
+The Superset visualization stage remains separate from orchestration.
 
-## 13. Design Principles
+---
 
-The orchestration layer has been designed according to the following principles:
+## 21. Independent E2E Processing Validation
 
-- **Automation**
+Before final Airflow runtime validation, the complete processing path was
+executed independently using real source data.
 
-  Data pipelines are designed to execute automatically according to their configured schedules.
+The validated historical interval was:
 
-- **Reliability**
+```text
+2026-01-10 → 2026-01-15
+```
 
-  Workflow dependencies ensure that each processing stage is executed only after the successful completion of its required upstream tasks.
+Bronze ingestion completed with:
 
-- **Fault Tolerance**
+```text
+AEMET stations          = 1 file
+CNIG masters            = 2 files
+ESIOS hourly            = 11 files
+ESIOS monthly           = 9 files
+Open-Meteo hourly       = 926 files
+Open-Meteo 15-minute    = 926 files
+AEMET current           = 1 file
+```
 
-  Temporary failures can be managed through retry mechanisms while preventing inconsistent data from propagating through the platform.
+The resulting Silver model contained:
 
-- **Modularity**
+```text
+9 tables
+```
 
-  Each workflow performs a specific function and can be maintained or extended independently.
+with relevant counts:
 
-- **Scalability**
+```text
+silver_open_meteo_hourly = 133344
+silver_open_meteo_15min = 533376
+silver_esios_energy_hourly = 38443
+silver_esios_installed_capacity_monthly = 123
+```
 
-  New workflows and data sources can be incorporated without redesigning the existing orchestration architecture.
+Gold persistence subsequently completed successfully.
 
-- **Traceability**
+Trino exposed exactly:
 
-  Workflow execution is monitored through execution logs, task status, and historical records.
+```text
+gold_dim_geography
+gold_dim_time
+gold_fact_installed_capacity_monthly
+gold_fact_province_hourly
+```
 
-- **Maintainability**
+with:
 
-  Orchestration logic remains independent from data processing logic, simplifying future maintenance and evolution of the platform.
+```text
+gold_dim_geography = 71 rows
+gold_dim_time = 158 rows
+gold_fact_installed_capacity_monthly = 19 rows
+gold_fact_province_hourly = 8147 rows
+```
 
-- **Separation of responsibilities**
+The principal Gold fact contained:
 
-  Airflow orchestrates workflows, Spark processes data, Trino provides analytical SQL access, and Superset provides visualization.
+```text
+8100 rows with weather
+6768 rows with energy
+6721 rows with weather and energy
+0 duplicate Province × hour keys
+```
 
-- **Reprocessability**
+This validates the processing components that Airflow must coordinate.
 
-  Historical and transformation workflows can be executed again when data needs to be rebuilt or processing logic changes.
+It does **not** replace final Airflow runtime validation.
 
-- **Source-aware scheduling**
+---
 
-  Incremental scheduling can be adapted to the publication frequency and limitations of each external API.
+## 22. Current Orchestration Status
+
+The current status is:
+
+```text
+Airflow infrastructure
+= VALIDATED
+
+Airflow Webserver / Scheduler
+= VALIDATED
+
+Existing ingestion workflow execution
+= VALIDATED
+
+Historical reload DAG implementation
+= IMPLEMENTED
+
+Historical reload DAG structure / task definition
+= VALIDATED
+
+Bronze → Silver → Gold → Trino processing outside Airflow
+= VALIDATED
+
+Complete Airflow-triggered Bronze → Silver → Gold runtime execution
+= PENDING FINAL VALIDATION
+```
+
+The final orchestration acceptance criterion is therefore a successful
+Airflow-controlled execution of the required end-to-end processing path.
+
+Until that execution is completed, the orchestration layer must not be
+documented as fully closed.
+
+---
+
+## 23. Design Principles
+
+The orchestration layer follows these principles.
+
+### Separation of responsibilities
+
+Airflow coordinates execution; it does not implement source or transformation
+logic.
+
+### Dependency safety
+
+Downstream tasks depend on the successful completion of required upstream
+tasks.
+
+### Reusability
+
+The same ingestion and Spark jobs can be run either independently or through
+Airflow.
+
+### Failure visibility
+
+Failed tasks remain visible through Airflow states and logs.
+
+### Source awareness
+
+The orchestration layer respects the real temporal availability and behaviour
+of each external source.
+
+### No synthetic completion
+
+A requested interval is not considered complete by inventing observations that
+the external source does not provide.
+
+### Modularity
+
+Ingestion, Silver processing and Gold processing remain separate executable
+components.
+
+### Observability
+
+Airflow provides execution state, logs and historical run information.
+
+### Reprocessability
+
+Historical workflows can be used to rebuild selected periods when required.
+
+### Incremental extensibility
+
+The same architecture can support recent or incremental windows without
+redesigning the complete Lakehouse pipeline.
+
+### Scope control
+
+Operational enhancements such as a dedicated persistent dataset checkpoint
+system are not presented as implemented until they have actually been built and
+validated.

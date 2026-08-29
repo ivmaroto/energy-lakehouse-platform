@@ -2,246 +2,318 @@
 
 ## 1. Purpose
 
-The Silver layer transforms raw Bronze data into normalized, typed,
-deduplicated and analytically usable datasets while preserving the original
-granularity and traceability of each source.
+The Silver layer transforms raw Bronze source data into normalized, typed,
+deduplicated and reusable datasets while preserving the real temporal and
+geographical semantics of each source.
 
-Bronze remains immutable.
+The processing path is:
 
-Silver does not perform analytical aggregations between temporal
-granularities. Aggregations and analytical selections are deferred to Gold.
+```text
+MinIO / Bronze
+      │
+      ▼
+Apache Spark / PySpark
+      │
+      ▼
+Apache Iceberg / Silver
+```
 
-The main analytical objective of the platform is:
+Silver is responsible for:
+
+- parsing Bronze source payloads;
+- explicit data typing;
+- timestamp normalization;
+- coordinate normalization;
+- natural-key deduplication;
+- geographical normalization where applicable;
+- technical data-quality validation;
+- preservation of source traceability.
+
+Silver does not perform the final analytical integration between meteorology and
+energy.
+
+That responsibility belongs to Gold.
+
+The principal downstream analytical target is:
 
 ```text
 Province × hour
-Meteorological data + compatible ESIOS energy indicators
+meteorology + electricity generation
 ```
 
-Additional analytical flows preserve higher-frequency and structural data:
+while monthly installed capacity remains at:
 
 ```text
-High frequency:
-5 minutes / 15 minutes
-according to the real geographical granularity of the source
-
-Structural:
-monthly
-according to the real geographical granularity of the source
-
-AEMET daily:
-official climatological reference
-not part of the main analytical flow
+Autonomous Community × month
 ```
 
 ---
 
-## 2. Validated Bronze Inventory
+## 2. Final Physical Silver Model
 
-The physical Bronze inventory was validated directly against MinIO.
-
-Validated result:
-
-```text
-TOTAL DATASETS = 43
-TOTAL OBJECTS  = 3409
-```
+The final implemented Silver layer contains exactly **9 Apache Iceberg tables**.
 
 ### AEMET
 
-3 datasets:
-
-- `stations`
-- `daily_climatological_values`
-- `current_observations`
-
-Validated Bronze object counts:
-
-| Dataset | Objects |
-|---|---:|
-| `stations` | 1 |
-| `daily_climatological_values` | 607 |
-| `current_observations` | 1 |
-
-`current_observations` is included as the official incremental observation
-source.
-
-`daily_climatological_values` is retained as an official climatological
-reference but is not part of the main analytical flow.
+```text
+silver_aemet_stations
+silver_aemet_current_observations
+```
 
 ### Open-Meteo
 
-3 datasets:
-
-- `weather_hourly`
-- `weather_historical_forecast`
-- `weather_15min`
-
-Validated Bronze object counts:
-
-| Dataset | Objects |
-|---|---:|
-| `weather_hourly` | 921 |
-| `weather_historical_forecast` | 921 |
-| `weather_15min` | 921 |
-
-### CNIG
-
-2 datasets:
-
-- `provinces`
-- `municipalities`
-
-Both datasets are used as official geographical reference data.
-
-Validated CNIG physical evidence:
-
 ```text
-provinces       = 52 records
-municipalities  = 8132 records
-autonomous communities derived from provinces = 19
-CODES_WITH_MULTIPLE_NAMES = 0
+silver_open_meteo_hourly
+silver_open_meteo_15min
 ```
 
-The autonomous-community master is derived from the unique pairs:
+### CNIG / IGN
 
 ```text
-COD_CA + COMUNIDAD_AUTONOMA
+silver_cnig_provinces
+silver_cnig_autonomous_communities
+silver_cnig_municipalities
 ```
 
-Official geographical and INE codes are preserved as strings so that leading
-zeroes are not lost.
+### REE / ESIOS
 
-The validated CSV samples are not UTF-8. Both `cp1252` and `latin-1`
-successfully decode the inspected samples. The exact source encoding between
-those two alternatives is **NOT VALIDATED**.
+```text
+silver_esios_energy_hourly
+silver_esios_installed_capacity_monthly
+```
 
-### ESIOS
+The following previously implemented or evaluated tables are **not part of the
+final physical Silver model**:
 
-35 configured Bronze datasets were physically validated in MinIO.
+```text
+silver_aemet_daily_climatology
+silver_open_meteo_historical_forecast
+silver_esios_power_5min
+```
 
-The Silver design keeps the configured ESIOS datasets and normalizes them
-according to their actual temporal and geographical granularity.
+Therefore:
 
-Silver must not manufacture province-level information when the ESIOS
-indicator does not provide province-level geography.
+```text
+Final Silver tables = 9
+```
 
 ---
 
-## 3. Analytical Granularities
+## 3. Silver Design Principles
 
-The analytical granularities used by the platform are:
+The final Silver design follows these principles.
 
-| Source / dataset family | Granularity |
-|---|---|
-| ESIOS high frequency | 5 minutes |
-| Open-Meteo high frequency | 15 minutes |
-| ESIOS hourly | 1 hour |
-| Open-Meteo hourly | 1 hour |
-| AEMET current observations | 1 hour |
-| ESIOS installed capacity | Monthly |
-| AEMET daily climatology | Daily reference |
+### Preserve source granularity
 
-Silver preserves the original granularity of every dataset.
+Silver does not create a temporal resolution that is absent from the source.
 
-Validated ESIOS temporal classification:
-
-| ESIOS Silver family | Magnitude | Temporal granularity | Configured datasets |
-|---|---|---|---:|
-| Energy observations | Energy | 1 hour | 14 |
-| High-frequency power | Power | 5 minutes | 12 |
-| Installed capacity | Power | Monthly | 9 |
-| **Total** | | | **35** |
-
-No transformations such as:
+Examples:
 
 ```text
-5 min -> 15 min
-15 min -> hour
-5 min -> hour
-hour -> month
+15-minute source
+→ remains 15-minute in Silver
+
+hourly source
+→ remains hourly in Silver
+
+monthly source
+→ remains monthly in Silver
 ```
 
-are performed in Silver.
-
-These aggregations belong to the Gold layer.
+Temporal aggregation belongs to Gold.
 
 ---
 
-## 4. Geographical Normalization
+### Preserve real geography
 
-CNIG is the canonical geographical master used by the Silver layer for
-province and autonomous-community normalization.
-
-The canonical geographical resolution flow is:
+Silver does not manufacture geographical detail.
 
 ```text
-source geographical name
-        ↓
-deterministic normalization
-        ↓
-controlled alias fallback when required
-        ↓
-CNIG canonical province
-        ↓
-CNIG autonomous community
+Province source
+→ Province
+
+Autonomous Community source
+→ Autonomous Community
+
+National / higher-level source
+→ preserve actual geography
 ```
 
-### 4.1 Deterministic name normalization
+A higher-level observation must never be artificially expanded to provinces.
 
-Province names supplied by meteorological sources are normalized before
-matching against CNIG.
+---
 
-The implemented normalization:
+### Preserve valid NULL values
 
-- trims surrounding whitespace;
-- converts names to uppercase;
-- applies Unicode decomposition;
-- removes diacritics.
-
-This operation does not translate geographical names and does not manufacture
-new geographical information.
-
-Examples validated against the persisted Silver data include:
+A missing metric is not automatically an error.
 
 ```text
-ALMERIA      -> Almería
-ARABA/ALAVA  -> Araba/Álava
-AVILA        -> Ávila
-CACERES      -> Cáceres
-CADIZ        -> Cádiz
-CORDOBA      -> Córdoba
-JAEN         -> Jaén
-LEON         -> León
-MALAGA       -> Málaga
+NULL
+≠
+0
 ```
 
-### 4.2 Controlled province aliases
+Values are not automatically replaced with:
 
-Names that cannot be resolved through deterministic normalization use a
-controlled alias configuration:
+- zero;
+- averages;
+- previous observations;
+- synthetic values.
+
+---
+
+### Natural-key idempotency
+
+Reprocessing overlapping Bronze acquisitions must not multiply the same logical
+Silver observation.
+
+Dataset-specific natural keys are therefore used during persistence.
+
+---
+
+### Source traceability
+
+Silver retains the information required to identify:
+
+- source;
+- source dataset;
+- observation;
+- ingestion execution;
+- source geography where relevant.
+
+---
+
+## 4. Final Source Scope
+
+Silver is built from the following final Bronze scope.
+
+```text
+AEMET
+├── stations
+└── current_observations
+
+Open-Meteo
+├── weather_hourly
+└── weather_15min
+
+REE / ESIOS
+├── 11 hourly generation indicators
+└── 9 monthly installed-capacity indicators
+
+CNIG / IGN
+├── provinces
+└── municipalities
+```
+
+The Silver model therefore reflects the final ingestion scope rather than all
+datasets explored during previous implementation iterations.
+
+---
+
+# 5. Geographical Normalization
+
+CNIG / IGN is the canonical territorial reference used by the Lakehouse.
+
+The normalized geographical model contains:
+
+```text
+52 province-level entities
+19 autonomous communities
+8132 municipalities
+```
+
+Official codes are preserved as strings so leading zeroes are not lost.
+
+The general geographical-normalization flow is:
+
+```text
+Source geography
+      │
+      ▼
+Deterministic normalization
+      │
+      ▼
+Controlled alias resolution if required
+      │
+      ▼
+CNIG canonical geography
+```
+
+---
+
+## 5.1 Province Name Normalization
+
+Where a source provides province names, deterministic normalization is applied
+before matching them against CNIG.
+
+The normalization includes:
+
+- trimming surrounding whitespace;
+- uppercase conversion;
+- Unicode decomposition;
+- removal of diacritics.
+
+Examples include:
+
+```text
+ALMERIA
+→ Almería
+
+ARABA/ALAVA
+→ Araba/Álava
+
+AVILA
+→ Ávila
+
+CACERES
+→ Cáceres
+```
+
+The operation normalizes representation but does not translate or invent
+geographical information.
+
+---
+
+## 5.2 Controlled Province Aliases
+
+A controlled configuration is used for known source naming differences that
+cannot be solved through deterministic normalization alone.
+
+The configuration is:
 
 ```text
 config/province_aliases.json
 ```
 
-The validated aliases are:
+Validated aliases include:
 
 ```text
-ALICANTE               -> Alacant/Alicante
-BALEARES               -> Illes Balears
-CASTELLON              -> Castelló/Castellón
-STA. CRUZ DE TENERIFE  -> Santa Cruz de Tenerife
-VALENCIA                -> València/Valencia
+ALICANTE
+→ Alacant/Alicante
+
+BALEARES
+→ Illes Balears
+
+CASTELLON
+→ Castelló/Castellón
+
+STA. CRUZ DE TENERIFE
+→ Santa Cruz de Tenerife
+
+VALENCIA
+→ València/Valencia
 ```
 
-Aliases are an explicit fallback mechanism. They do not replace normal
-deterministic matching and are not inferred dynamically.
+Aliases are explicit mappings.
 
-### 4.3 Canonical Silver geography
+They are not generated automatically from approximate string matching.
 
-When province normalization is applicable, the resolved CNIG information is
-materialized using the canonical columns:
+---
+
+## 5.3 Canonical Geography Fields
+
+Where province-level normalization is applicable, the canonical representation
+uses:
 
 ```text
 province_code
@@ -250,473 +322,125 @@ autonomous_community_code
 autonomous_community_name
 ```
 
-The original source geographical field is preserved for traceability.
+The original source geographical information can remain available separately
+for traceability.
 
-For AEMET:
-
-```text
-provincia
-```
-
-contains the original source province value.
-
-For Open-Meteo:
-
-```text
-province
-```
-
-contains the original source province value.
-
-The canonical columns contain the corresponding CNIG representation.
-
-The canonical geographical enrichment is applied to:
-
-```text
-silver_aemet_stations
-silver_aemet_daily_climatology
-silver_open_meteo_hourly
-silver_open_meteo_historical_forecast
-silver_open_meteo_15min
-```
-
-`silver_aemet_current_observations` is not province-enriched through this
-mechanism because the validated source schema does not provide the province
-field required by this matching process.
-
-### 4.4 Geographical integrity rules
-
-Silver preserves the real geographical granularity supplied by each source.
-
-In particular:
-
-- province-level data remains province-level;
-- autonomous-community data remains autonomous-community-level;
-- national or peninsular data is not artificially expanded to provinces;
-- missing geographical detail is not manufactured;
-- source geographical names remain available where required for traceability.
-
-Geographical enrichment is considered valid only when the applicable source
-province resolves to both:
-
-```text
-province_code
-province_name
-```
-
-and its corresponding canonical autonomous-community information is present.
-
-The persisted Silver validation confirmed zero unmatched canonical provinces
-and zero unmatched canonical autonomous communities in the five
-meteorological tables to which this normalization applies.
+CNIG remains the authoritative territorial master.
 
 ---
 
-## 5. Coordinate Normalization
+# 6. Coordinate Normalization
 
-AEMET station coordinates are normalized to decimal coordinates.
+AEMET station coordinates are converted to decimal coordinates.
 
-The coordinate conversion was validated successfully for:
-
-```text
-921 / 921 AEMET stations
-```
-
-Normalized coordinate ranges are:
+Normalized coordinates must satisfy:
 
 ```text
 latitude  ∈ [-90, 90]
 longitude ∈ [-180, 180]
 ```
 
-Invalid coordinates are treated as data-quality incidents.
+Invalid coordinates are treated as technical data-quality incidents.
 
-Raw source coordinate values may be preserved when required for traceability.
+The current validated AEMET point catalogue contains:
+
+```text
+926 stations
+```
+
+The same station catalogue supplies the point locations used by Open-Meteo.
 
 ---
 
-## 6. Temporal Normalization
+# 7. Temporal Normalization
 
-Silver normalizes temporal fields while preserving the source granularity.
+Silver normalizes temporal fields to explicit timestamp representations while
+preserving the real source granularity.
 
-The source temporal granularities currently used are:
-
-```text
-ESIOS              5 minutes / 1 hour / monthly
-Open-Meteo         15 minutes / 1 hour
-AEMET observations 1 hour
-AEMET daily        daily reference
-```
-
-Timestamps must be converted to normalized timestamp types.
-
-Source temporal information required for traceability may also be preserved.
-
-A missing or invalid mandatory timestamp is treated as a data-quality error.
-
-No missing timestamps are generated or imputed.
-
----
-
-## 7. Cleaning and Typing Principles
-
-Bronze contains the raw source representation.
-
-Silver is responsible for:
-
-- converting numeric strings to appropriate numeric types;
-- converting date/time fields to date or timestamp types;
-- normalizing empty values;
-- handling `NULL`;
-- detecting structurally invalid values;
-- preserving valid missing values when the source does not provide a metric;
-- handling validated source-specific special values;
-- avoiding artificial data imputation.
-
-The following principle applies:
+The current temporal families are:
 
 ```text
-NULL does not automatically mean ERROR.
-```
-
-A `NULL` value may represent a metric that was not available or not measured
-by the source.
-
-Mandatory fields and optional measurements must therefore be treated
-separately.
-
-Values are not replaced automatically with:
-
-- zero;
-- averages;
-- previous observations;
-- synthetic values.
-
-Validated source-specific cases such as AEMET `Ip` must be handled explicitly
-during transformation.
-
----
-
-## 8. Deduplication and Idempotency
-
-Silver processing must be idempotent.
-
-Reprocessing the same Bronze information must not multiply the same logical
-record.
-
-The approved natural keys are:
-
-| Dataset family | Natural key |
-|---|---|
-| AEMET stations | `station_id` |
-| AEMET daily | `station_id + observation_date` |
-| AEMET hourly | `station_id + observation_timestamp` |
-| Open-Meteo | `station_id + observation_timestamp` |
-| CNIG provinces | `province_code` |
-| CNIG autonomous communities | `autonomous_community_code` |
-| CNIG municipalities | `municipality_ine_code` |
-| ESIOS | `indicator_id + esios_geo_id + observation_timestamp` |
-
-Deduplication is especially relevant for AEMET `current_observations`,
-because consecutive ingestion executions may contain overlapping observation
-windows.
-
----
-
-## 9. Meteorological Silver Design
-
-Meteorological Silver data is built from AEMET and Open-Meteo without
-prematurely merging their original datasets.
-
-### AEMET
-
-The following datasets are retained:
-
-#### `stations`
-
-Official station reference dataset.
-
-The validated Bronze payload contained 921 stations.
-
-#### `daily_climatological_values`
-
-Official daily climatological dataset.
-
-Granularity:
-
-```text
-daily
-```
-
-Role:
-
-```text
-official climatological reference
-NOT part of the main analytical flow
-```
-
-#### `current_observations`
-
-Official incremental conventional observations.
-
-Granularity used in Silver:
-
-```text
-1 hour
-```
-
-Role:
-
-```text
-official hourly observation / contrast source
-```
-
-The validated Bronze object inspected during Silver design contained 9,688
-records.
-
-### Open-Meteo
-
-The following datasets are retained independently:
-
-#### `weather_hourly`
-
-Granularity:
-
-```text
-1 hour
-```
-
-#### `weather_historical_forecast`
-
-Granularity:
-
-```text
-1 hour
-```
-
-#### `weather_15min`
-
-Granularity:
-
-```text
-15 minutes
-```
-
-Open-Meteo provides the reproducible meteorological data required for the
-historical hourly analytical flow.
-
-AEMET and Open-Meteo coexist in Silver.
-
-Silver does not apply analytical precedence or aggregate one source into the
-other.
-
-For Open-Meteo, Silver preserves all validated meteorological variables
-available in the source datasets. Variable selection for analytical products
-is deferred to Gold.
-
-Per-record technical traceability retained in Silver:
-
-```text
-source
-ingestion_timestamp
-```
-
-The following extraction metadata is not replicated as columns of the Silver
-observation fact:
-
-```text
-generationtime_ms
-requested_start_date
-requested_end_date
-ingestion_mode
-```
-
-Timezone information is used during temporal normalization and is not
-unnecessarily replicated after the observation timestamp has been normalized.
-
----
-
-## 10. ESIOS Silver Design
-
-All 35 configured ESIOS Bronze datasets share the same validated
-`indicator` structure.
-
-Validated `indicator` fields:
-
-```text
-composited
-disaggregated
-geos
-id
-magnitud
-name
-short_name
-step_type
-tiempo
-values
-values_updated_at
-```
-
-For 33 of the 35 datasets, the validated `values` records contain:
-
-```text
-datetime
-datetime_utc
-geo_id
-geo_name
-tz_time
-value
-```
-
-Two datasets contained an empty `values` list in the validated Bronze load:
-
-```text
-demanda_en_consumo
-demanda_medida_discriminacion_horaria_total
-```
-
-An empty `values` list must not be replaced with synthetic records.
-
-Validated ESIOS examples demonstrate different combinations of temporal and
-geographical granularity using the same internal structure.
-
-Examples validated during design include:
-
-- hourly province-level generation;
-- five-minute national generation;
-- five-minute peninsular demand;
-- monthly autonomous-community installed capacity.
-
-Silver preserves:
-
-- indicator identity;
-- timestamp;
-- value;
-- magnitude/unit information when supplied;
-- real geographical information;
-- original temporal granularity.
-
-Selection of indicators for specific analytical products is deferred to Gold.
-
-### Validated ESIOS Classification
-
-The 35 configured datasets were classified from their real `magnitud` and
-`tiempo` metadata:
-
-```text
-14 datasets -> Energía  / Hora
-12 datasets -> Potencia / Cinco minutos
- 9 datasets -> Potencia / Mes
---------------------------------
-35 datasets
-```
-
-The three Silver ESIOS tables therefore contain one row per real ESIOS
-observation according to those three validated families.
-
-The common observation-level information retained in Silver is:
-
-```text
-indicator_id
-dataset
-indicator_name
-indicator_short_name
-magnitude_id
-magnitude_name
-time_id
-time_name
-observation_timestamp
-source_datetime
-tz_time
-esios_geo_id
-esios_geo_name
-value
-values_updated_at
-source
-ingestion_timestamp
-```
-
-The exact timestamp representation of the source-specific temporal fields is
-resolved by the approved temporal-normalization rules during implementation.
-
-The following indicator-level metadata remains preserved in Bronze and is not
-replicated in every Silver observation row:
-
-```text
-composited
-disaggregated
-step_type
-geos
-```
-
-The `geos` collection describes the indicator's available geographies; the
-actual observation already carries its real `geo_id` and `geo_name`.
-
-No additional ESIOS indicator-master table is introduced. The approved design
-remains at 12 Silver tables.
-
----
-
-## 11. Integration Rules
-
-### 11.1 Meteorology to Meteorology
-
-AEMET and Open-Meteo coexist as separate normalized sources in Silver.
-
-Their roles are different:
-
-```text
-Open-Meteo
--> reproducible historical meteorological source
-
 AEMET current observations
--> official hourly observation / contrast source
+→ recent/current observation timestamps
 
-AEMET daily climatology
--> official daily climatological reference
+Open-Meteo hourly
+→ 1 hour
+
+Open-Meteo 15-minute
+→ 15 minutes
+
+ESIOS generation
+→ 1 hour
+
+ESIOS installed capacity
+→ monthly
 ```
 
-Silver does not perform premature analytical aggregation or source
-replacement.
+Missing mandatory timestamps are not generated.
 
-### 11.2 Meteorology to Energy
-
-The principal analytical target is:
-
-```text
-Province × hour
-```
-
-Only ESIOS indicators whose real temporal and geographical granularity is
-compatible with that product may participate directly in that Gold analysis.
-
-Other flows remain independent:
-
-```text
-5-minute flow
-15-minute flow
-hourly flow
-monthly flow
-```
-
-Silver does not manufacture geographical detail or temporal resolution.
-
-Final analytical aggregation and source selection are performed in Gold.
+Invalid mandatory timestamps are rejected during processing.
 
 ---
 
-## 12. Iceberg Silver Tables
+# 8. Natural Keys
 
-The approved Silver design contains 12 Iceberg tables.
+The final approved natural keys are:
 
-### AEMET
+| Silver table | Natural key |
+|---|---|
+| `silver_aemet_stations` | `station_id` |
+| `silver_aemet_current_observations` | `station_id + observation_timestamp` |
+| `silver_open_meteo_hourly` | `station_id + observation_timestamp` |
+| `silver_open_meteo_15min` | `station_id + observation_timestamp` |
+| `silver_cnig_provinces` | `province_code` |
+| `silver_cnig_autonomous_communities` | `autonomous_community_code` |
+| `silver_cnig_municipalities` | `municipality_ine_code` |
+| `silver_esios_energy_hourly` | `indicator_id + esios_geo_id + observation_timestamp` |
+| `silver_esios_installed_capacity_monthly` | `indicator_id + esios_geo_id + observation_timestamp` |
 
-#### `silver_aemet_stations`
+Records with invalid mandatory natural-key fields must not be persisted as
+canonical Silver observations.
 
-Granularity:
+---
+
+# 9. Partitioning Strategy
+
+The final partitioning strategy follows the temporal characteristics of each
+dataset.
+
+| Table | Partitioning |
+|---|---|
+| `silver_aemet_stations` | none |
+| `silver_aemet_current_observations` | day of `observation_timestamp` |
+| `silver_open_meteo_hourly` | day of `observation_timestamp` |
+| `silver_open_meteo_15min` | day of `observation_timestamp` |
+| `silver_cnig_provinces` | none |
+| `silver_cnig_autonomous_communities` | none |
+| `silver_cnig_municipalities` | none |
+| `silver_esios_energy_hourly` | day of `observation_timestamp` |
+| `silver_esios_installed_capacity_monthly` | month of `observation_timestamp` |
+
+Reference masters are therefore not unnecessarily partitioned.
+
+Time-series datasets use temporal Iceberg partitioning appropriate to their
+source grain.
+
+---
+
+# 10. AEMET Silver Design
+
+## 10.1 `silver_aemet_stations`
+
+Purpose:
 
 ```text
-snapshot / master
+official meteorological station master
+```
+
+Current validated cardinality:
+
+```text
+926 rows
 ```
 
 Natural key:
@@ -725,136 +449,245 @@ Natural key:
 station_id
 ```
 
+The transformation normalizes the structural station identifier and
+coordinates while preserving the AEMET source attributes required by the
+platform.
+
+The station master provides the relationship between AEMET observations and
+geography and supplies the location catalogue used for Open-Meteo.
+
+Where applicable, station province information is normalized against CNIG.
+
 Partitioning:
 
 ```text
 none
 ```
 
-#### `silver_aemet_daily_climatology`
+---
 
-Granularity:
+## 10.2 `silver_aemet_current_observations`
 
-```text
-daily
-```
-
-Use:
+Purpose:
 
 ```text
-official climatological reference
-NOT part of the main analytical flow
+recent/current official meteorological observations
 ```
 
 Natural key:
 
 ```text
-station_id + observation_date
+station_id
++
+observation_timestamp
 ```
+
+The transformation performs minimal structural normalization such as:
+
+```text
+idema
+→ station_id
+
+fint
+→ observation_timestamp
+
+lat
+→ latitude
+
+lon
+→ longitude
+```
+
+The original AEMET meteorological fields are preserved rather than being
+prematurely renamed into Gold analytical metrics.
+
+AEMET current observations are station-level observations.
+
+They are not presented as arbitrary historical observations.
+
+Geographical resolution required for Province-level Gold aggregation can use
+the station master rather than manufacturing geography inside the source
+observation.
 
 Partitioning:
 
 ```text
-month
+day(observation_timestamp)
 ```
 
-#### `silver_aemet_current_observations`
+Current validated row count:
+
+```text
+9786
+```
+
+---
+
+# 11. Open-Meteo Silver Design
+
+Open-Meteo uses the AEMET station catalogue as its point catalogue.
+
+The current validated location count is:
+
+```text
+926
+```
+
+Open-Meteo remains independent from AEMET in Silver.
+
+The two meteorological providers are integrated only later in Gold.
+
+---
+
+## 11.1 `silver_open_meteo_hourly`
 
 Granularity:
 
 ```text
-1 hour
-```
-
-Use:
-
-```text
-official incremental hourly observation / contrast
+Station × hour
 ```
 
 Natural key:
 
 ```text
-station_id + observation_timestamp
+station_id
++
+observation_timestamp
+```
+
+The table contains normalized station and geographical information together
+with hourly meteorological observations.
+
+Variables used by the analytical flow include information such as:
+
+```text
+temperature_2m
+relative_humidity_2m
+precipitation
+shortwave_radiation
+direct_normal_irradiance
+```
+
+Additional validated Open-Meteo source fields may remain available in Silver
+even when Gold does not use them directly.
+
+Canonical geographical attributes include, where applicable:
+
+```text
+province_code
+province_name
+autonomous_community_code
+autonomous_community_name
 ```
 
 Partitioning:
 
 ```text
-day
+day(observation_timestamp)
 ```
 
-### Open-Meteo
+Current validated historical E2E count:
 
-#### `silver_open_meteo_hourly`
+```text
+133344 rows
+```
+
+for:
+
+```text
+926 stations
+×
+144 hourly observations
+```
+
+over:
+
+```text
+2026-01-10 → 2026-01-15
+```
+
+---
+
+## 11.2 `silver_open_meteo_15min`
 
 Granularity:
 
 ```text
-1 hour
+Station × 15 minutes
 ```
 
 Natural key:
 
 ```text
-station_id + observation_timestamp
+station_id
++
+observation_timestamp
 ```
+
+The table retains high-frequency meteorological variables required downstream,
+including:
+
+```text
+wind_speed_80m
+wind_direction_80m
+
+wind_speed_120m
+wind_direction_120m
+
+shortwave_radiation
+direct_normal_irradiance
+```
+
+along with the general meteorological and location attributes used by the
+platform.
+
+The 15-minute data remains at its original resolution in Silver.
+
+Hourly aggregation is performed in Gold where required.
 
 Partitioning:
 
 ```text
-day
+day(observation_timestamp)
 ```
 
-#### `silver_open_meteo_historical_forecast`
-
-Granularity:
+Current validated historical E2E count:
 
 ```text
-1 hour
+533376 rows
 ```
 
-Natural key:
+which corresponds exactly to:
 
 ```text
-station_id + observation_timestamp
+926 stations
+×
+576 observations
 ```
 
-Partitioning:
+over:
 
 ```text
-day
+2026-01-10 → 2026-01-15
 ```
 
-#### `silver_open_meteo_15min`
+---
 
-Granularity:
+# 12. CNIG Silver Design
+
+CNIG / IGN provides the canonical geographical master.
+
+The three normalized tables are:
 
 ```text
-15 minutes
+silver_cnig_provinces
+silver_cnig_autonomous_communities
+silver_cnig_municipalities
 ```
 
-Natural key:
+---
 
-```text
-station_id + observation_timestamp
-```
-
-Partitioning:
-
-```text
-day
-```
-
-### CNIG
-
-#### `silver_cnig_provinces`
-
-Granularity:
-
-```text
-snapshot / master
-```
+## 12.1 `silver_cnig_provinces`
 
 Natural key:
 
@@ -862,19 +695,26 @@ Natural key:
 province_code
 ```
 
+The normalized table includes the canonical province and autonomous-community
+relationship.
+
+Validated cardinality:
+
+```text
+52 rows
+```
+
 Partitioning:
 
 ```text
 none
 ```
 
-#### `silver_cnig_autonomous_communities`
+---
 
-Granularity:
+## 12.2 `silver_cnig_autonomous_communities`
 
-```text
-snapshot / master
-```
+The table is derived from the canonical province master.
 
 Natural key:
 
@@ -882,19 +722,21 @@ Natural key:
 autonomous_community_code
 ```
 
+Validated cardinality:
+
+```text
+19 rows
+```
+
 Partitioning:
 
 ```text
 none
 ```
 
-#### `silver_cnig_municipalities`
+---
 
-Granularity:
-
-```text
-snapshot / master
-```
+## 12.3 `silver_cnig_municipalities`
 
 Natural key:
 
@@ -902,26 +744,44 @@ Natural key:
 municipality_ine_code
 ```
 
-Validated municipality code mapping:
+The approved CNIG mapping includes:
 
 ```text
-municipality_code     <- COD_GEO
-municipality_ine_code <- COD_INE
-relation_id           <- ID_REL
+municipality_ine_code
+← COD_INE
+
+municipality_code
+← COD_GEO
+
+province_code
+← COD_PROV
 ```
 
-`municipality_code` is preserved as the five-character municipal geographic
-code from CNIG, but it is not used as the natural key because the validated
-dataset contains 9 records with `COD_GEO = 00000`.
+`municipality_code` is retained as source geographical information but is not
+used as the natural key.
 
-Validation evidence:
+The validated CNIG source contains records with:
 
 ```text
-COD_INE  = 8132 non-empty / 8132 distinct / 0 duplicates
-ID_REL   = 8132 non-empty / 8132 distinct / 0 duplicates
-COD_GEO  = 8132 non-empty / 8124 distinct / 8 duplicates
-COD_GEO = 00000 in 9 records
+COD_GEO = 00000
 ```
+
+therefore `COD_GEO` is not globally unique.
+
+The approved canonical municipality key is:
+
+```text
+COD_INE
+→ municipality_ine_code
+```
+
+Validated cardinality:
+
+```text
+8132 rows
+```
+
+Official codes remain strings.
 
 Partitioning:
 
@@ -929,487 +789,72 @@ Partitioning:
 none
 ```
 
-### ESIOS
+---
 
-#### `silver_esios_energy_hourly`
+# 13. ESIOS Silver Design
 
-Granularity:
-
-```text
-1 hour
-```
-
-Natural key:
+The final ESIOS Silver scope contains only two physical tables:
 
 ```text
-indicator_id + esios_geo_id + observation_timestamp
+silver_esios_energy_hourly
+silver_esios_installed_capacity_monthly
 ```
 
-Partitioning:
+The previously implemented:
 
 ```text
-day
+silver_esios_power_5min
 ```
 
-#### `silver_esios_power_5min`
+is no longer part of the final model.
 
-Granularity:
+The final indicator configuration contains:
 
 ```text
-5 minutes
+11 hourly generation indicators
+9 monthly installed-capacity indicators
 ```
 
-Natural key:
+and is maintained in:
 
 ```text
-indicator_id + esios_geo_id + observation_timestamp
+config/esios_indicators.json
 ```
-
-Partitioning:
-
-```text
-day
-```
-
-#### `silver_esios_installed_capacity_monthly`
-
-Granularity:
-
-```text
-monthly
-```
-
-Natural key:
-
-```text
-indicator_id + esios_geo_id + observation_timestamp
-```
-
-Partitioning:
-
-```text
-month
-```
-
-### Silver Granularity Principle
-
-Silver preserves the original granularity of each dataset.
-
-No aggregations from:
-
-```text
-5 min -> 15 min -> hour
-```
-
-or:
-
-```text
-hour -> month
-```
-
-are performed in Silver.
-
-Required analytical aggregations are implemented later in Gold.
 
 ---
 
-### 12.1 Physical Schema Decisions
+## 13.1 Common ESIOS Observation Structure
 
-The physical schemas below are based on validated Bronze payloads and approved
-Silver design decisions. Silver preserves source variables required for a
-reusable normalized layer; Gold is responsible for analytical selection.
-
-#### Open-Meteo physical schemas
-
-##### `silver_open_meteo_hourly`
-
-| Column | Type | Required |
-|---|---|---|
-| `station_id` | STRING | Yes |
-| `observation_timestamp` | TIMESTAMP | Yes |
-| `station_name` | STRING | Yes |
-| `province` | STRING | Yes |
-| `latitude` | DOUBLE | Yes |
-| `longitude` | DOUBLE | Yes |
-| `elevation` | DOUBLE | No |
-| `temperature_2m` | DOUBLE | No |
-| `relative_humidity_2m` | BIGINT | No |
-| `dew_point_2m` | DOUBLE | No |
-| `precipitation` | DOUBLE | No |
-| `pressure_msl` | DOUBLE | No |
-| `surface_pressure` | DOUBLE | No |
-| `cloud_cover` | BIGINT | No |
-| `shortwave_radiation` | DOUBLE | No |
-| `direct_radiation` | DOUBLE | No |
-| `diffuse_radiation` | DOUBLE | No |
-| `direct_normal_irradiance` | DOUBLE | No |
-| `sunshine_duration` | DOUBLE | No |
-| `wind_speed_10m` | DOUBLE | No |
-| `wind_direction_10m` | BIGINT | No |
-| `wind_gusts_10m` | DOUBLE | No |
-| `source` | STRING | Yes |
-| `ingestion_timestamp` | TIMESTAMP | Yes |
-| `province_code` | STRING | Yes |
-| `province_name` | STRING | Yes |
-| `autonomous_community_code` | STRING | Yes |
-| `autonomous_community_name` | STRING | Yes |
-
-Natural key: `station_id + observation_timestamp`.
-
-Partitioning: day.
-
-##### `silver_open_meteo_historical_forecast`
-
-| Column | Type | Required |
-|---|---|---|
-| `station_id` | STRING | Yes |
-| `observation_timestamp` | TIMESTAMP | Yes |
-| `station_name` | STRING | Yes |
-| `province` | STRING | Yes |
-| `latitude` | DOUBLE | Yes |
-| `longitude` | DOUBLE | Yes |
-| `elevation` | DOUBLE | No |
-| `wind_speed_80m` | DOUBLE | No |
-| `wind_direction_80m` | BIGINT | No |
-| `wind_speed_120m` | DOUBLE | No |
-| `wind_direction_120m` | BIGINT | No |
-| `source` | STRING | Yes |
-| `ingestion_timestamp` | TIMESTAMP | Yes |
-| `province_code` | STRING | Yes |
-| `province_name` | STRING | Yes |
-| `autonomous_community_code` | STRING | Yes |
-| `autonomous_community_name` | STRING | Yes |
-
-Natural key: `station_id + observation_timestamp`.
-
-Partitioning: day.
-
-##### `silver_open_meteo_15min`
-
-The Bronze metadata field `location_id` is normalized to `station_id`.
-
-| Column | Type | Required |
-|---|---|---|
-| `station_id` | STRING | Yes |
-| `observation_timestamp` | TIMESTAMP | Yes |
-| `station_name` | STRING | Yes |
-| `province` | STRING | Yes |
-| `latitude` | DOUBLE | Yes |
-| `longitude` | DOUBLE | Yes |
-| `elevation` | DOUBLE | No |
-| `temperature_2m` | DOUBLE | No |
-| `relative_humidity_2m` | BIGINT | No |
-| `dew_point_2m` | DOUBLE | No |
-| `precipitation` | DOUBLE | No |
-| `pressure_msl` | DOUBLE | No |
-| `surface_pressure` | DOUBLE | No |
-| `cloud_cover` | BIGINT | No |
-| `shortwave_radiation` | DOUBLE | No |
-| `direct_radiation` | DOUBLE | No |
-| `diffuse_radiation` | DOUBLE | No |
-| `direct_normal_irradiance` | DOUBLE | No |
-| `sunshine_duration` | DOUBLE | No |
-| `wind_speed_10m` | DOUBLE | No |
-| `wind_direction_10m` | BIGINT | No |
-| `wind_gusts_10m` | DOUBLE | No |
-| `wind_speed_80m` | DOUBLE | No |
-| `wind_direction_80m` | BIGINT | No |
-| `wind_speed_120m` | DOUBLE | No |
-| `wind_direction_120m` | BIGINT | No |
-| `source` | STRING | Yes |
-| `ingestion_timestamp` | TIMESTAMP | Yes |
-| `province_code` | STRING | Yes |
-| `province_name` | STRING | Yes |
-| `autonomous_community_code` | STRING | Yes |
-| `autonomous_community_name` | STRING | Yes |
-
-Natural key: `station_id + observation_timestamp`.
-
-Partitioning: day.
-
-Validated sample consistency:
+The normalized ESIOS observation structure retains information such as:
 
 ```text
-weather_hourly              -> 96 timestamps
-weather_historical_forecast -> 96 timestamps
-weather_15min               -> 384 timestamps
+indicator_id
+dataset
+indicator_name
+indicator_short_name
+
+magnitude_id
+magnitude_name
+
+time_id
+time_name
+
+observation_timestamp
+source_datetime
+tz_time
+
+esios_geo_id
+esios_geo_name
+
+value
+values_updated_at
+
+source
+ingestion_timestamp
 ```
 
-The inspected arrays had consistent lengths and no `NULL` values. This does
-not convert all measurement columns into mandatory fields: Silver still allows
-valid source-level missing measurements.
-
-#### CNIG physical schemas
-
-##### `silver_cnig_provinces`
-
-| Column | Bronze field | Type | Required |
-|---|---|---|---|
-| `province_code` | `COD_PROV` | STRING | Yes |
-| `province_name` | `PROVINCIA` | STRING | Yes |
-| `autonomous_community_code` | `COD_CA` | STRING | Yes |
-| `autonomous_community_name` | `COMUNIDAD_AUTONOMA` | STRING | Yes |
-| `capital_name` | `CAPITAL` | STRING | Yes |
-| `source` | technical traceability | STRING | Yes |
-| `ingestion_timestamp` | technical traceability | TIMESTAMP | Yes |
-
-Natural key: `province_code`.
-
-Partitioning: none.
-
-##### `silver_cnig_autonomous_communities`
-
-Derived from the unique `COD_CA + COMUNIDAD_AUTONOMA` pairs in the validated
-province master.
-
-| Column | Type | Required |
-|---|---|---|
-| `autonomous_community_code` | STRING | Yes |
-| `autonomous_community_name` | STRING | Yes |
-| `source` | STRING | Yes |
-| `ingestion_timestamp` | TIMESTAMP | Yes |
-
-Validated result:
-
-```text
-19 autonomous communities
-CODES_WITH_MULTIPLE_NAMES = 0
-```
-
-Natural key: `autonomous_community_code`.
-
-Partitioning: none.
-
-##### `silver_cnig_municipalities`
-
-All 18 validated source fields are retained in Silver.
-
-| Column | Bronze field | Type | Required |
-|---|---|---|---|
-| `municipality_ine_code` | `COD_INE` | STRING | Yes |
-| `relation_id` | `ID_REL` | STRING | Yes |
-| `municipality_code` | `COD_GEO` | STRING | Yes |
-| `province_code` | `COD_PROV` | STRING | Yes |
-| `province_name` | `PROVINCIA` | STRING | Yes |
-| `municipality_name` | `NOMBRE_ACTUAL` | STRING | Yes |
-| `municipality_population` | `POBLACION_MUNI` | LONG | Yes |
-| `surface_area` | `SUPERFICIE` | DOUBLE | Yes |
-| `perimeter` | `PERIMETRO` | LONG | Yes |
-| `capital_ine_code` | `COD_INE_CAPITAL` | STRING | Yes |
-| `capital_name` | `CAPITAL` | STRING | Yes |
-| `capital_population` | `POBLACION_CAPITAL` | LONG | Yes |
-| `mtn25_sheet` | `HOJA_MTN25` | STRING | Yes |
-| `longitude` | `LONGITUD_ETRS89_REGCAN95` | DOUBLE | Yes |
-| `latitude` | `LATITUD_ETRS89_REGCAN95` | DOUBLE | Yes |
-| `coordinate_origin` | `ORIGENCOOR` | STRING | Yes |
-| `altitude` | `ALTITUD` | DOUBLE | Yes |
-| `altitude_origin` | `ORIGENALTITUD` | STRING | Yes |
-| `source` | technical traceability | STRING | Yes |
-| `ingestion_timestamp` | technical traceability | TIMESTAMP | Yes |
-
-Decimal-comma values are normalized to numeric types. Official codes remain
-strings to preserve leading zeroes.
-
-Validated code mapping:
-
-```text
-municipality_code     <- COD_GEO
-municipality_ine_code <- COD_INE
-relation_id           <- ID_REL
-```
-
-`municipality_code` is retained as source geography information, but it is not
-a valid natural key in the validated CNIG dataset because 9 municipality
-records contain `COD_GEO = 00000`, producing 8 duplicates.
-
-`municipality_ine_code` is the approved Silver natural key because the
-validated Bronze dataset contains:
-
-```text
-8132 records
-8132 non-empty COD_INE values
-8132 distinct COD_INE values
-0 COD_INE duplicates
-```
-
-`relation_id` remains a retained CNIG source attribute.
-
-Natural key: `municipality_ine_code`.
-
-Partitioning: none.
-
-#### ESIOS physical schemas
-
-The three ESIOS tables share the same observation-level logical schema and are
-separated by the validated magnitude/time classification.
-
-| Column | Source | Type |
-|---|---|---|
-| `indicator_id` | `indicator.id` | LONG |
-| `dataset` | Bronze dataset identifier | STRING |
-| `indicator_name` | `indicator.name` | STRING |
-| `indicator_short_name` | `indicator.short_name` | STRING |
-| `magnitude_id` | `magnitud[].id` | LONG |
-| `magnitude_name` | `magnitud[].name` | STRING |
-| `time_id` | `tiempo[].id` | LONG |
-| `time_name` | `tiempo[].name` | STRING |
-| `observation_timestamp` | `values[].datetime_utc` | TIMESTAMP |
-| `source_datetime` | `values[].datetime` | normalized temporal field |
-| `tz_time` | `values[].tz_time` | normalized temporal field |
-| `esios_geo_id` | `values[].geo_id` | LONG |
-| `esios_geo_name` | `values[].geo_name` | STRING |
-| `value` | `values[].value` | DOUBLE |
-| `values_updated_at` | `indicator.values_updated_at` | TIMESTAMP |
-| `source` | technical traceability | STRING |
-| `ingestion_timestamp` | Bronze metadata | TIMESTAMP |
-
-Natural key for all three tables:
-
-```text
-indicator_id + esios_geo_id + observation_timestamp
-```
-
-##### `silver_esios_energy_hourly`
-
-Validated classification:
-
-```text
-14 datasets
-magnitude = Energía (13)
-time      = Hora (4)
-```
-
-Partitioning: day.
-
-##### `silver_esios_power_5min`
-
-Validated classification:
-
-```text
-12 datasets
-magnitude = Potencia (20)
-time      = Cinco minutos (219)
-```
-
-Partitioning: day.
-
-Validated geography includes national and peninsular observations depending
-on the indicator. Silver preserves the real geography and does not manufacture
-province-level values.
-
-##### `silver_esios_installed_capacity_monthly`
-
-Validated classification:
-
-```text
-9 datasets
-magnitude = Potencia (20)
-time      = Mes (2)
-```
-
-Partitioning: month.
-
-Validated monthly observations include autonomous-community-level geography
-and source-specific names such as `Islas Baleares`, `Islas Canarias`,
-`Cataluña`, `País Vasco`, `Ceuta` and `Melilla`. Geographic normalization uses
-the approved canonical geography while preserving source traceability.
-
-#### AEMET physical schemas
-
-The physical AEMET schemas below are based on the validated Bronze inspection.
-Structural fields use the approved common Silver naming. Meteorological fields
-retain their original AEMET names to preserve direct Bronze-to-Silver
-traceability and avoid semantic reinterpretation.
-
-##### `silver_aemet_stations`
-
-Validated Bronze evidence:
-
-```text
-records = 921
-fields  = 7
-```
-
-| Silver column | Bronze field / origin | Type | Required |
-|---|---|---|---|
-| `station_id` | `indicativo` | STRING | Yes |
-| `nombre` | `nombre` | STRING | Yes |
-| `provincia` | `provincia` | STRING | Yes |
-| `altitud` | `altitud` | DOUBLE | Yes |
-| `latitude` | `latitud` | DOUBLE | Yes |
-| `longitude` | `longitud` | DOUBLE | Yes |
-| `indsinop` | `indsinop` | STRING | No |
-| `source` | technical traceability | STRING | Yes |
-| `ingestion_timestamp` | technical traceability | TIMESTAMP | Yes |
-| `province_code` | CNIG canonical geography | STRING | Yes |
-| `province_name` | CNIG canonical geography | STRING | Yes |
-| `autonomous_community_code` | CNIG canonical geography | STRING | Yes |
-| `autonomous_community_name` | CNIG canonical geography | STRING | Yes |
-
-`indsinop` is legitimately nullable: the validated payload contained 622 empty
-values out of 921 stations.
-
-Natural key:
-
-```text
-station_id
-```
-
-Partitioning: none.
-
-The already validated coordinate conversion applies to all 921/921 stations.
-
-The original AEMET `provincia` value is preserved while the canonical
-geographical fields contain the corresponding CNIG representation.
-
-##### `silver_aemet_daily_climatology`
-
-Validated Bronze fields used by the implemented transformation:
-
-```text
-altitud
-dir
-fecha
-horaHrMax
-horaHrMin
-horaPIntMax
-horaPresMax
-horaPresMin
-horaracha
-horatmax
-horatmin
-hrMax
-hrMedia
-hrMin
-indicativo
-nombre
-pintMax
-prec
-presMax
-presMin
-provincia
-racha
-sol
-tmax
-tmed
-tmin
-velmedia
-_bronze_ingestion_timestamp
-```
-
-Approved structural normalization:
-
-```text
-indicativo -> station_id
-fecha      -> observation_date
-altitud    -> altitud
-```
-
-The remaining AEMET meteorological field names are preserved.
-
-The persisted Silver table was validated with 2,420 rows.
-
-The persisted table also contains the canonical CNIG geographical fields:
+Where province-level normalization is applicable to hourly generation,
+canonical geographical fields can additionally be present:
 
 ```text
 province_code
@@ -1418,279 +863,537 @@ autonomous_community_code
 autonomous_community_name
 ```
 
-The original AEMET `provincia` value is preserved for source traceability.
-
-Natural key:
+Indicator-level structures such as:
 
 ```text
-station_id + observation_date
+composited
+disaggregated
+step_type
+geos
 ```
 
-Partitioning: month.
+remain in Bronze rather than being unnecessarily repeated in every Silver
+observation row.
 
-Role:
+---
 
-```text
-official climatological reference
-NOT part of the main analytical flow
-```
+## 13.2 `silver_esios_energy_hourly`
 
-##### `silver_aemet_current_observations`
-
-Validated Bronze evidence:
+Purpose:
 
 ```text
-records = 9688
-```
-
-Validated Bronze fields used by the implemented transformation:
-
-```text
-alt
-dmax
-dmaxu
-dv
-dvu
-fint
-geo700
-geo850
-geo925
-hr
-idema
-inso
-lat
-lon
-nieve
-pacutp
-pliqt
-prec
-pres
-pres_nmar
-psoltp
-rviento
-stddv
-stddvu
-stdvv
-stdvvu
-ta
-tamax
-tamin
-tpr
-ts
-tss20cm
-tss5cm
-ubi
-vis
-vmax
-vmaxu
-vv
-vvu
-_bronze_ingestion_timestamp
-```
-
-Approved structural normalization:
-
-```text
-idema -> station_id
-fint  -> observation_timestamp
-lat   -> latitude
-lon   -> longitude
-```
-
-The remaining meteorological names are preserved exactly as AEMET field names.
-
-The persisted Silver table was validated with:
-
-```text
-9688 rows
-41 Silver columns
-0 null natural keys
-0 null observation timestamps
-0 duplicate natural keys
-0 invalid coordinates
+normalized hourly electricity-generation observations
 ```
 
 Natural key:
 
 ```text
-station_id + observation_timestamp
+indicator_id
++
+esios_geo_id
++
+observation_timestamp
 ```
 
-Partitioning: day.
-
-Role:
+Current active scope:
 
 ```text
-official incremental hourly observation / contrast
+11 indicators
 ```
 
-`silver_aemet_current_observations` does not contain the canonical province
-enrichment described in section 4 because its validated source schema does not
-provide the province field required by that matching mechanism.
+The table preserves the real ESIOS observation value and geographical identity.
 
-The validated inspection does not by itself revalidate the previously approved
-source-specific treatment of AEMET `Ip`; that rule remains documented as a
-previously validated transformation case and is not reconstructed from this
-payload.
+Province normalization is applied only where the source geography supports it.
+
+Silver does not fabricate Province-level observations for source records that do
+not provide Province-level geography.
+
+Partitioning:
+
+```text
+day(observation_timestamp)
+```
+
+Current validated E2E row count:
+
+```text
+38443
+```
 
 ---
 
-## 13. Silver Data Quality
+## 13.3 `silver_esios_installed_capacity_monthly`
 
-The following eight Silver quality controls are approved:
-
-1. Null natural keys.
-2. Null or invalid timestamps.
-3. Coordinates outside valid ranges.
-4. Records without geographical/CNIG correspondence when applicable.
-5. Duplicates according to the natural keys defined in this document.
-6. Mandatory fields / missing values.
-7. Temporal coverage and gap detection according to granularity.
-8. Possible physical or structural anomalies.
-
-### Quality Principles
-
-Bronze always remains intact.
-
-Values are not invented or imputed.
-
-An allowed `NULL` does not automatically represent an error.
-
-Duplicates are controlled in Silver.
-
-Temporal gaps are detected but are not filled automatically.
-
-Plausible outliers are retained.
-
-Quality incidents are classified as:
+Purpose:
 
 ```text
-ERROR
-WARNING
+normalized monthly installed-capacity observations
 ```
 
-No physical `quarantine` zone is created at this stage.
+Natural key:
 
-Rejected records, quality metrics and rejection reasons are registered during
-Silver processing.
+```text
+indicator_id
++
+esios_geo_id
++
+observation_timestamp
+```
+
+Current active scope:
+
+```text
+9 indicators
+```
+
+Installed capacity represents:
+
+```text
+power
+```
+
+and remains expressed in:
+
+```text
+MW
+```
+
+The validated analytical geography is:
+
+```text
+Autonomous Community
+```
+
+Silver does not distribute those values artificially to provinces.
+
+Partitioning:
+
+```text
+month(observation_timestamp)
+```
+
+Current validated E2E row count:
+
+```text
+123
+```
 
 ---
 
-## 14. Analytical Scope
+# 14. ESIOS Units
 
-The analytical scope must remain explicit throughout subsequent development.
-
-### Main analytical product
+The platform maintains a strict distinction between:
 
 ```text
-Province × hour
-Meteorology + compatible ESIOS indicators
+MW
 ```
 
-### High-frequency products
+and:
 
 ```text
-5 minutes / 15 minutes
+MWh
 ```
 
-The real geographical granularity provided by the source is preserved.
-
-### Structural products
+Installed capacity represents power:
 
 ```text
-monthly
+MW
 ```
 
-The real geographical granularity provided by the source is preserved.
+Hourly generation represents energy in the final analytical model:
+
+```text
+MWh
+```
+
+The fact that average power over exactly one hour can be numerically equal to
+the energy produced during that hour does not make the two physical quantities
+equivalent.
+
+Silver therefore preserves source magnitude semantics so that Gold can apply
+the correct analytical interpretation.
+
+---
+
+# 15. Meteorological Source Separation
+
+AEMET and Open-Meteo coexist as independent normalized sources in Silver.
+
+```text
+AEMET
+→ official stations
+→ recent/current official observations
+```
+
+```text
+Open-Meteo
+→ reproducible historical meteorological data
+→ hourly data
+→ 15-minute data
+```
+
+Silver does not perform:
+
+```text
+AEMET preferred source
+Open-Meteo fallback
+```
+
+That rule belongs to Gold.
+
+Gold subsequently applies metric-specific fallback for:
+
+```text
+temperature
+humidity
+precipitation
+```
+
+where AEMET is preferred when a valid observation exists.
+
+---
+
+# 16. Silver-to-Gold Contract
+
+Silver exposes reusable normalized inputs to Gold.
+
+### Main meteorological inputs
+
+```text
+silver_aemet_stations
+silver_aemet_current_observations
+silver_open_meteo_hourly
+silver_open_meteo_15min
+```
+
+### Main energy inputs
+
+```text
+silver_esios_energy_hourly
+silver_esios_installed_capacity_monthly
+```
+
+### Geography inputs
+
+```text
+silver_cnig_provinces
+silver_cnig_autonomous_communities
+silver_cnig_municipalities
+```
+
+Gold subsequently produces:
+
+```text
+gold_fact_province_hourly
+gold_fact_installed_capacity_monthly
+gold_dim_geography
+gold_dim_time
+```
+
+---
+
+# 17. Silver Data Quality
+
+The Silver layer applies technical quality controls including:
+
+1. null natural keys;
+2. invalid or missing mandatory timestamps;
+3. coordinates outside valid ranges;
+4. unresolved geographical correspondence where matching is required;
+5. duplicate natural keys;
+6. invalid mandatory fields;
+7. temporal coverage anomalies where applicable;
+8. structural or physical inconsistencies.
+
+The guiding principles are:
+
+```text
+Bronze remains preserved.
+
+Values are not invented.
+
+Allowed NULL values remain NULL.
+
+Duplicates are resolved using natural keys.
+
+Temporal gaps are detected, not automatically filled.
+
+Plausible source outliers are preserved unless a validated rule rejects them.
+```
+
+---
+
+# 18. Deduplication
+
+Bronze can contain overlapping observations from repeated acquisitions.
+
+Silver produces the canonical observation set.
+
+Conceptually:
+
+```text
+Bronze object A ──┐
+                  │
+Bronze object B ──┼──► Spark
+                  │       │
+Bronze object C ──┘       ▼
+                    Natural-key
+                    deduplication
+                         │
+                         ▼
+                       Silver
+```
+
+Reprocessing the same Bronze input must not multiply rows with the same natural
+key.
+
+The final E2E validation confirmed consistent canonical Silver outputs.
+
+---
+
+# 19. Apache Iceberg Persistence
+
+Silver is implemented using Apache Iceberg on MinIO.
+
+The physical relationship is:
+
+```text
+Apache Spark
+     │
+     ▼
+Apache Iceberg
+     │
+     ▼
+   MinIO
+     ▲
+     │
+   Trino
+```
+
+Spark is responsible for creating and writing the Silver tables.
+
+Trino provides independent SQL access to the same persisted Iceberg tables.
+
+Bronze remains raw MinIO object storage and is not converted into an Iceberg
+landing layer.
+
+---
+
+# 20. Final E2E Silver Validation
+
+A complete real-data execution was performed for the historical interval:
+
+```text
+2026-01-10 → 2026-01-15
+```
+
+The final Silver namespace contained exactly:
+
+```text
+9 tables
+```
+
+Trino returned the following row counts:
+
+| Table | Rows |
+|---|---:|
+| `silver_aemet_stations` | 926 |
+| `silver_aemet_current_observations` | 9786 |
+| `silver_open_meteo_hourly` | 133344 |
+| `silver_open_meteo_15min` | 533376 |
+| `silver_cnig_provinces` | 52 |
+| `silver_cnig_autonomous_communities` | 19 |
+| `silver_cnig_municipalities` | 8132 |
+| `silver_esios_energy_hourly` | 38443 |
+| `silver_esios_installed_capacity_monthly` | 123 |
+
+Open-Meteo coverage matched the expected historical interval exactly:
+
+```text
+926 × 144
+= 133344 hourly rows
+```
+
+and:
+
+```text
+926 × 576
+= 533376 15-minute rows
+```
+
+ESIOS also contained actual observations rather than empty placeholder
+datasets.
+
+---
+
+# 21. Catalog Validation
+
+The final Silver tables are persisted in Apache Iceberg and queryable through
+Trino using the:
+
+```text
+iceberg.silver
+```
+
+namespace.
+
+The exact final table inventory is:
+
+```text
+silver_aemet_current_observations
+silver_aemet_stations
+silver_cnig_autonomous_communities
+silver_cnig_municipalities
+silver_cnig_provinces
+silver_esios_energy_hourly
+silver_esios_installed_capacity_monthly
+silver_open_meteo_15min
+silver_open_meteo_hourly
+```
+
+No obsolete Silver table is part of the current final catalog.
+
+---
+
+# 22. Removed Silver Flows
+
+The following physical tables were deliberately removed from the final model:
 
 ### AEMET daily climatology
 
 ```text
-reference only
-NOT part of the main analytical analysis
+silver_aemet_daily_climatology
 ```
 
----
+Reason:
 
-## 15. Validation and Closure Criteria
-
-The Silver technical design can be considered closed only after this document
-has been checked against the approved design decisions and validated technical
-evidence.
-
-The final review must verify:
-
-- no contradictory decisions;
-- no invented columns;
-- no invented indicator IDs;
-- no invented granularities;
-- no invented geographical levels;
-- schemas are based on real Bronze payloads;
-- the 12 approved Silver tables are represented;
-- approved natural keys are represented;
-- geographical normalization is represented;
-- temporal normalization is represented;
-- deduplication rules are represented;
-- source integration rules are represented;
-- the eight approved Silver quality controls are represented;
-- the analytical scope is represented explicitly.
-
-Once this review is completed and approved, section 4.2 — Silver technical
-design — can be considered closed.
+The final meteorological analytical flow is based on AEMET current observations
+and Open-Meteo historical data.
 
 ---
 
-## 16. Current Design Status
+### Open-Meteo historical forecast table
 
 ```text
-Physical Silver schema blocks:
-
-AEMET       = VALIDATED
-Open-Meteo  = VALIDATED
-CNIG        = VALIDATED
-ESIOS       = VALIDATED
-
-Total approved Silver tables = 12
+silver_open_meteo_historical_forecast
 ```
 
-The detailed AEMET physical schema has been incorporated from validated Bronze
-evidence.
+Reason:
 
-The CNIG municipality natural-key decision has also been corrected using the
-validated CNIG evidence: `municipality_ine_code` (`COD_INE`) is the natural
-key, while `municipality_code` (`COD_GEO`) is retained as a non-key source
-attribute.
+Historical 15-minute acquisition now feeds the unified:
 
-Section 4.2 is ready for the final 4.2.14 checklist review. It is considered
-closed only after that review is explicitly approved.
+```text
+silver_open_meteo_15min
+```
+
+table rather than requiring a separate historical-forecast Silver table.
 
 ---
 
-### Implementation reconciliation
+### ESIOS 5-minute power
 
-During the Silver implementation, the design document was reconciled against
-the schemas physically observed in Bronze and against the final Apache Iceberg
-tables.
+```text
+silver_esios_power_5min
+```
 
-The following documentation corrections were incorporated:
+Reason:
 
-- AEMET daily climatology fields updated to the real Bronze schema used by the
-  implemented transformation.
-- AEMET current-observation fields updated to the real Bronze schema used by
-  the implemented transformation.
-- Open-Meteo integer fields documented as `BIGINT` where PySpark/Iceberg
-  physically materialized them as long integer types.
-- Canonical province normalization was implemented using CNIG as the
-  geographical master.
-- Deterministic province-name normalization is applied before matching.
-- A controlled `config/province_aliases.json` fallback handles the five
-  validated source-name exceptions.
-- Canonical `province_code`, `province_name`,
-  `autonomous_community_code` and `autonomous_community_name` fields were
-  incorporated into the five applicable meteorological Silver tables.
-- Persisted-data validation confirmed zero unmatched provinces and zero
-  unmatched autonomous communities in those five tables.
+The final analytical model was simplified around:
 
-These changes do not modify the approved Silver architecture, natural keys,
-granularities or partitioning rules. They align the documentation with the
-implementation that was subsequently validated end-to-end.
+```text
+hourly electricity generation
+monthly installed capacity
+```
+
+The earlier 5-minute experimental flow is therefore outside the final physical
+Silver model.
+
+---
+
+# 23. Final Analytical Scope
+
+The final Silver layer supports two principal downstream analytical products.
+
+### Province × hour
+
+Inputs include:
+
+```text
+AEMET current observations
+Open-Meteo hourly
+Open-Meteo 15-minute
+ESIOS hourly generation
+CNIG geography
+```
+
+Gold integrates these sources into:
+
+```text
+gold_fact_province_hourly
+```
+
+---
+
+### Autonomous Community × month
+
+Input:
+
+```text
+ESIOS monthly installed capacity
+```
+
+Gold produces:
+
+```text
+gold_fact_installed_capacity_monthly
+```
+
+The Silver layer does not artificially alter the source geography to force both
+products into the same grain.
+
+---
+
+# 24. Current Silver Status
+
+The current implementation status is:
+
+```text
+Final physical Silver tables
+= 9
+
+AEMET Silver
+= VALIDATED
+
+Open-Meteo Silver
+= VALIDATED
+
+CNIG Silver
+= VALIDATED
+
+ESIOS Silver
+= VALIDATED
+
+Natural-key deduplication
+= VALIDATED
+
+Canonical geographical normalization
+= VALIDATED
+
+Apache Iceberg persistence
+= VALIDATED
+
+Trino queryability
+= VALIDATED
+
+Real Bronze → Silver execution
+= VALIDATED
+
+Silver input to Gold
+= VALIDATED
+
+Real Bronze → Silver → Gold → Trino
+= VALIDATED
+```
+
+The Silver layer is therefore implemented and validated for the final project
+scope.

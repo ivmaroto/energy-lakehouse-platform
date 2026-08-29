@@ -1,218 +1,235 @@
-# Energy Lakehouse Platform
+# Docker
 
-Open Source Lakehouse platform for integrating and analyzing public meteorological and energy data from Spain.
+Docker configuration for the local infrastructure of the Energy Lakehouse Platform.
 
-## 📖 Project Overview
+## 1. Purpose
 
-This project is being developed as a Master's Thesis (MSc Big Data & Data Engineering).
+Docker and Docker Compose are used to provide a reproducible local environment for the complete platform.
 
-Its objective is to design and implement a complete Open Source Lakehouse platform capable of integrating, processing, storing and visualizing public meteorological and energy data from Spain.
+The containerized infrastructure includes the services required for:
 
-The project focuses on Data Engineering concepts using a real-world use case based on public meteorological and energy data.
+- object storage;
+- distributed data processing;
+- Apache Iceberg metadata management;
+- SQL querying;
+- workflow orchestration;
+- analytical visualization.
 
-The platform follows a Lakehouse architecture based entirely on Open Source technologies and is designed to be reproducible in a local environment using Docker Compose.
-
----
-
-## 🏗️ Architecture
-
-The platform follows a Medallion Architecture:
-
-```text
-Data Sources
-     │
-     ▼
-  Ingestion
-     │
-     ▼
-┌─────────┐
-│ Bronze  │
-└────┬────┘
-     │
-     ▼
-┌─────────┐
-│ Silver  │
-└────┬────┘
-     │
-     ▼
-┌─────────┐
-│  Gold   │
-└────┬────┘
-     │
-     ▼
-Trino / SQL
-     │
-     ▼
-  Superset
-```
-
-Main infrastructure components:
+The main infrastructure definition is located at the project root:
 
 ```text
-                    Apache Airflow
-                         │
-                         ▼
-                   Apache Spark
-                         │
-                         ▼
-              Apache Iceberg Tables
-                         │
-                  ┌──────┴──────┐
-                  ▼             ▼
-                MinIO         Trino
-                                │
-                                ▼
-                         Apache Superset
-
-                    PostgreSQL
-                Metadata / Catalog
+docker-compose.yml
 ```
 
-A detailed architecture diagram is available in the project documentation.
+---
+
+## 2. Platform Services
+
+The Docker Compose environment includes the following main services:
+
+| Service | Purpose |
+|---|---|
+| PostgreSQL | Platform metadata and Apache Iceberg JDBC catalog |
+| MinIO | S3-compatible object storage |
+| Spark Master | Apache Spark cluster coordination |
+| Spark Worker | Distributed Spark processing |
+| Trino | SQL query layer over Apache Iceberg |
+| Airflow Webserver | Airflow user interface |
+| Airflow Scheduler | Workflow scheduling and execution |
+| Superset | Analytical visualization |
+
+Initialization services are also used where required by Airflow and Superset.
 
 ---
 
-## ⚙️ Technologies
+## 3. Local Ports
 
-### Data Engineering
+The main host ports are:
 
-- Python
-- Apache Spark
-- PySpark
-- Apache Iceberg
+| Service | Port |
+|---|---:|
+| PostgreSQL | 5432 |
+| Spark Master | 7077 |
+| Spark Master UI | 8080 |
+| Spark Worker UI | 8081 |
+| Trino | 8082 |
+| Airflow | 8083 |
+| Superset | 8088 |
+| MinIO API | 9000 |
+| MinIO Console | 9001 |
 
-### Storage
+Internal communication between containers uses Docker service names through the shared platform network.
 
-- MinIO
-- PostgreSQL
+Examples:
 
-### SQL Query Engine
-
-- Trino
-
-### Orchestration
-
-- Apache Airflow
-
-### Analytics & Visualization
-
-- Apache Superset
-
-### Infrastructure
-
-- Docker
-- Docker Compose
-- Git
-- GitHub
+```text
+postgres:5432
+minio:9000
+spark-master:7077
+```
 
 ---
 
-## 📊 Data Sources
+## 4. Custom Images
 
-The platform is designed to integrate public data from:
+Custom Docker images are used where project-specific dependencies or configuration are required.
 
-- AEMET — Spanish State Meteorological Agency
-- Open-Meteo — Meteorological data
-- REE / ESIOS — Spanish electricity system data
+The platform includes custom container configuration for:
 
----
+```text
+Apache Spark
+Apache Airflow
+Apache Superset
+```
 
-## 🥉🥈🥇 Medallion Architecture
+Spark requires the dependencies and configuration necessary to work with:
 
-### Bronze
+```text
+Apache Iceberg
+MinIO / S3
+PostgreSQL JDBC catalog
+```
 
-Raw data obtained directly from the source APIs.
+Airflow contains the Python environment required to execute project ingestion and orchestration code.
 
-### Silver
-
-Cleaned, validated and standardized datasets.
-
-### Gold
-
-Business-ready analytical datasets and aggregated KPIs.
-
-Apache Iceberg is used as the Lakehouse table format.
+Superset contains the dependencies required by the analytical visualization layer.
 
 ---
 
-## 🐳 Local Infrastructure
+## 5. Environment Configuration
 
-The complete development environment is orchestrated using Docker Compose.
+Environment-specific configuration and credentials are externalized from the Docker definitions.
 
-Main services:
+The repository contains:
 
-| Service | Purpose | Port |
-|---|---|---:|
-| PostgreSQL | Metadata / relational storage | 5432 |
-| Spark Master | Distributed processing | 8080 |
-| Spark Worker | Spark worker node | 8081 |
-| Trino | Distributed SQL engine | 8082 |
-| Airflow | Workflow orchestration | 8083 |
-| Superset | Analytics and visualization | 8088 |
-| MinIO API | S3-compatible storage | 9000 |
-| MinIO Console | Storage administration | 9001 |
+```text
+.env.example
+```
 
-The infrastructure can be started with:
+A local deployment must create:
+
+```text
+.env
+```
+
+The real `.env` file must not be committed to Git.
+
+It contains configuration required by services such as:
+
+```text
+PostgreSQL
+MinIO
+Airflow
+Superset
+AEMET
+ESIOS
+```
+
+---
+
+## 6. Starting the Platform
+
+Validate the Docker Compose configuration:
+
+```bash
+docker compose config
+```
+
+Build the custom images:
+
+```bash
+docker compose build
+```
+
+Start the complete environment:
 
 ```bash
 docker compose up -d
 ```
 
-Deployment instructions are available in:
+Inspect the running services:
+
+```bash
+docker compose ps -a
+```
+
+---
+
+## 7. Stopping the Platform
+
+Stop the containers while preserving persistent volumes:
+
+```bash
+docker compose down
+```
+
+A complete reset, including Docker volumes, can be performed with:
+
+```bash
+docker compose down -v
+```
+
+This command removes persistent Docker volumes and must only be used when a complete environment reset is intended.
+
+---
+
+## 8. Logs
+
+Service logs can be inspected with:
+
+```bash
+docker compose logs <service>
+```
+
+For example:
+
+```bash
+docker compose logs trino --tail 100
+```
+
+or:
+
+```bash
+docker compose logs airflow-scheduler --tail 100
+```
+
+---
+
+## 9. Role in the Lakehouse
+
+Docker Compose provides the infrastructure supporting the complete processing flow:
+
+```text
+External APIs
+     │
+     ▼
+Python Ingestion
+     │
+     ▼
+MinIO / Bronze
+     │
+     ▼
+Apache Spark
+     │
+     ▼
+Apache Iceberg
+Silver / Gold
+     │
+     ▼
+Trino
+     │
+     ▼
+Apache Superset
+```
+
+Apache Airflow coordinates pipeline execution, while PostgreSQL provides persistent metadata required by platform services and the Apache Iceberg catalog.
+
+---
+
+## 10. Deployment Documentation
+
+Detailed local deployment instructions are available in:
 
 ```text
 docs/Deployment/01_local_deployment.md
 ```
-
----
-
-## 📂 Project Structure
-
-```text
-energy-lakehouse-platform/
-│
-├── airflow/          # Airflow DAGs, configuration and logs
-├── architecture/     # Architecture resources
-├── config/           # Project configuration
-├── dashboards/       # Superset dashboard resources
-├── data/             # Bronze, Silver and Gold local data
-├── docker/           # Dockerfiles and service configuration
-├── docs/             # Technical documentation
-├── ingestion/        # Data ingestion modules
-├── notebooks/        # Development and analysis notebooks
-├── postgres/         # PostgreSQL initialization
-├── processing/       # Data transformation pipelines
-├── scripts/          # Utility scripts
-├── spark/            # Spark jobs and configuration
-├── superset/         # Superset resources
-├── tests/            # Automated tests
-│
-├── .env.example
-├── .gitignore
-├── docker-compose.yml
-├── LICENSE
-└── README.md
-```
-
----
-
-## 🚧 Project Status
-
-| Phase | Status |
-|---|---|
-| Phase 0 – Project Organization | ✅ Completed |
-| Phase 1 – Architecture Design | ✅ Completed |
-| Phase 2 – Infrastructure | ✅ Completed and validated |
-| Phase 3 – Data Ingestion | ✅ Completed and validated |
-| Phase 4 – Lakehouse Implementation | 🚧 In progress |
-| Phase 5 – Analytics & Visualization | ⏳ Pending |
-
-The infrastructure and ingestion layers have been implemented and technically validated.
-
-The ingestion layer currently integrates AEMET OpenData, Open-Meteo and REE / ESIOS, with frequency-specific Apache Airflow DAGs and Bronze persistence in MinIO.
-
----
-
-## 📜 License
-
-This project is licensed under the MIT License.

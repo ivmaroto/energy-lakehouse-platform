@@ -3,138 +3,253 @@
 ## 1. Overview
 
 The ingestion layer of the Energy Lakehouse Platform is responsible for
-acquiring meteorological and energy data from external public APIs and
-persisting the acquired information in the Bronze layer.
+acquiring public meteorological, geographical and electricity-system data and
+persisting the acquired source information in the Bronze layer.
 
-The platform integrates three data sources:
+The platform currently uses four source domains:
 
 - AEMET OpenData.
 - Open-Meteo.
 - REE / ESIOS.
+- CNIG / IGN geographical reference data.
 
-The ingestion components are implemented in Python and are designed to support
-both historical and incremental data acquisition.
+The ingestion components are implemented in Python.
+
+Their responsibility is limited to source acquisition, technical validation,
+ingestion metadata generation and Bronze persistence.
+
+Cleaning, typing, geographical normalization, deduplication, source integration
+and analytical transformations are performed later by the Silver and Gold
+processing layers.
 
 ---
 
 ## 2. Architecture
 
-The ingestion flow follows this architecture:
+The ingestion flow follows this general architecture:
 
 ```text
-+-------------------+
-| AEMET OpenData    |
-+---------+---------+
-          |
-          |
-+---------v---------+
-|                   |
-| Python Ingestion  |
-|                   |
-+---------+---------+
-          |
-          v
-+-------------------+
-| Bronze Layer      |
-+-------------------+
+AEMET OpenData ──────┐
+Open-Meteo ──────────┤
+REE / ESIOS ─────────┼──► Python ingestion
+CNIG / IGN ──────────┘          │
+                                ▼
+                       Technical validation
+                                │
+                                ▼
+                          MinIO / Bronze
+                                │
+                                ▼
+                      Spark / Iceberg Silver
+                                │
+                                ▼
+                      Spark / Iceberg Gold
 ```
 
-The same pattern is used for Open-Meteo and REE / ESIOS.
+The ingestion layer is intentionally independent from the analytical
+transformation logic.
 
-The ingestion layer is independent from subsequent Lakehouse transformations.
-
-Cleaning, normalization, integration and analytical transformations are
-performed in later processing stages.
+Bronze therefore preserves the source representation before downstream
+Lakehouse processing is applied.
 
 ---
 
-## 3. Project Structure
+## 3. Current Source Scope
+
+### AEMET
+
+The active AEMET Bronze datasets are:
+
+```text
+stations
+current_observations
+```
+
+`stations` provides the meteorological-station catalogue used by the platform.
+
+The validated current station catalogue contains:
+
+```text
+926 stations
+```
+
+`current_observations` provides recent conventional meteorological
+observations.
+
+AEMET current observations are a recent/current source and are not used to
+reconstruct arbitrary historical periods.
+
+### Open-Meteo
+
+The active Open-Meteo Bronze datasets are:
+
+```text
+weather_hourly
+weather_15min
+```
+
+The AEMET station catalogue provides the point catalogue and coordinates used
+for Open-Meteo acquisition.
+
+The current validated production location count is:
+
+```text
+926 locations
+```
+
+Historical hourly acquisition uses the Open-Meteo archive service.
+
+Historical 15-minute acquisition uses the Open-Meteo Historical Forecast API.
+
+The standard Forecast API remains available for current/incremental acquisition.
+
+### REE / ESIOS
+
+The active ESIOS configuration contains:
+
+```text
+11 hourly energy-generation indicators
+9 monthly installed-capacity indicators
+```
+
+The selected indicators are externalized in:
+
+```text
+config/esios_indicators.json
+```
+
+The current ingestion scope does not include the previously evaluated ESIOS
+5-minute datasets.
+
+### CNIG / IGN
+
+CNIG / IGN provides the canonical geographical source data used later for
+territorial normalization.
+
+The Bronze master datasets used by the current implementation are:
+
+```text
+provinces
+municipalities
+```
+
+Autonomous communities are subsequently derived and normalized in the Silver
+layer.
+
+---
+
+## 4. Project Structure
+
+The ingestion package is organized by source and shared infrastructure.
+
+The main structure includes:
 
 ```text
 ingestion/
-|
-|-- __init__.py
-|
-|-- common/
-|   |-- __init__.py
-|   |-- config.py
-|   |-- exceptions.py
-|   |-- http_client.py
-|   |-- logger.py
-|   `-- storage.py
-|
-|-- aemet/
-|   |-- __init__.py
-|   |-- client.py
-|   `-- ingest.py
-|
-|-- open_meteo/
-|   |-- __init__.py
-|   |-- client.py
-|   `-- ingest.py
-|
-|-- esios/
-|   |-- __init__.py
-|   |-- client.py
-|   `-- ingest.py
-|
-`-- run_ingestion.py
+│
+├── common/
+│   ├── config.py
+│   ├── date_utils.py
+│   ├── esios_config.py
+│   ├── exceptions.py
+│   ├── http_client.py
+│   ├── logger.py
+│   └── storage.py
+│
+├── aemet/
+│   ├── client.py
+│   └── ingest.py
+│
+├── open_meteo/
+│   ├── client.py
+│   ├── batch.py
+│   ├── bronze_state.py
+│   └── ingest.py
+│
+├── esios/
+│   ├── client.py
+│   └── ingest.py
+│
+├── orchestration/
+│   └── ...
+│
+└── run_ingestion.py
 ```
+
+Source-specific API logic remains isolated while common configuration, HTTP,
+logging, temporal and storage functionality is reused.
 
 ---
 
-## 4. Common Components
+## 5. Common Components
 
 ### `config.py`
 
-Contains common configuration used by the ingestion modules.
+Contains shared ingestion configuration.
 
-Configuration includes:
+It includes configuration for:
 
 - API base URLs.
+- Open-Meteo archive and historical-forecast endpoints.
 - HTTP timeout.
-- Retry configuration.
-- Bronze directory.
-- References to API credentials obtained from environment variables.
+- HTTP retry behaviour.
+- Open-Meteo retry and pacing configuration.
+- Historical chunk sizes.
+- MinIO connectivity.
+- References to API credentials loaded from environment variables.
+
+### `date_utils.py`
+
+Provides common temporal validation and range-processing functionality.
+
+### `esios_config.py`
+
+Loads the selected ESIOS indicators from:
+
+```text
+config/esios_indicators.json
+```
+
+This avoids embedding the final indicator catalogue directly in ingestion or
+Airflow source code.
 
 ### `exceptions.py`
 
-Defines the custom exception hierarchy used by the ingestion layer.
+Defines the ingestion-specific exception hierarchy.
 
-Examples include:
+Handled error categories include:
 
-- Configuration errors.
-- Connection errors.
-- Authentication errors.
-- API request errors.
-- Invalid API responses.
-- Invalid date ranges.
-- Storage errors.
+- configuration errors;
+- connection failures;
+- authentication errors;
+- API request errors;
+- invalid responses;
+- invalid date ranges;
+- storage errors.
 
 ### `http_client.py`
 
-Provides reusable HTTP functionality for all external connectors.
+Provides common HTTP functionality including:
 
-It includes:
-
-- HTTP sessions.
-- Request timeout.
-- Automatic retries.
-- Handling of temporary HTTP errors.
-- Authentication error detection.
+- reusable HTTP sessions;
+- request timeouts;
+- retry handling;
+- exponential retry backoff;
+- temporary HTTP-error handling;
+- authentication-error detection;
 - JSON deserialization.
-- Empty-response detection.
 
 ### `logger.py`
 
-Provides a common logging configuration for ingestion modules.
+Provides common logging configuration.
 
 ### `storage.py`
 
-Provides Bronze persistence functionality.
+Provides the Bronze persistence abstraction used by the source connectors.
 
-The current implementation supports local JSON persistence and organizes
-generated data by:
+The production-like Bronze backend is MinIO.
+
+Objects are organized logically by:
 
 ```text
 source
@@ -144,61 +259,63 @@ month
 day
 ```
 
-The storage component isolates persistence logic from the API connectors.
+The storage layer isolates object persistence from API-specific connector code.
 
 ---
 
-## 5. AEMET Connector
+## 6. AEMET Connector
 
-The AEMET connector is implemented in:
+The AEMET connector is implemented under:
 
 ```text
 ingestion/aemet/
 ```
 
-### Client
+AEMET OpenData requires an API key.
 
-`client.py` handles communication with AEMET OpenData.
-
-The client supports retrieval of daily climatological observations for a
-specified meteorological station and temporal interval.
-
-AEMET OpenData uses a two-step acquisition mechanism:
+The credential is supplied through:
 
 ```text
-Request dataset
-      |
-      v
+AEMET_API_KEY
+```
+
+### Active datasets
+
+The final active AEMET scope is:
+
+```text
+stations
+current_observations
+```
+
+The station catalogue acts as the official point catalogue used by the
+meteorological processing flow.
+
+Current observations provide recent conventional meteorological measurements.
+
+AEMET OpenData uses a two-stage response mechanism for applicable endpoints:
+
+```text
+Request AEMET endpoint
+        │
+        ▼
 AEMET metadata response
-      |
-      v
-Dataset URL
-      |
-      v
-Download actual data
+        │
+        ▼
+Returned dataset URL
+        │
+        ▼
+Actual source dataset
 ```
 
-### Ingestion
-
-`ingest.py` coordinates:
-
-```text
-AEMET client
-     |
-     v
-Data acquisition
-     |
-     v
-Bronze persistence
-```
-
-Both historical and incremental temporal windows are supported.
+The acquired source payload is technically validated before Bronze
+persistence.
 
 ---
 
-## 6. Open-Meteo Connector
+## 7. Open-Meteo Connector
 
-The Open-Meteo connector is implemented in:
+The Open-Meteo connector is implemented under:
 
 ```text
 ingestion/open_meteo/
@@ -206,107 +323,254 @@ ingestion/open_meteo/
 
 No API key is required for the Open-Meteo access pattern used by this project.
 
-### Client
+### Active datasets
 
-`client.py` supports:
+```text
+weather_hourly
+weather_15min
+```
 
-- Historical weather acquisition.
-- Current weather acquisition.
-- Coordinate validation.
-- Date-range validation.
-- Selection of meteorological variables.
+### Hourly historical acquisition
 
-### Default meteorological variables
+Historical hourly weather is obtained from:
 
-The ingestion implementation currently defines the following default hourly
-variables:
+```text
+https://archive-api.open-meteo.com/v1/archive
+```
+
+### 15-minute historical acquisition
+
+Historical 15-minute weather is obtained from:
+
+```text
+https://historical-forecast-api.open-meteo.com/v1/forecast
+```
+
+This distinction is important because the standard Forecast API is not used for
+arbitrary historical 15-minute periods.
+
+### Current/incremental acquisition
+
+Current or incremental forecast access uses:
+
+```text
+https://api.open-meteo.com/v1/forecast
+```
+
+### Meteorological variables
+
+The current analytical flow uses Open-Meteo information including variables
+such as:
 
 ```text
 temperature_2m
 relative_humidity_2m
 precipitation
-cloud_cover
-wind_speed_10m
-surface_pressure
+shortwave_radiation
+direct_normal_irradiance
+wind_speed_80m
+wind_direction_80m
+wind_speed_120m
+wind_direction_120m
 ```
 
-The final selection will be confirmed during API and analytical validation.
-
-### Ingestion
-
-`ingest.py` coordinates Open-Meteo acquisition and Bronze persistence.
-
-Historical requests accept an explicit date range.
-
-Current acquisition is used as the initial implementation of the incremental
-ingestion path.
+Additional source variables can remain available upstream even when they are
+not selected for the final Gold products.
 
 ---
 
-## 7. REE / ESIOS Connector
+## 8. Open-Meteo Batch Acquisition and Recovery
 
-The ESIOS connector is implemented in:
+Open-Meteo acquisition operates over the complete AEMET station catalogue.
+
+The current validated catalogue contains:
+
+```text
+926 locations
+```
+
+The implementation includes controls for large batch executions and external
+API rate limitations.
+
+These controls include:
+
+- configurable retries;
+- exponential backoff;
+- configurable inter-batch delay;
+- validation of expected temporal coverage;
+- inspection of already persisted Bronze objects;
+- resumable acquisition of missing locations.
+
+The Bronze-state logic is implemented in:
+
+```text
+ingestion/open_meteo/bronze_state.py
+```
+
+Before resuming a historical batch, persisted objects can be checked against the
+requested temporal window.
+
+A location is considered complete only when the expected temporal coverage is
+present.
+
+For the validated six-day interval:
+
+```text
+2026-01-10 → 2026-01-15
+```
+
+the expected observations per location were:
+
+```text
+Hourly:
+6 days × 24 = 144 observations
+
+15 minutes:
+6 days × 24 × 4 = 576 observations
+```
+
+The final complete historical acquisition produced:
+
+```text
+weather_hourly = 926 / 926 locations
+weather_15min  = 926 / 926 locations
+```
+
+---
+
+## 9. REE / ESIOS Connector
+
+The ESIOS connector is implemented under:
 
 ```text
 ingestion/esios/
 ```
 
-### Client
-
-`client.py` provides access to ESIOS indicators.
-
-It supports parameters including:
+Authentication uses:
 
 ```text
-indicator_id
-start_date
-end_date
-time_trunc
-time_agg
-geo_ids
-geo_trunc
-geo_agg
+ESIOS_API_KEY
 ```
 
-This allows the connector to remain independent from specific energy
-indicators.
+The connector remains generic and accepts the selected indicator and temporal
+range as parameters.
 
-### Ingestion
+### Final hourly scope
 
-`ingest.py` supports both historical and incremental acquisition.
+The current configuration contains 11 hourly energy indicators:
 
-The dataset name and indicator identifier are supplied to the ingestion process
-rather than being hardcoded in the connector.
+| Indicator ID | Dataset |
+|---:|---|
+| 1159 | `generacion_medida_eolica_terrestre` |
+| 1161 | `generacion_medida_solar_fotovoltaica` |
+| 1162 | `generacion_medida_solar_termica` |
+| 10035 | `generacion_medida_hidraulica` |
+| 1153 | `generacion_medida_nuclear` |
+| 1156 | `generacion_medida_ciclo_combinado` |
+| 1158 | `generacion_medida_gas_natural_turbina_vapor` |
+| 1164 | `generacion_medida_gas_natural_cogeneracion` |
+| 10036 | `generacion_medida_carbon` |
+| 10041 | `generacion_medida_otras_renovables` |
+| 10043 | `generacion_medida_total` |
 
-This allows the same implementation to support different energy datasets such
-as generation, demand and prices after the definitive indicators have been
-validated.
+### Final monthly scope
+
+The current configuration contains 9 installed-capacity indicators:
+
+| Indicator ID | Dataset |
+|---:|---|
+| 1475 | `potencia_instalada_hidraulica` |
+| 1485 | `potencia_instalada_eolica` |
+| 1486 | `potencia_instalada_solar_fotovoltaica` |
+| 1487 | `potencia_instalada_solar_termica` |
+| 10302 | `potencia_instalada_total_renovable` |
+| 1477 | `potencia_instalada_nuclear` |
+| 1478 | `potencia_instalada_carbon` |
+| 1483 | `potencia_instalada_ciclo_combinado` |
+| 1488 | `potencia_instalada_otras_renovables` |
+
+The selected indicator IDs are maintained outside connector source code in:
+
+```text
+config/esios_indicators.json
+```
 
 ---
 
-## 8. Configuration
+## 10. ESIOS Response Validation
+
+A successful HTTP request is not sufficient for an ESIOS ingestion to be
+considered successful.
+
+The ingestion implementation validates that the response contains the expected
+indicator structure and a non-empty:
+
+```text
+indicator.values
+```
+
+An empty values list therefore causes the affected ingestion attempt to fail
+before an empty Bronze object is persisted as a successful dataset.
+
+This behaviour prevents a technically valid HTTP response without observations
+from being incorrectly treated as a completed Bronze acquisition.
+
+Real API validation confirmed that the configured ESIOS indicators return
+actual observations for supported historical periods.
+
+---
+
+## 11. CNIG / IGN Geographical Data
+
+CNIG / IGN source data provides the geographical reference used by the
+Lakehouse.
+
+The current Bronze geographical master includes:
+
+```text
+provinces
+municipalities
+```
+
+Validated source cardinalities used downstream are:
+
+```text
+52 province-level entities
+8132 municipalities
+```
+
+Autonomous communities are derived from the canonical territorial information
+during Silver processing.
+
+CNIG codes are preserved as strings so leading zeroes are not lost.
+
+---
+
+## 12. Configuration and Credentials
 
 Real credentials must never be stored in the repository.
 
-The ingestion code obtains credentials from environment variables.
+The ingestion code obtains credentials and environment-specific parameters from
+environment variables.
 
-Required variables:
+Relevant values include:
 
 ```text
 AEMET_API_KEY
 ESIOS_API_KEY
+
+MINIO_ENDPOINT
+MINIO_ROOT_USER
+MINIO_ROOT_PASSWORD
+MINIO_BUCKET
+MINIO_SECURE
 ```
 
-Open-Meteo does not require an API key for the access pattern used by this
-project.
-
-The repository contains:
+The repository provides:
 
 ```text
 .env.example
 ```
-
-to document the required configuration.
 
 The real:
 
@@ -316,44 +580,38 @@ The real:
 
 must remain outside version control.
 
+Open-Meteo does not require an API key for the access pattern used by the
+project.
+
 ---
 
-## 9. Bronze Storage
+## 13. Bronze Storage
 
-During local development, ingestion output can be persisted under:
+The current production-like Bronze persistence backend is MinIO.
 
-```text
-data/
-`-- bronze/
-```
-
-The generated structure follows this pattern:
+Objects are stored under the configured Lakehouse bucket using a logical
+structure such as:
 
 ```text
-data/
-`-- bronze/
-    `-- <source>/
-        `-- <dataset>/
-            `-- year=YYYY/
-                `-- month=MM/
-                    `-- day=DD/
-                        `-- <generated-file>.json
+bronze/
+└── <source>/
+    └── <dataset>/
+        └── year=YYYY/
+            └── month=MM/
+                └── day=DD/
+                    └── <generated-object>.json
 ```
 
-For example:
+The temporal directory hierarchy represents the ingestion date of the object,
+not necessarily the source observation period.
 
-```text
-data/
-`-- bronze/
-    `-- open_meteo/
-        `-- weather/
-            `-- year=2026/
-                `-- month=08/
-                    `-- day=09/
-                        `-- open_meteo_weather_<timestamp>.json
-```
+The requested source interval is retained separately in Bronze metadata.
 
-Generated Bronze files contain two main sections:
+---
+
+## 14. Bronze Object Structure
+
+JSON Bronze objects contain two principal sections:
 
 ```json
 {
@@ -369,124 +627,29 @@ Generated Bronze files contain two main sections:
 }
 ```
 
-Generated runtime data must not be committed to Git.
+Source-specific metadata may additionally be included when required for
+traceability.
 
----
-
-## 10. Command-Line Interface
-
-The common entry point is:
+Examples include:
 
 ```text
-ingestion/run_ingestion.py
+AEMET:
+station identifiers
+
+Open-Meteo:
+location_id
+latitude
+longitude
+
+ESIOS:
+indicator_id
 ```
 
-The CLI supports the following sources:
-
-```text
-aemet
-open_meteo
-esios
-```
-
-and the following ingestion modes:
-
-```text
-historical
-incremental
-```
-
-The module can be executed from the project root using:
-
-```powershell
-python -m ingestion.run_ingestion <source> [arguments]
-```
+Generated runtime Bronze data must not be committed to Git.
 
 ---
 
-## 11. Open-Meteo Example
-
-Historical ingestion:
-
-```powershell
-python -m ingestion.run_ingestion open_meteo `
-    --mode historical `
-    --latitude 43.0 `
-    --longitude -2.5 `
-    --start-date 2025-01-01 `
-    --end-date 2025-01-31
-```
-
-Incremental/current ingestion:
-
-```powershell
-python -m ingestion.run_ingestion open_meteo `
-    --mode incremental `
-    --latitude 43.0 `
-    --longitude -2.5
-```
-
-The coordinates above are examples and do not define the definitive geographic
-configuration of the project.
-
----
-
-## 12. AEMET Example
-
-Conceptual historical execution:
-
-```powershell
-python -m ingestion.run_ingestion aemet `
-    --mode historical `
-    --station-id <STATION_ID> `
-    --start-date 2025-01-01 `
-    --end-date 2025-01-31
-```
-
-Incremental execution uses the same interface:
-
-```powershell
-python -m ingestion.run_ingestion aemet `
-    --mode incremental `
-    --station-id <STATION_ID> `
-    --start-date 2025-02-01 `
-    --end-date 2025-02-02
-```
-
-The definitive AEMET stations will be selected and documented after technical
-and geographic validation.
-
----
-
-## 13. ESIOS Example
-
-Conceptual historical execution:
-
-```powershell
-python -m ingestion.run_ingestion esios `
-    --mode historical `
-    --indicator-id <INDICATOR_ID> `
-    --dataset <DATASET_NAME> `
-    --start-date 2025-01-01 `
-    --end-date 2025-01-31
-```
-
-Optional parameters include:
-
-```text
---time-trunc
---time-agg
---geo-id
---geo-trunc
---geo-agg
-```
-
-The definitive indicator identifiers and geographic parameters will be selected
-after validation against the real ESIOS API.
-
----
-
-## 14. Historical Ingestion
+## 15. Historical Ingestion
 
 Historical ingestion receives an explicit temporal interval:
 
@@ -495,106 +658,192 @@ start_date
 end_date
 ```
 
-Its objective is to populate the initial Bronze datasets.
+Its purpose is to populate Bronze with source data available for that interval.
 
-Large historical ranges may subsequently be divided into smaller request
-windows depending on the limitations and behaviour of each external API.
+Large requested periods can be divided into smaller source-specific request
+windows.
 
----
-
-## 15. Incremental Ingestion
-
-Incremental ingestion is designed to retrieve newly available information after
-the initial historical load.
-
-Historical and incremental ingestion reuse the same API clients.
-
-Conceptually:
+Historical acquisition currently includes:
 
 ```text
-Historical --------\
-                    \
-                     > Source Client ---> Bronze
-                    /
-Incremental -------/
+Open-Meteo hourly
+Open-Meteo 15-minute
+ESIOS hourly
+ESIOS monthly
 ```
 
-The definitive scheduling and automatic calculation of incremental windows will
-be implemented as part of the orchestration workflow.
+AEMET station and CNIG geographical masters are loaded independently from the
+historical observation interval.
+
+AEMET current observations remain a recent/current dataset.
 
 ---
 
-## 16. Error Handling
+## 16. Incremental Ingestion
+
+Incremental ingestion is intended to retrieve newly available information after
+the initial historical population.
+
+Historical and incremental paths reuse the same source-specific connector
+architecture wherever applicable:
+
+```text
+Historical ─────┐
+                ├──► Source connector ──► Bronze
+Incremental ────┘
+```
+
+The exact execution window depends on the source because publication latency and
+data availability are not identical across providers.
+
+Automatic end-to-end orchestration of these executions is handled by the
+Airflow layer.
+
+---
+
+## 17. Error Handling
 
 The ingestion layer provides controlled handling for:
 
-- Connection failures.
-- Timeouts.
-- HTTP errors.
-- Authentication errors.
-- Invalid JSON responses.
-- Empty responses.
-- Invalid date ranges.
-- Storage failures.
+- connection failures;
+- timeouts;
+- HTTP errors;
+- authentication errors;
+- invalid JSON responses;
+- malformed API structures;
+- empty ESIOS datasets;
+- invalid date ranges;
+- incomplete Open-Meteo temporal coverage;
+- storage failures.
 
-Temporary HTTP failures can be retried by the common HTTP client.
+Temporary HTTP failures are retried according to the configured retry policy.
 
-Orchestration-level retries will subsequently be managed by Apache Airflow.
+Open-Meteo additionally uses source-specific retry, backoff and pacing controls
+for large station batches.
 
----
-
-## 17. Development Without Docker
-
-The Python ingestion modules are intentionally separated from the containerized
-platform infrastructure.
-
-This allows development of:
-
-- API clients.
-- Ingestion logic.
-- Validation logic.
-- Logging.
-- Local Bronze persistence.
-- Command-line interfaces.
-
-without requiring the complete Docker environment.
-
-Final platform integration requires validation against the deployed
-infrastructure.
+Failures are raised before data is promoted downstream as a valid acquisition
+whenever possible.
 
 ---
 
-## 18. Final Integration
+## 18. Automated Tests
 
-In the complete Lakehouse environment, the ingestion layer will be integrated
-with the platform storage and processing infrastructure.
+The ingestion implementation includes automated regression tests for:
 
-The final flow is:
+- AEMET;
+- Open-Meteo;
+- ESIOS;
+- shared date utilities;
+- common storage;
+- Open-Meteo Bronze-state validation;
+- historical Open-Meteo batch behaviour;
+- historical orchestration support.
+
+The latest validated complete ingestion regression suite completed with:
 
 ```text
-AEMET -----------+
-                 |
-Open-Meteo ------+--> Python Ingestion --> Bronze --> Spark / Iceberg
-                 |
-REE / ESIOS -----+
+68 passed
 ```
 
-MinIO provides the S3-compatible object-storage infrastructure of the platform.
-
-Apache Spark and Apache Iceberg are used during subsequent Lakehouse processing.
-
-Apache Airflow will orchestrate scheduled ingestion executions.
+No ingestion test failures remained in that validated execution.
 
 ---
 
-## 19. Current Status
+## 19. Real Historical Validation
 
-The ingestion layer has been implemented and technically validated against the
-three external data sources and the MinIO Bronze storage layer.
+A complete real-source Bronze historical execution was validated for:
 
-Validation includes real API requests, historical and incremental ingestion,
-frequency-specific ingestion scenarios, Bronze persistence, error handling and
-automated regression testing.
+```text
+2026-01-10 → 2026-01-15
+```
+
+The execution completed with:
+
+```text
+AEMET station master:
+1 Bronze object
+926 stations
+
+CNIG masters:
+2 Bronze objects
+
+ESIOS hourly:
+11 files
+
+ESIOS monthly:
+9 files
+
+Open-Meteo:
+926 locations
+926 hourly files
+926 15-minute files
+
+AEMET current observations:
+1 file
+```
+
+The execution finished with:
+
+```text
+BRONZE HISTORICAL LOAD COMPLETED
+```
+
+The Open-Meteo temporal coverage for that execution was subsequently confirmed
+through the Silver row counts:
+
+```text
+926 × 144 hourly observations
+= 133344 rows
+
+926 × 576 fifteen-minute observations
+= 533376 rows
+```
+
+ESIOS data was also successfully transformed downstream, producing:
+
+```text
+38443 hourly Silver observations
+123 monthly Silver observations
+```
+
+This confirms that the historical ingestion supplied real data successfully to
+the downstream Lakehouse processing chain.
+
+---
+
+## 20. End-to-End Integration
+
+The ingestion layer has been validated as part of the complete data-processing
+path:
+
+```text
+External sources
+       │
+       ▼
+Python ingestion
+       │
+       ▼
+MinIO / Bronze
+       │
+       ▼
+PySpark / Silver
+       │
+       ▼
+PySpark / Gold
+       │
+       ▼
+Trino
+```
+
+Real data acquired through the ingestion layer was successfully transformed
+into the final Silver and Gold Apache Iceberg tables and queried through Trino.
+
+This demonstrates that Bronze ingestion is operational as the source stage of
+the Lakehouse rather than only as an isolated connector implementation.
+
+---
+
+## 21. Current Status
 
 | Component | Status |
 |---|---|
@@ -602,34 +851,32 @@ automated regression testing.
 | Exception hierarchy | Validated |
 | HTTP client | Validated |
 | Logging | Validated |
-| Local Bronze storage | Validated |
-| Open-Meteo client | Validated |
-| Open-Meteo ingestion | Validated |
-| AEMET client | Validated |
-| AEMET ingestion | Validated |
-| ESIOS client | Validated |
-| ESIOS ingestion | Validated |
-| Common CLI | Validated |
+| MinIO Bronze storage | Validated |
+| AEMET station ingestion | Validated |
+| AEMET current-observation ingestion | Validated |
+| Open-Meteo hourly ingestion | Validated |
+| Open-Meteo 15-minute ingestion | Validated |
+| Open-Meteo historical 15-minute endpoint | Validated |
+| Open-Meteo batch completeness validation | Validated |
+| Open-Meteo resumable acquisition | Validated |
+| ESIOS hourly ingestion | Validated |
+| ESIOS monthly ingestion | Validated |
+| ESIOS empty-value rejection | Validated |
+| CNIG master ingestion | Validated |
 | Historical ingestion | Validated |
-| Incremental ingestion | Validated |
 | MinIO integration | Validated |
-| End-to-end API to Bronze integration | Validated |
+| API → Bronze integration | Validated |
+| Bronze → Silver → Gold → Trino E2E | Validated |
+| Ingestion regression suite | 68 passed |
 
-The final ingestion regression suite completed successfully with:
-
-```text
-56 passed
-```
-
-Detailed validation evidence is documented in:
+Detailed ingestion validation evidence is documented in:
 
 ```text
 docs/Ingestion/06_validation_and_testing.md
 ```
 
-The ingestion layer is considered technically implemented and validated for
-Phase 3.
+The ingestion layer is technically implemented and operational for the current
+project scope.
 
-Subsequent cleaning, normalization, business-level deduplication, source
-integration and analytical transformations are handled in the Lakehouse
-processing phase.
+Cleaning, normalization, deduplication, geographical harmonization and
+analytical integration are performed by the downstream Silver and Gold layers.

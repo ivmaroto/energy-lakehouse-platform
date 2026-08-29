@@ -2,1825 +2,1825 @@
 
 ## 1. Purpose
 
-This document defines the approved design of the **Gold layer** for the
-**Energy Lakehouse Platform**.
-
-The Gold layer is built exclusively from previously validated Silver
-data. It must preserve the actual semantics of each source, the
-available temporal and geographical granularities, the approved
-aggregation rules, the distinction between missing observations and
-explicit zero values, the original signs of energy measurements,
-Silver-to-Gold traceability, and load idempotency.
-
-Gold does not enforce a single universal grain. Different analytical
-products are defined according to the temporal and geographical
-granularity that can be supported by the validated source data.
-
-------------------------------------------------------------------------
-
-## 2. Approved Analytical Use Cases
-
-  ----------------------------------------------------------------------------
-  ID                      Analytical question          Scope
-  ----------------------- ---------------------------- -----------------------
-  CU01                    What relationship exists     Wind ↔ wind generation
-                          between wind speed and wind  
-                          power generation?            
-
-  CU02                    Which wind height, 80 m or   Wind ↔ wind generation
-                          120 m, shows a stronger      
-                          relationship with wind power 
-                          generation?                  
-
-  CU03                    How does wind power          Wind ↔ wind generation
-                          generation change across     
-                          different wind-speed ranges? 
-
-  CU04                    Is there a relationship      Wind direction ↔ wind
-                          between wind direction and   generation
-                          wind power generation?       
-
-  CU05                    What relationship exists     Radiation ↔ solar
-                          between solar radiation and  generation
-                          solar photovoltaic           
-                          generation?                  
-
-  CU06                    What relationship exists     DNI ↔ solar generation
-                          between                      
-                          `direct_normal_irradiance`   
-                          and solar photovoltaic       
-                          generation?                  
-
-  CU07                    How does solar photovoltaic  Radiation ↔ solar
-                          generation change across     generation
-                          different solar-radiation    
-                          levels?                      
-
-  CU08                    What relationship exists     Temperature ↔ demand
-                          between temperature and      
-                          electricity demand?          
-
-  CU09                    How does electricity demand  Temperature ↔ demand
-                          vary across different        
-                          temperature ranges?          
-
-  CU10                    What relationship exists     Precipitation ↔ hydro
-                          between precipitation and    
-                          hydroelectric generation?    
-
-  CU11                    Are there territorial        Territorial analysis
-                          differences in the           
-                          relationship between weather 
-                          conditions and renewable     
-                          generation?                  
-
-  CU12                    How does the electricity     Energy mix
-                          generation mix by technology 
-                          evolve over time?            
-
-  CU13                    How does installed capacity  Installed capacity
-                          by technology evolve by      
-                          autonomous community?        
-
-  CU14                    Which autonomous communities Territorial capacity
-                          concentrate the highest      
-                          installed capacity for each  
-                          technology?                  
-
-  CU15                    What relationship exists     Capacity ↔ generation
-                          between installed capacity   
-                          and observed generation for  
-                          a technology?                
-  ----------------------------------------------------------------------------
-
-------------------------------------------------------------------------
-
-## 3. Approved Gold Analytical Products
-
-  -----------------------------------------------------------------------
-  Product           Geography         Temporal grain    Content
-  ----------------- ----------------- ----------------- -----------------
-  Gold 1            Province          1 hour            Weather + hourly
-                                                        ESIOS energy
-
-  Gold 2            Autonomous        Month             Installed
-                    Community                           capacity
-
-  Gold 3            Spain/Peninsula   15 minutes        Weather + ESIOS
-                    depending on                        high-frequency
-                    indicator                           energy aggregated
-                                                        to 15 minutes
-
-  Gold 4            Spain/Peninsula   5 minutes         High-frequency
-                    depending on                        ESIOS power and
-                    indicator                           derived interval
-                                                        energy
-  -----------------------------------------------------------------------
-
-### 3.1 Geographical rule
-
-The preferred Gold geographical level is **Province whenever the source
-can validly support province-level data**.
-
-When a source is only available at a higher geographical level, its
-actual geography is preserved without artificial disaggregation.
-
-The following scopes remain distinct:
-
-`Province ≠ Autonomous Community ≠ Spain ≠ Peninsula`
-
-CNIG is the canonical geographical master for provinces and autonomous
-communities.
-
-### 3.2 Temporal rule
-
-Gold does not have a single mandatory temporal grain.
-
-The approved grains are:
-
--   5 minutes;
--   15 minutes;
--   1 hour;
--   month.
-
-Finer-grained observations must not be fabricated from lower-frequency
-sources.
-
-------------------------------------------------------------------------
-
-## 4. Physical Gold Table Inventory
-
-The Gold layer consists of **6 physical tables**.
-
-### Fact tables
-
-1.  `gold_fact_province_hourly`
-2.  `gold_fact_installed_capacity_monthly`
-3.  `gold_fact_country_15min`
-4.  `gold_fact_country_5min`
-
-### Dimensions
-
-5.  `gold_dim_time`
-6.  `gold_dim_geography`
-
-Energy technology is not materialized as a seventh physical dimension.
-Technologies are represented by explicit metrics in the corresponding
-fact tables, preserving the approved fact-table grains.
-
-------------------------------------------------------------------------
-
-# 5. `gold_fact_province_hourly`
-
-## 5.1 Purpose
-
-Main analytical table for integrated weather and electricity-generation
-analysis at **Province × hour** grain.
-
-It supports analyses such as:
-
--   wind conditions versus wind generation;
--   solar radiation versus photovoltaic generation;
--   DNI versus solar photovoltaic generation;
--   precipitation versus hydroelectric generation;
--   territorial differences;
--   provincial electricity generation mix.
-
-## 5.2 Silver Sources
-
--   `silver_aemet_current_observations`
--   `silver_open_meteo_hourly`
--   `silver_open_meteo_15min`
--   `silver_esios_energy_hourly`
--   Silver CNIG tables
-
-## 5.3 Physical Schema
-
-  Column                                       Type
-  -------------------------------------------- -------------
-  `gold_timestamp`                             `TIMESTAMP`
-  `geography_key`                              `STRING`
-  `province_code`                              `STRING`
-  `province_name`                              `STRING`
-  `autonomous_community_code`                  `STRING`
-  `autonomous_community_name`                  `STRING`
-  `temperature`                                `DOUBLE`
-  `humidity`                                   `DOUBLE`
-  `precipitation`                              `DOUBLE`
-  `wind_speed_80m`                             `DOUBLE`
-  `wind_direction_80m`                         `DOUBLE`
-  `wind_speed_120m`                            `DOUBLE`
-  `wind_direction_120m`                        `DOUBLE`
-  `solar_radiation`                            `DOUBLE`
-  `direct_normal_irradiance`                   `DOUBLE`
-  `wind_generation_mwh`                        `DOUBLE`
-  `solar_photovoltaic_generation_mwh`          `DOUBLE`
-  `solar_thermal_generation_mwh`               `DOUBLE`
-  `hydraulic_generation_mwh`                   `DOUBLE`
-  `nuclear_generation_mwh`                     `DOUBLE`
-  `combined_cycle_generation_mwh`              `DOUBLE`
-  `gas_natural_steam_turbine_generation_mwh`   `DOUBLE`
-  `gas_natural_cogeneration_mwh`               `DOUBLE`
-  `coal_generation_mwh`                        `DOUBLE`
-  `other_renewables_generation_mwh`            `DOUBLE`
-  `total_generation_mwh`                       `DOUBLE`
-  `temperature_source`                         `STRING`
-  `humidity_source`                            `STRING`
-  `precipitation_source`                       `STRING`
-  `gold_created_at`                            `TIMESTAMP`
-
-## 5.4 Natural Key
-
-`(province_code, gold_timestamp)`
-
-Exactly one row must exist for each province and hour.
-
-## 5.5 Grain
-
--   Temporal: 1 hour.
--   Geographical: Province.
-
-The autonomous community is retained as a hierarchical attribute and
-does not change the physical grain.
-
-## 5.6 Iceberg Partitioning
-
-`days(gold_timestamp)`
-
-Province is not added to the partition specification.
-
-## 5.7 Weather Transformations
-
-### Temperature
-
-Primary source:
-
-`AVG(AEMET.ta)` across the available stations in the province.
-
-Fallback when that specific AEMET measurement is unavailable:
-
-`AVG(Open-Meteo.temperature_2m)` across the available points in the
-province.
-
-### Humidity
-
-Primary source:
-
-`AVG(AEMET.hr)` across the available stations in the province.
-
-Fallback to Open-Meteo when the AEMET humidity measurement is
-unavailable.
-
-### Precipitation
-
-Primary source:
-
-`AVG(AEMET.prec)` across the available stations in the province.
-
-Fallback:
-
-`AVG(Open-Meteo precipitation)` across the available points in the
-province.
-
-The unit is millimetres and the source values represent precipitation
-accumulated during the hourly interval.
-
-### Wind speed at 80 m and 120 m
-
-Source: `silver_open_meteo_15min`.
-
-Per point:
-
-`4 × 15-minute observations → AVG → hourly value`
-
-Then spatially:
-
-`hourly point values → AVG → Province × hour`
-
-This applies to:
-
--   `wind_speed_80m`
--   `wind_speed_120m`
-
-### Wind direction at 80 m and 120 m
-
-Arithmetic averages must not be used.
-
-Per point:
-
-`4 × 15-minute directions → circular mean → hourly direction`
-
-Then spatially:
-
-`hourly point directions → circular mean → Province × hour`
-
-This applies to:
-
--   `wind_direction_80m`
--   `wind_direction_120m`
-
-The result is expressed in degrees from 0 to 360.
-
-### Solar radiation
-
-Source:
-
-`silver_open_meteo_hourly.shortwave_radiation`
-
-Transformation:
-
-`AVG(points available in the province)`
-
-Gold metric:
-
-`solar_radiation`
-
-### Direct Normal Irradiance
-
-Source:
-
-`silver_open_meteo_hourly.direct_normal_irradiance`
-
-Transformation:
-
-`AVG(points available in the province)`
-
-Gold metric:
-
-`direct_normal_irradiance`
-
-### Weather fallback rule
-
-The AEMET → Open-Meteo fallback applies **only** to:
-
--   `temperature`
--   `humidity`
--   `precipitation`
-
-It is applied independently for each metric, not to the entire row.
-
-The selected source is retained in:
-
--   `temperature_source`
--   `humidity_source`
--   `precipitation_source`
-
-### AEMET unresolved-station geography rule
-
-An AEMET observation whose `station_id` cannot be resolved through the
-validated station/geographical mapping must not be assigned an invented
-province.
-
-Such observations are excluded from the Province × hour Gold
-aggregation while remaining available in the upstream layers for
-traceability and future catalogue correction.
-
-## 5.8 Hourly Energy Transformations
-
-    ESIOS indicator ID Gold metric
-  -------------------- --------------------------------------------
-                  1159 `wind_generation_mwh`
-                  1161 `solar_photovoltaic_generation_mwh`
-                  1162 `solar_thermal_generation_mwh`
-                 10035 `hydraulic_generation_mwh`
-                  1153 `nuclear_generation_mwh`
-                  1156 `combined_cycle_generation_mwh`
-                  1158 `gas_natural_steam_turbine_generation_mwh`
-                  1164 `gas_natural_cogeneration_mwh`
-                 10036 `coal_generation_mwh`
-                 10041 `other_renewables_generation_mwh`
-                 10043 `total_generation_mwh`
-
-Excluded from Gold:
-
--   `10195`
--   `1193`
--   `10267`
-
-For the hourly grain:
-
-`metric_mwh = value`
-
-No `AVG`, no `SUM`, and no unit conversion is used to construct the
-hourly observation.
-
-For periods greater than one hour:
-
-`SUM(MWh)`
-
-`10035` preserves positive, zero, and negative values.
-
-`10043` is retained as the official ESIOS total generation value and is
-not reconstructed by summing the selected technologies.
-
-------------------------------------------------------------------------
-
-# 6. `gold_fact_installed_capacity_monthly`
-
-## 6.1 Purpose
-
-Analyze installed capacity by technology and autonomous community while
-preserving the actual monthly ESIOS grain.
-
-## 6.2 Silver Sources
-
--   `silver_esios_installed_capacity_monthly`
--   Silver CNIG tables
-
-## 6.3 Physical Schema
-
-  Column                                       Type
-  -------------------------------------------- -------------
-  `year_month`                                 `STRING`
-  `gold_month_timestamp`                       `TIMESTAMP`
-  `source_timestamp`                           `TIMESTAMP`
-  `geography_key`                              `STRING`
-  `autonomous_community_code`                  `STRING`
-  `autonomous_community_name`                  `STRING`
-  `esios_geo_id`                               `BIGINT`
-  `hydraulic_installed_capacity_mw`            `DOUBLE`
-  `wind_installed_capacity_mw`                 `DOUBLE`
-  `solar_photovoltaic_installed_capacity_mw`   `DOUBLE`
-  `solar_thermal_installed_capacity_mw`        `DOUBLE`
-  `renewable_total_installed_capacity_mw`      `DOUBLE`
-  `nuclear_installed_capacity_mw`              `DOUBLE`
-  `coal_installed_capacity_mw`                 `DOUBLE`
-  `combined_cycle_installed_capacity_mw`       `DOUBLE`
-  `other_renewables_installed_capacity_mw`     `DOUBLE`
-  `gold_created_at`                            `TIMESTAMP`
-
-## 6.4 Natural Key
-
-`(autonomous_community_code, year_month)`
-
-Exactly one row per autonomous community and month.
-
-## 6.5 Grain
-
--   Temporal: Month.
--   Geographical: Autonomous Community.
-
-Installed capacity must not be artificially disaggregated to province
-level.
-
-## 6.6 Iceberg Partitioning
-
-`year_month`
-
-No additional partitioning by autonomous community.
-
-## 6.7 ESIOS Transformations
-
-    ESIOS indicator ID Gold metric
-  -------------------- --------------------------------------------
-                  1475 `hydraulic_installed_capacity_mw`
-                  1485 `wind_installed_capacity_mw`
-                  1486 `solar_photovoltaic_installed_capacity_mw`
-                  1487 `solar_thermal_installed_capacity_mw`
-                 10302 `renewable_total_installed_capacity_mw`
-                  1477 `nuclear_installed_capacity_mw`
-                  1478 `coal_installed_capacity_mw`
-                  1483 `combined_cycle_installed_capacity_mw`
-                  1488 `other_renewables_installed_capacity_mw`
-
-For all metrics:
-
-`installed_capacity_mw = value`
-
-Rules:
-
--   installed capacity remains in MW;
--   no conversion to MWh;
--   no temporal `SUM(MW)` across months;
--   `year_month` is the analytical temporal key;
--   the original ESIOS timestamp is retained for traceability;
--   `esios_geo_id` is retained;
--   autonomous communities are normalized against CNIG;
--   the configurable +1-hour ESIOS gap is not automatically applied to
-    monthly installed capacity.
-
-### Official renewable total
-
-Indicator `10302` is used directly as:
-
-`renewable_total_installed_capacity_mw`
-
-It is the official ESIOS renewable total used by this design.
-
-It is not reconstructed by summing hydraulic, wind, solar photovoltaic,
-solar thermal, and other renewables.
-
-------------------------------------------------------------------------
-
-# 7. `gold_fact_country_15min`
-
-## 7.1 Purpose
-
-Integrated high-frequency Gold product for analyzing national weather
-and energy at 15-minute intervals while preserving the distinction
-between Spain and Peninsula scopes.
-
-## 7.2 Silver Sources
-
--   `silver_open_meteo_15min`
--   `silver_esios_power_5min`
--   Silver CNIG tables
-
-Weather:
-
-`point → province → Spain`
-
-and, independently for the peninsular scope:
-
-`point → province → approved Peninsula provinces → Peninsula`
-
-Energy:
-
-`ESIOS 5 min → MW-to-MWh interval conversion → three-interval aggregation → 15 min`
-
-## 7.3 Physical Schema
-
-  Column                                             Type
-  -------------------------------------------------- -------------
-  `gold_timestamp`                                   `TIMESTAMP`
-  `geography_key`                                    `STRING`
-  `geography_level`                                  `STRING`
-  `geography_name`                                   `STRING`
-  `temperature`                                      `DOUBLE`
-  `humidity`                                         `DOUBLE`
-  `precipitation`                                    `DOUBLE`
-  `wind_speed_80m`                                   `DOUBLE`
-  `wind_direction_80m`                               `DOUBLE`
-  `wind_speed_120m`                                  `DOUBLE`
-  `wind_direction_120m`                              `DOUBLE`
-  `solar_radiation`                                  `DOUBLE`
-  `direct_normal_irradiance`                         `DOUBLE`
-  `real_demand_energy_mwh_15min`                     `DOUBLE`
-  `wind_generation_energy_mwh_15min`                 `DOUBLE`
-  `nuclear_generation_energy_mwh_15min`              `DOUBLE`
-  `coal_generation_energy_mwh_15min`                 `DOUBLE`
-  `combined_cycle_generation_energy_mwh_15min`       `DOUBLE`
-  `hydraulic_generation_energy_mwh_15min`            `DOUBLE`
-  `solar_photovoltaic_generation_energy_mwh_15min`   `DOUBLE`
-  `solar_thermal_generation_energy_mwh_15min`        `DOUBLE`
-  `renewable_thermal_generation_energy_mwh_15min`    `DOUBLE`
-  `cogeneration_waste_generation_energy_mwh_15min`   `DOUBLE`
-  `pumping_consumption_energy_mwh_15min`             `DOUBLE`
-  `gold_created_at`                                  `TIMESTAMP`
-
-## 7.4 Natural Key
-
-`(geography_key, gold_timestamp)`
-
-Exactly one row per compatible geographical scope and 15-minute
-interval.
-
-## 7.5 Grain
-
--   Temporal: 15 minutes.
--   Geographical: Spain/Peninsula according to the actual indicator
-    scope.
-
-Spain and Peninsula are not treated as equivalent.
-
-## 7.6 Iceberg Partitioning
-
-`days(gold_timestamp)`
-
-No additional geographical partition.
-
-## 7.7 National Weather Aggregation
-
-Open-Meteo already provides the required 15-minute temporal grain. No
-additional temporal aggregation is performed.
-
-For the Spain scope, scalar variables follow:
-
-`points → AVG by province → AVG across provinces → Spain × 15 min`
-
-For the Spain scope, wind directions follow:
-
-`points → circular mean by province → circular mean across provinces → Spain × 15 min`
-
-For the Peninsula scope, weather is aggregated independently from the
-validated province-level Open-Meteo data. Spain weather must never be
-relabelled as Peninsula weather.
-
-The validated non-peninsular province codes excluded from the Peninsula
-aggregation are:
-
--   `07` — Illes Balears;
--   `35` — Las Palmas;
--   `38` — Santa Cruz de Tenerife;
--   `51` — Ceuta;
--   `52` — Melilla.
-
-Therefore the validated Peninsula weather aggregation uses 47 eligible
-province entities from the 52 province-level entities available in the
-canonical geographical preparation.
-
-For scalar variables:
-
-`eligible provinces → AVG across provinces → Peninsula × 15 min`
-
-For wind directions:
-
-`eligible provinces → circular mean across provinces → Peninsula × 15 min`
-
-A direct national average across all points must not replace the
-approved two-stage spatial aggregation. Spain and Peninsula must remain
-distinct analytical scopes.
-
-## 7.8 Energy Transformation: 5 min → 15 min
-
-Selected ESIOS indicators:
-
--   `1293`
--   `2038`
--   `2039`
--   `2040`
--   `2041`
--   `2042`
--   `2044`
--   `2045`
--   `2046`
--   `2051`
--   `2065`
-
-Indicator `10004` remains excluded.
-
-The original 5-minute observation represents power:
-
-`power_mw = value`
-
-Energy for each real 5-minute interval is:
-
-`energy_mwh_5min = power_mw × (5 / 60)`
-
-Energy for the 15-minute interval is:
-
-`energy_mwh_15min = SUM(three energy_mwh_5min intervals)`
-
-`SUM(power_mw)` is prohibited.
-
-Original ESIOS signs are preserved.
-
-------------------------------------------------------------------------
-
-# 8. `gold_fact_country_5min`
-
-## 8.1 Purpose
-
-Preserve the maximum validated energy frequency: **Spain/Peninsula × 5
-minutes**.
-
-No weather source participates in this product.
-
-## 8.2 Silver Source
-
--   `silver_esios_power_5min`
-
-## 8.3 Physical Schema
-
-  Column                                            Type
-  ------------------------------------------------- -------------
-  `gold_timestamp`                                  `TIMESTAMP`
-  `geography_key`                                   `STRING`
-  `geography_level`                                 `STRING`
-  `geography_name`                                  `STRING`
-  `esios_geo_id`                                    `BIGINT`
-  `real_demand_mw`                                  `DOUBLE`
-  `wind_generation_power_mw`                        `DOUBLE`
-  `nuclear_generation_power_mw`                     `DOUBLE`
-  `coal_generation_power_mw`                        `DOUBLE`
-  `combined_cycle_generation_power_mw`              `DOUBLE`
-  `hydraulic_generation_power_mw`                   `DOUBLE`
-  `solar_photovoltaic_generation_power_mw`          `DOUBLE`
-  `solar_thermal_generation_power_mw`               `DOUBLE`
-  `renewable_thermal_generation_power_mw`           `DOUBLE`
-  `cogeneration_waste_generation_power_mw`          `DOUBLE`
-  `pumping_consumption_power_mw`                    `DOUBLE`
-  `real_demand_energy_mwh_5min`                     `DOUBLE`
-  `wind_generation_energy_mwh_5min`                 `DOUBLE`
-  `nuclear_generation_energy_mwh_5min`              `DOUBLE`
-  `coal_generation_energy_mwh_5min`                 `DOUBLE`
-  `combined_cycle_generation_energy_mwh_5min`       `DOUBLE`
-  `hydraulic_generation_energy_mwh_5min`            `DOUBLE`
-  `solar_photovoltaic_generation_energy_mwh_5min`   `DOUBLE`
-  `solar_thermal_generation_energy_mwh_5min`        `DOUBLE`
-  `renewable_thermal_generation_energy_mwh_5min`    `DOUBLE`
-  `cogeneration_waste_generation_energy_mwh_5min`   `DOUBLE`
-  `pumping_consumption_energy_mwh_5min`             `DOUBLE`
-  `gold_created_at`                                 `TIMESTAMP`
-
-## 8.4 Natural Key
-
-`(geography_key, gold_timestamp)`
-
-Exactly one row per geographical scope and 5-minute timestamp.
-
-## 8.5 Grain
-
--   Temporal: 5 minutes.
--   Geographical: Spain/Peninsula.
-
-## 8.6 Iceberg Partitioning
-
-`days(gold_timestamp)`
-
-## 8.7 Selected Indicators
-
-    ESIOS indicator ID Geography   Gold power metric
-  -------------------- ----------- ------------------------------------------
-                  1293 Peninsula   `real_demand_mw`
-                  2038 Spain       `wind_generation_power_mw`
-                  2039 Spain       `nuclear_generation_power_mw`
-                  2040 Spain       `coal_generation_power_mw`
-                  2041 Spain       `combined_cycle_generation_power_mw`
-                  2042 Spain       `hydraulic_generation_power_mw`
-                  2044 Spain       `solar_photovoltaic_generation_power_mw`
-                  2045 Spain       `solar_thermal_generation_power_mw`
-                  2046 Spain       `renewable_thermal_generation_power_mw`
-                  2051 Spain       `cogeneration_waste_generation_power_mw`
-                  2065 Spain       `pumping_consumption_power_mw`
-
-Indicator `10004` remains excluded.
-
-The observations already exist at 5-minute frequency:
-
-`power_mw = value`
-
-No transformation is used to create the 5-minute frequency.
-
-Energy associated with each interval is derived as:
-
-`energy_mwh_5min = power_mw × (5 / 60)`
-
-equivalently:
-
-`energy_mwh_5min = power_mw / 12`
-
-This derivation does not change the temporal grain.
-
-### Sign preservation
-
-Original ESIOS signs are retained, particularly for:
-
--   `2042` --- hydraulic generation;
--   `2065` --- pumping consumption.
-
-The following transformations are prohibited:
-
--   `ABS(value)`;
--   artificial sign inversion;
--   automatic compensation between hydraulic generation and pumping
-    consumption.
-
-Derived MWh values retain the sign of their source power value.
-
-------------------------------------------------------------------------
-
-# 9. `gold_dim_time`
-
-## 9.1 Purpose
-
-Common temporal dimension supporting all four approved Gold temporal
-grains:
-
--   `FIVE_MINUTES`
--   `FIFTEEN_MINUTES`
--   `HOUR`
--   `MONTH`
-
-A single physical dimension is used rather than separate time dimensions
-per grain.
-
-## 9.2 Physical Schema
-
-  Column              Type
-  ------------------- -------------
-  `time_key`          `STRING`
-  `time_grain`        `STRING`
-  `gold_timestamp`    `TIMESTAMP`
-  `date`              `DATE`
-  `year`              `INT`
-  `month`             `INT`
-  `year_month`        `STRING`
-  `day`               `INT`
-  `day_of_week`       `INT`
-  `hour`              `INT`
-  `minute`            `INT`
-  `gold_created_at`   `TIMESTAMP`
-
-For monthly members, non-applicable hourly attributes may remain `NULL`.
-
-No artificial hour is created to represent a month.
-
-## 9.3 Keys
-
-`time_key` must be:
-
--   deterministic;
--   stable;
--   reproducible;
--   unique;
--   independent of auto-incrementing IDs.
-
-Conceptually:
-
-`time_grain + temporal value`
-
-Natural keys:
-
--   `(time_grain, gold_timestamp)` for submonthly grains;
--   `(time_grain, year_month)` for `MONTH`.
-
-The implemented `time_key` is deterministic and generated using
-SHA-256 from the combination of:
-
-`time_grain + canonical temporal value`
-
-The canonical temporal value is:
-
--   `gold_timestamp` for `FIVE_MINUTES`, `FIFTEEN_MINUTES`, and `HOUR`;
--   `year_month` for `MONTH`.
-
-Monthly members do not use an artificial timestamp.
-
-## 9.4 Partitioning
-
-No Iceberg partitioning.
-
-## 9.5 Attribute Derivation
-
-For submonthly records:
-
-`gold_timestamp → date, year, month, year_month, day, day_of_week, hour, minute`
-
-For monthly records:
-
-`year_month → year, month`
-
-The dimension does not apply the ESIOS temporal gap itself.
-
-------------------------------------------------------------------------
-
-# 10. `gold_dim_geography`
-
-## 10.1 Purpose
-
-Common geographical dimension representing only:
-
--   `PROVINCE`
--   `AUTONOMOUS_COMMUNITY`
--   `COUNTRY`
--   `PENINSULA`
-
-## 10.2 Sources
-
-For Province and Autonomous Community:
-
-Silver CNIG is the canonical geographical master.
-
-For national scopes:
-
--   Spain;
--   Peninsula.
-
-No artificial geography is created.
-
-## 10.3 Physical Schema
-
-  Column                        Type
-  ----------------------------- -------------
-  `geography_key`               `STRING`
-  `geography_level`             `STRING`
-  `geography_code`              `STRING`
-  `geography_name`              `STRING`
-  `province_code`               `STRING`
-  `province_name`               `STRING`
-  `autonomous_community_code`   `STRING`
-  `autonomous_community_name`   `STRING`
-  `country_code`                `STRING`
-  `country_name`                `STRING`
-  `esios_geo_id`                `BIGINT`
-  `gold_created_at`             `TIMESTAMP`
-
-## 10.4 Keys
-
-`geography_key` must be deterministic, stable, reproducible, and unique.
-
-Conceptually:
-
-`geography_level + geography_code`
-
-Natural key:
-
-`(geography_level, geography_code)`
-
-The validated national Gold keys are:
-
--   Spain: `COUNTRY:ES`
--   Peninsula: `PENINSULA:ES-PEN`
-
-These two keys are canonical and must remain distinct.
-
-For Province and Autonomous Community members, the implemented
-`geography_key` is deterministic and generated using SHA-256 from the
-combination of geographical level and canonical geographical code.
-
-Conceptually:
-
-`PROVINCE + province_code`
-
-`AUTONOMOUS_COMMUNITY + autonomous_community_code`
-
-The national keys remain explicit canonical values and are not hashed:
-
--   Spain: `COUNTRY:ES`
--   Peninsula: `PENINSULA:ES-PEN`
-
-## 10.5 Territorial Hierarchy
-
-Where applicable:
-
-`Spain → Autonomous Community → Province`
-
-For `PROVINCE`, province, autonomous community, and country attributes
-may be populated.
-
-For `AUTONOMOUS_COMMUNITY`, province attributes remain `NULL`.
-
-For `COUNTRY`, only applicable national attributes are populated.
-
-For `PENINSULA`, only attributes applicable to the Peninsula scope are
-populated.
-
-Lower geographical levels must not be filled artificially.
-
-## 10.6 Spain and Peninsula
-
-They are materialized as distinct members:
-
--   `COUNTRY → Spain`
--   `PENINSULA → Peninsula`
-
-Therefore:
-
-`Spain ≠ Peninsula`
-
-Validated ESIOS geography IDs include:
-
--   Spain → `esios_geo_id = 3`
--   Peninsula → `esios_geo_id = 8741`
-
-When no real ESIOS ID exists:
-
-`esios_geo_id = NULL`
-
-An ID must never be fabricated.
-
-## 10.7 Partitioning
-
-No Iceberg partitioning.
-
-------------------------------------------------------------------------
-
-# 11. ESIOS Temporal Alignment
-
-For the ESIOS time series to which the approved alignment applies:
-
-`gold_timestamp = observation_timestamp + configurable_gap`
-
-Initial approved value:
-
-`configurable_gap = +1 hour`
-
-Requirements:
-
--   stored in JSON under `config/`;
--   not hardcoded;
--   applied before the corresponding temporal aggregation and
-    integration;
--   not automatically applied to monthly installed capacity;
--   not applied by `gold_dim_time` itself.
-
-The approved initial offset originates from the validated alignment
-analysis in which indicator `1161` showed improved correlation with
-Open-Meteo using the selected offset across 47/47 provinces.
-
-------------------------------------------------------------------------
-
-# 12. Missing Observations, NULLs, Zeros, and Gaps
-
-The common Gold rule is:
-
-`existing observation with published value = 0 → 0`
-
-`missing observation → NULL / absence`
-
-Therefore:
-
-**NULL ≠ 0**
-
-Gold must not automatically:
-
--   interpolate gaps;
--   fabricate rows;
--   impute missing observations;
--   replace missing metrics with zero;
--   apply a general `COALESCE(metric, 0)`.
-
-The approved AEMET → Open-Meteo fallback for temperature, humidity, and
-precipitation is a specific integration rule and is not arbitrary
-imputation.
-
-------------------------------------------------------------------------
-
-# 13. Integration Rules
-
-The logical Silver → Gold integration order is:
-
-1.  Read Silver.
-2.  Normalize geography.
-3.  Apply ESIOS temporal alignment where applicable.
-4.  Apply required temporal aggregations.
-5.  Apply required spatial aggregations.
-6.  Resolve weather fallback per metric.
-7.  Produce intermediate datasets at the target Gold grain.
-8.  Validate key uniqueness.
-9.  Join only compatible datasets.
-10. Persist Gold.
-
-## 13.1 Join protection rule
-
-**Every source must be aggregated to the target Gold grain before
-integration.**
-
-For `gold_fact_province_hourly`:
-
-`AEMET stations → Province × hour`
-
-`Open-Meteo points → Province × hour`
-
-`ESIOS → Province × hour`
-
-Only then are the prepared datasets joined by province and hour.
-
-This prevents artificial multiplication such as:
-
-`3 weather stations × 4 Open-Meteo points × 1 ESIOS value`
-
-Individual station and point observations remain in Silver.
-
-## 13.2 Duplicate handling rule
-
-Duplicates at an analytical natural grain must be treated as an error,
-not silently removed.
-
-Approved behavior:
-
--   duplicate fact natural key → error;
--   duplicate metric grain + `indicator_id` → error;
--   duplicate AEMET `station_id` in the station master → error;
--   duplicate CNIG `autonomous_community_code` in the canonical master
-    → error;
--   `dropDuplicates()` must not be used to hide analytical fact
-    duplication.
-
-A distinct geographical projection may only be used when constructing
-a set of geographical combinations for contradiction detection. It
-must not remove analytical observations from a fact dataset.
-
-------------------------------------------------------------------------
-
-# 14. Dimensions, Relationships, and Cardinalities
-
-The physical Gold dimensions are:
-
--   `gold_dim_time`
--   `gold_dim_geography`
-
-The geographical relationship is physically materialized through
-`geography_key`:
-
-`gold_dim_geography.geography_key → fact.geography_key`
-
-This relationship follows:
-
-`dimension 1 → N fact`
-
-The temporal dimension is conformant but is not referenced through a
-materialized `time_key` foreign-key column in the fact tables.
-
-Temporal correspondence is established through:
-
--   `gold_timestamp` for `gold_fact_province_hourly`,
-    `gold_fact_country_15min`, and `gold_fact_country_5min`;
--   `year_month` for `gold_fact_installed_capacity_monthly`.
-
-Therefore, `gold_dim_time` acts as a common analytical temporal
-dimension without adding a physical `time_key` column to the approved
-fact-table schemas.
-
-There are no direct fact-to-fact physical relationships.
-
-Each fact table must preserve the uniqueness of its own grain:
-
--   Province × hour;
--   Autonomous Community × month;
--   compatible geographical scope × 15 minutes;
--   Spain/Peninsula × 5 minutes.
-
-Energy technology remains an analytical concept/catalogue represented
-through explicit fact-table metrics rather than a physical relationship
-that would alter these grains.
-
-------------------------------------------------------------------------
-
-# 15. Logical Model
-
-``` mermaid
-flowchart TB
-    DT["gold_dim_time"]
-    DG["gold_dim_geography"]
-
-    F1["gold_fact_province_hourly<br/>Province × hour<br/>Weather + energy"]
-    F2["gold_fact_installed_capacity_monthly<br/>Autonomous Community × month<br/>Installed capacity"]
-    F3["gold_fact_country_15min<br/>Spain/Peninsula × 15 min<br/>Weather + energy"]
-    F4["gold_fact_country_5min<br/>Spain/Peninsula × 5 min<br/>Energy"]
-
-    DT -.->|logical temporal conformance| F1
-    DT -.->|logical temporal conformance| F2
-    DT -.->|logical temporal conformance| F3
-    DT -.->|logical temporal conformance| F4
-
-    DG -->|1:N via geography_key| F1
-    DG -->|1:N via geography_key| F2
-    DG -->|1:N via geography_key| F3
-    DG -->|1:N via geography_key| F4
+This document defines the final design of the Gold layer of the
+Energy Lakehouse Platform.
+
+Gold consumes exclusively normalized and validated Silver datasets and
+produces the analytical model exposed to downstream SQL and visualization
+tools.
+
+The processing path is:
+
+```text
+Apache Iceberg Silver
+        │
+        ▼
+Apache Spark / PySpark
+        │
+        ├── geographical aggregation
+        ├── temporal aggregation
+        ├── source fallback
+        ├── energy preparation
+        ├── cross-source integration
+        └── analytical validation
+        │
+        ▼
+Apache Iceberg Gold
+        │
+        ▼
+       Trino
+        │
+        ▼
+Apache Superset
 ```
 
-------------------------------------------------------------------------
+The final Gold model is deliberately compact and contains exactly:
 
-# 16. Gold Load Strategy
+```text
+4 physical tables
+```
 
-## 16.1 Initial Load
+The two principal analytical grains are:
 
-All four fact tables perform an initial full build using the complete
-Silver range available at execution time.
-
-Flow:
-
-`available Silver → Gold transformations → grain validation → initial full load`
-
-## 16.2 `gold_dim_geography`
-
-The dimension is deterministically rebuilt from the validated
-geographical sources required by the current Gold execution and
-persisted using `MERGE` by `geography_key`.
-
-Its canonical content is derived from:
-
-`Silver CNIG + Spain + Peninsula`
-
-Existing members are matched and updated when applicable, while new
-members are inserted.
-
-Re-running the same validated source state must not create duplicate
-geographical members.
-
-## 16.3 `gold_dim_time`
-
-The required temporal members are deterministically derived from the
-current Gold fact datasets for the four approved temporal grains and
-persisted using `MERGE` by `time_key`.
-
-Existing members are matched and new required temporal members are
-inserted without creating duplicates.
-
-The monthly grain is represented by `year_month` and does not fabricate
-an hourly timestamp.
-
-## 16.4 Incremental Gold Persistence
-
-After the initial build, all six Gold tables use `MERGE` by their
-approved natural or deterministic key.
-
-  ------------------------------------------------------------------------------------
-  Table                                    MERGE natural key
-  ---------------------------------------- -------------------------------------------
-  `gold_fact_province_hourly`              `(province_code, gold_timestamp)`
-
-  `gold_fact_installed_capacity_monthly`   `(autonomous_community_code, year_month)`
-
-  `gold_fact_country_15min`                `(geography_key, gold_timestamp)`
-
-  `gold_fact_country_5min`                 `(geography_key, gold_timestamp)`
-
-  `gold_dim_time`                          `time_key`
-
-  `gold_dim_geography`                     `geography_key`
-  ------------------------------------------------------------------------------------
-
-Behavior:
-
-`MATCH → UPDATE`
-
-`NOT MATCH → INSERT`
-
-`gold_created_at` is populated when a row is first inserted and is not
-updated by subsequent matched `MERGE` operations.
-
-Blind append is prohibited.
-
-A repeated execution using the same validated Silver state may create a
-new physical Iceberg snapshot, but it must preserve the same logical Gold
-state.
-
-No execution frequency is defined here because no such frequency has
-been approved as part of this design.
-
-------------------------------------------------------------------------
-
-# 17. Idempotency, Reprocessing, and Backfills
-
-Idempotency is mandatory.
-
-The same Silver input processed with the same transformation rules must
-produce the same logical Gold state:
-
-`same input + same transformations + same natural key = same Gold result`
-
-Reprocessing a period must not create duplicate rows.
-
-Historical ranges can be recalculated and merged without rebuilding the
-complete Gold history.
-
-For backfills:
-
-`Silver range → Gold recalculation → validation → MERGE`
-
-The process must ensure that:
-
--   existing keys are updated;
--   new keys are inserted;
--   duplicates are not introduced;
--   data outside the reprocessed range is not modified accidentally;
--   missing observations are not converted to zero.
-
-------------------------------------------------------------------------
-
-# 18. Gold Data Quality Controls
-
-Gold quality controls must validate both physical integrity and the
-semantic correctness of the Silver → Gold transformation.
-
-Core principles:
-
--   do not invent data;
--   do not convert absence to zero;
--   do not automatically interpolate gaps;
--   do not alter original signs;
--   do not fabricate geographies;
--   do not mix incompatible granularities;
--   do not duplicate measures during joins;
--   do not lose valid Silver coverage because of transformation errors.
-
-## 18.1 Natural Keys
-
-Required duplicate count by natural key:
-
-`0`
-
-Natural keys:
-
-  ------------------------------------------------------------------------------------
-  Table                                    Natural key
-  ---------------------------------------- -------------------------------------------
-  `gold_fact_province_hourly`              `(province_code, gold_timestamp)`
-
-  `gold_fact_installed_capacity_monthly`   `(autonomous_community_code, year_month)`
-
-  `gold_fact_country_15min`                `(geography_key, gold_timestamp)`
-
-  `gold_fact_country_5min`                 `(geography_key, gold_timestamp)`
-
-  `gold_dim_time`                          `time_key`
-
-  `gold_dim_geography`                     `geography_key`
-  ------------------------------------------------------------------------------------
-
-Additional dimension uniqueness:
-
--   `gold_dim_time`: `(time_grain, gold_timestamp)` for submonthly
-    grains and `(time_grain, year_month)` for `MONTH`;
--   `gold_dim_geography`: `(geography_level, geography_code)`.
-
-## 18.2 Structural NULL Controls
-
-Required non-null columns include:
-
-### `gold_fact_province_hourly`
-
--   `province_code`
--   `gold_timestamp`
-
-### `gold_fact_installed_capacity_monthly`
-
--   `autonomous_community_code`
--   `year_month`
-
-### `gold_fact_country_15min`
-
--   `geography_key`
--   `gold_timestamp`
-
-### `gold_fact_country_5min`
-
--   `geography_key`
--   `gold_timestamp`
-
-### `gold_dim_time`
-
--   `time_key`
--   `time_grain`
-
-### `gold_dim_geography`
-
--   `geography_key`
--   `geography_level`
--   `geography_code`
--   `geography_name`
-
-Metric NULLs are allowed when they represent genuine source coverage
-limitations.
-
-## 18.3 Timestamp Controls
-
-### Hourly fact
-
-`minute = 0`
-
-### 15-minute fact
-
-`minute ∈ {0, 15, 30, 45}`
-
-### 5-minute fact
-
-`minute MOD 5 = 0`
-
-### Monthly fact
-
-`year_month` must be coherent with the represented monthly period and
-associated temporal attributes.
-
-The original ESIOS monthly timestamp remains available for traceability.
-
-## 18.4 ESIOS Gap Controls
-
-The configurable ESIOS gap must:
-
--   come from external configuration;
--   not be hardcoded;
--   be applied only to the applicable time series;
--   be applied before the relevant aggregation/integration;
--   not be automatically applied to monthly installed capacity.
-
-## 18.5 Geography Controls
-
-Valid geographical levels by table:
-
-  ----------------------------------------------------------------------------
-  Table                                    Valid geography
-  ---------------------------------------- -----------------------------------
-  `gold_fact_province_hourly`              `PROVINCE`
-
-  `gold_fact_installed_capacity_monthly`   `AUTONOMOUS_COMMUNITY`
-
-  `gold_fact_country_15min`                `COUNTRY` / `PENINSULA` according
-                                           to the data
-
-  `gold_fact_country_5min`                 `COUNTRY` / `PENINSULA` according
-                                           to the indicator
-
-  `gold_dim_geography`                     `PROVINCE`, `AUTONOMOUS_COMMUNITY`,
-                                           `COUNTRY`, `PENINSULA`
-  ----------------------------------------------------------------------------
-
-Province and autonomous-community mappings must use CNIG.
-
-Artificial conversions are prohibited when the source does not support
-them, including:
-
--   Peninsula → Spain;
--   Spain → Peninsula;
--   Spain → Autonomous Community;
--   Spain → Province;
--   Autonomous Community → Province.
-
-## 18.6 Grain Controls
-
-  ----------------------------------------------------------------------------------------
-  Table                                    Temporal grain          Geographical grain
-  ---------------------------------------- ----------------------- -----------------------
-  `gold_fact_province_hourly`              Hour                    Province
-
-  `gold_fact_installed_capacity_monthly`   Month                   Autonomous Community
-
-  `gold_fact_country_15min`                15 minutes              Spain/Peninsula
-                                                                   compatible scope
-
-  `gold_fact_country_5min`                 5 minutes               Spain/Peninsula
-  ----------------------------------------------------------------------------------------
-
-A real source gap is not the same as an incorrect grain.
-
-Missing timestamps are not fabricated merely to create a complete
-calendar series.
-
-## 18.7 Coverage Controls
-
-Coverage must be measurable by:
-
-`period + geography + metric/technology`
-
-Gold must not lose valid Silver observations because of:
-
--   transformation errors;
--   joins;
--   filters;
--   pivots;
--   geographical normalization.
-
-Real source coverage differences are not automatically treated as
-technical errors.
-
-## 18.8 Hourly Energy Metric Controls
-
-For `gold_fact_province_hourly`:
-
-`Gold metric_mwh = corresponding Silver value`
-
-after the approved alignment and integration rules.
-
-The hourly observation is not built using:
-
--   `AVG`;
--   `SUM`;
--   MW-to-MWh conversion.
-
-## 18.9 Official Total Generation
-
-`total_generation_mwh` from indicator `10043` is retained as the
-official ESIOS total.
-
-It is not required to equal a reconstructed sum of the selected
-technology metrics.
-
-## 18.10 Sign Controls
-
-Original ESIOS signs must be preserved.
-
-The following are prohibited:
-
--   `ABS(value)`;
--   artificial sign inversion;
--   unapproved automatic compensation between hydraulic generation and
-    pumping consumption.
-
-Derived MWh metrics preserve the source sign.
-
-## 18.11 Installed-Capacity Controls
-
-Installed-capacity metrics remain in MW.
-
-They must not be:
-
--   automatically converted to MWh;
--   temporally summed across months.
-
-Indicator `10302` is preserved as the official renewable
-installed-capacity total.
-
-## 18.12 Wind Aggregation Controls
-
-Wind speed:
-
-`4 × 15 min → AVG per point → AVG across provincial points`
-
-Wind direction:
-
-`4 × 15 min → circular mean per point → circular mean across provincial points`
-
-Arithmetic `AVG(direction)` is not valid.
-
-## 18.13 National Weather Aggregation Controls
-
-For `gold_fact_country_15min`, Spain weather follows:
-
-`point → province → Spain`
-
-Scalar variables:
-
-`AVG(points by province) → AVG(provinces)`
-
-Directions:
-
-`circular mean(points by province) → circular mean(provinces)`
-
-Peninsula weather must be calculated independently from province-level
-weather after excluding province codes `07`, `35`, `38`, `51`, and
-`52`.
-
-The following transformation is prohibited:
-
-`Spain weather → relabel as Peninsula`
-
-Spain and Peninsula must remain independent geographical scopes.
-
-## 18.14 Energy Integrity: 5 min → 15 min
-
-For each 5-minute observation:
-
-`energy_mwh_5min = power_mw × (5 / 60)`
-
-For each 15-minute interval:
-
-`energy_mwh_15min = SUM(three energy_mwh_5min intervals)`
-
-The implementation must not use:
-
-`SUM(power_mw)`
-
-to represent 15-minute energy.
-
-## 18.15 `gold_fact_country_5min` Integrity
-
-The table preserves both:
-
-`power_mw = Silver value`
+```text
+Province × hour
+```
 
 and:
 
-`energy_mwh_5min = power_mw × (5 / 60)`
+```text
+Autonomous Community × month
+```
 
-Deriving interval energy does not change the 5-minute grain.
+Gold does not manufacture geographical or temporal detail that cannot be
+supported by the validated Silver sources.
 
-## 18.16 Weather Fallback Controls
+---
 
-For temperature, humidity, and precipitation:
+# 2. Final Analytical Scope
 
-`AEMET available → AEMET`
+The principal analytical objective is to study the relationship between
+meteorological conditions and electricity generation.
 
-`AEMET metric unavailable → Open-Meteo`
+The final implemented use cases include analyses such as:
 
-The fallback is applied independently per metric.
+- wind speed versus wind generation;
+- comparison of wind conditions at 80 m and 120 m;
+- wind direction versus wind generation;
+- solar radiation versus photovoltaic generation;
+- direct normal irradiance versus photovoltaic generation;
+- precipitation versus hydraulic generation;
+- evolution of electricity generation by technology;
+- territorial comparison between provinces;
+- installed capacity by technology and Autonomous Community;
+- comparison between installed capacity and available generation data.
 
-Source traceability must be available through:
+The final project scope does **not** include:
 
--   `temperature_source`
--   `humidity_source`
--   `precipitation_source`
+```text
+electricity demand
+electricity market prices
+ESIOS 5-minute analytical facts
+national 5-minute Gold facts
+national 15-minute Gold facts
+```
 
-## 18.17 `gold_dim_time` Integrity
+---
 
-Required:
+# 3. Final Physical Gold Model
 
--   unique `time_key`;
--   only `FIVE_MINUTES`, `FIFTEEN_MINUTES`, `HOUR`, `MONTH`;
--   coherent calendar attributes;
--   `month ∈ 1..12`;
--   `hour ∈ 0..23` where applicable;
--   `minute ∈ 0..59` where applicable;
--   no artificial hourly timestamp for monthly members.
+The final Gold layer contains exactly four Apache Iceberg tables.
 
-## 18.18 `gold_dim_geography` Integrity
+## Fact tables
 
-Required:
+```text
+gold_fact_province_hourly
+gold_fact_installed_capacity_monthly
+```
 
--   unique `geography_key`;
--   unique `(geography_level, geography_code)`;
--   only the four approved geographical levels;
--   valid Province → Autonomous Community hierarchy;
--   Autonomous Community → Spain hierarchy;
--   CNIG-based Province and Autonomous Community data;
--   Spain and Peninsula remain distinct;
--   `esios_geo_id` only when a real mapping exists.
+## Dimensions
 
-## 18.19 Dimension-to-Fact Integrity
+```text
+gold_dim_geography
+gold_dim_time
+```
 
-Each fact row must resolve to exactly one compatible geographical member
-through:
+Therefore:
 
-`fact.geography_key → gold_dim_geography.geography_key`
+```text
+Final Gold physical tables = 4
+```
 
-Temporal integrity is validated through correspondence with the
-appropriate `gold_dim_time` member:
+The previously designed:
 
--   `(time_grain, gold_timestamp)` for submonthly facts;
--   `(MONTH, year_month)` for the monthly installed-capacity fact.
+```text
+gold_fact_country_15min
+gold_fact_country_5min
+```
 
-The fact tables do not materialize a physical `time_key` foreign-key
-column.
+are not part of the final physical Gold model.
 
-A fact must never reference a geography incompatible with its grain.
+---
 
-## 18.20 Idempotency Controls
+# 4. Analytical Grains
 
-Re-running exactly the same input must produce:
+The final facts use different analytical grains according to their real
+source semantics.
 
--   the same logical row count;
--   the same natural keys;
--   the same values;
--   no duplication.
+| Table | Temporal grain | Geographical grain |
+|---|---|---|
+| `gold_fact_province_hourly` | Hour | Province |
+| `gold_fact_installed_capacity_monthly` | Month | Autonomous Community |
 
-## 18.21 Backfill Controls
+The dimensions support those two analytical products.
 
-Historical reprocessing must verify that:
+The platform does not force every dataset into the same grain.
 
--   existing keys are updated;
--   new keys are inserted;
--   no duplicates appear;
--   data outside the requested range remains unchanged;
--   missing observations are not converted to zero;
--   the same quality rules apply to normal and backfill loads.
+---
 
-------------------------------------------------------------------------
+# 5. Geographical Principles
 
-# 19. Critical Load-Acceptance Controls
+CNIG / IGN is the canonical territorial master.
 
-A Gold load must not be considered valid if any critical structural
-control fails.
+The preferred analytical geography is Province when the source data can
+validly support Province-level analysis.
 
-At minimum, the following conditions are critical failures:
+The following levels remain conceptually different:
 
--   `NULL` natural-key component;
--   duplicate natural keys;
--   geography incompatible with the product;
--   timestamp incompatible with the approved grain;
--   incorrect alteration of ESIOS signs;
--   use of `SUM(MW)` where prohibited;
--   loss of uniqueness during joins;
--   invalid dimension reference.
+```text
+Province
+≠
+Autonomous Community
+≠
+Spain
+≠
+Peninsula
+```
+
+The final physical Gold facts use only:
+
+```text
+PROVINCE
+AUTONOMOUS_COMMUNITY
+```
 
-The following are not automatically failures:
-
--   a metric containing `NULL` because of genuine missing source
-    coverage;
--   a genuine source gap;
--   partial territorial coverage already present in Silver.
-
-Gold quality controls must distinguish transformation errors from real
-source limitations.
-
-------------------------------------------------------------------------
-
-# 20. Data Not Promoted to Gold
-
-The following data remain available in Silver but are not promoted to
-the current Gold analytical products.
-
-## 20.1 Weather Variables
-
--   atmospheric pressure;
--   cloud cover;
--   dew point;
--   10 m wind speed;
--   10 m wind direction;
--   wind gusts;
--   direct radiation;
--   diffuse radiation;
--   sunshine duration.
-
-## 20.2 ESIOS Indicators
-
--   `10195`
--   `1193`
--   `10267`
--   `10004`
-
-------------------------------------------------------------------------
-
-# 21. Design Status
-
-The Gold design is approved with:
-
--   4 analytical products;
--   6 physical tables;
--   defined schemas;
--   defined physical types;
--   defined natural keys;
--   defined temporal grains;
--   defined geographical grains;
--   defined Iceberg partitioning;
--   defined transformations;
--   defined integration rules;
--   defined quality controls;
--   defined load strategy;
--   defined idempotency requirements.
-
-The physical Gold implementation must follow this document.
-
-New metrics, indicators, geographical levels, temporal grains,
-transformations, or integration rules must not be introduced without
-explicit approval.
-
-## 21.1 Current implementation checkpoint
-
-The Gold implementation has been validated against this design through
-the following completed steps:
-
--   **4.5.2 — Silver → Gold transformations:** completed and validated;
--   **4.5.3 — Gold automated tests:** completed and validated with
-    `111 passed`;
--   **4.5.4 — physical Gold table creation:** completed and validated;
--   **4.5.5 — Gold persistence in Iceberg/MinIO:** completed and
-    validated;
--   **4.5.6 — persisted Gold data quality:** completed and validated;
--   **4.5.7 — analytical integration:** completed and validated;
--   **4.5.8 — Trino consumption:** completed and validated;
--   **4.5.9 — end-to-end validation:** completed and validated.
-
-The 6 approved Gold tables are physically persisted as Apache Iceberg
-tables in MinIO.
-
-Validated persisted row counts are:
-
-| Table | Rows |
-|---|---:|
-| `gold_fact_province_hourly` | 5,604 |
-| `gold_fact_installed_capacity_monthly` | 19 |
-| `gold_fact_country_15min` | 776 |
-| `gold_fact_country_5min` | 2,304 |
-| `gold_dim_time` | 1,649 |
-| `gold_dim_geography` | 73 |
-
-Physical Iceberg validation confirmed:
-
--   data files in Parquet format;
--   Iceberg metadata JSON files;
--   manifest files;
--   snapshot manifest lists;
--   Iceberg snapshots;
--   physical `data/` and `metadata/` objects in MinIO;
--   the approved partition specifications.
-
-A second execution using the same Silver state preserved the same
-logical row counts, introduced no natural-key duplicates, and preserved
-the original `gold_created_at` values.
-
-Persisted quality validation confirmed:
-
--   zero `NULL` natural keys;
--   zero duplicate natural keys;
--   correct temporal grains;
--   valid geographical mappings;
--   expected source-dependent `NULL` coverage;
--   preservation of original ESIOS signs;
--   exact reconciliation of the selected ESIOS metrics with Silver;
--   correct MW-to-MWh interval conversion;
--   correct 5-minute to 15-minute energy aggregation.
-
-The validated geographical dimension contains:
-
--   52 Province members;
--   19 Autonomous Community members;
--   1 Country member;
--   1 Peninsula member.
-
-Trino successfully discovered and queried all six Gold tables through
-the Iceberg catalog.
-
-Analytical queries were validated for:
-
--   wind speed versus wind generation at Province × hour;
--   temperature versus electricity demand at Peninsula × 15 minutes;
--   observed generation versus installed capacity at Autonomous
-    Community × month.
-
-End-to-end traceability was validated with a real observation:
-
--   Province: `02 — Albacete`;
--   ESIOS indicator:
-    `1159 — Generación medida Eólica terrestre`;
--   Silver timestamp: `2026-07-28 00:00:00`;
--   Silver value: `430.464 MWh`;
--   Gold timestamp after the approved temporal alignment:
-    `2026-07-28 01:00:00`;
--   Gold value: `430.464 MWh`;
--   the same Gold observation was retrieved through Trino.
-
-Analytical reproducibility was also verified by executing the same
-Albacete wind-analysis query through Spark and Trino.
-
-Both engines returned:
-
--   observations: `94`;
--   average wind speed at 80 m: `13.872`;
--   average wind generation: `283.021 MWh`;
--   correlation: `0.1405`.
-
-Therefore the validated execution path is:
-
-`Silver Iceberg → Gold transformation → Gold Iceberg → MinIO → Trino`
+as fact grains.
+
+Higher-level geographical scopes are not artificially expanded to provinces.
+
+Installed-capacity values available at Autonomous Community level therefore
+remain at Autonomous Community level.
+
+---
+
+# 6. `gold_fact_province_hourly`
+
+## 6.1 Purpose
+
+`gold_fact_province_hourly` is the principal analytical dataset of the
+platform.
+
+Its grain is:
+
+```text
+Province × hour
+```
+
+It integrates:
+
+```text
+meteorological information
++
+hourly electricity-generation information
+```
+
+and provides a single analytical table for studying relationships between
+weather conditions and electricity generation.
+
+---
+
+## 6.2 Silver Sources
+
+The fact is built primarily from:
+
+```text
+silver_aemet_stations
+silver_aemet_current_observations
+
+silver_open_meteo_hourly
+silver_open_meteo_15min
+
+silver_esios_energy_hourly
+
+silver_cnig_provinces
+silver_cnig_autonomous_communities
+```
+
+Each Silver dataset is prepared independently before integration.
+
+---
+
+## 6.3 Physical Schema
+
+The current physical table contains:
+
+| Column | Type |
+|---|---|
+| `gold_timestamp` | TIMESTAMP WITH TIME ZONE |
+| `time_key` | STRING |
+| `geography_key` | STRING |
+| `province_code` | STRING |
+| `province_name` | STRING |
+| `autonomous_community_code` | STRING |
+| `autonomous_community_name` | STRING |
+| `temperature` | DOUBLE |
+| `humidity` | DOUBLE |
+| `precipitation` | DOUBLE |
+| `wind_speed_80m` | DOUBLE |
+| `wind_direction_80m` | DOUBLE |
+| `wind_speed_120m` | DOUBLE |
+| `wind_direction_120m` | DOUBLE |
+| `solar_radiation` | DOUBLE |
+| `direct_normal_irradiance` | DOUBLE |
+| `wind_generation_mwh` | DOUBLE |
+| `solar_photovoltaic_generation_mwh` | DOUBLE |
+| `solar_thermal_generation_mwh` | DOUBLE |
+| `hydraulic_generation_mwh` | DOUBLE |
+| `nuclear_generation_mwh` | DOUBLE |
+| `combined_cycle_generation_mwh` | DOUBLE |
+| `gas_natural_steam_turbine_generation_mwh` | DOUBLE |
+| `gas_natural_cogeneration_mwh` | DOUBLE |
+| `coal_generation_mwh` | DOUBLE |
+| `other_renewables_generation_mwh` | DOUBLE |
+| `total_generation_mwh` | DOUBLE |
+| `temperature_source` | STRING |
+| `humidity_source` | STRING |
+| `precipitation_source` | STRING |
+| `gold_created_at` | TIMESTAMP WITH TIME ZONE |
+
+---
+
+## 6.4 Natural Key
+
+The natural key is:
+
+```text
+province_code
++
+gold_timestamp
+```
+
+Exactly one analytical row may exist for each:
+
+```text
+Province × hour
+```
+
+Duplicate natural keys are considered a Gold processing error.
+
+---
+
+## 6.5 Geography
+
+The geographical attributes are:
+
+```text
+province_code
+province_name
+autonomous_community_code
+autonomous_community_name
+geography_key
+```
+
+The physical fact remains Province-grained.
+
+Autonomous Community is a hierarchical attribute and does not modify the
+grain.
+
+Canonical geography is obtained from CNIG.
+
+---
+
+# 7. Meteorological Preparation
+
+Meteorological information is prepared independently from electricity data
+before the final fact join.
+
+The target intermediate grain is:
+
+```text
+Province × hour
+```
+
+Individual AEMET stations and Open-Meteo points therefore remain in Silver and
+are not directly joined to ESIOS observations.
+
+This avoids row multiplication.
+
+Incorrect pattern:
+
+```text
+station
+×
+Open-Meteo point
+×
+ESIOS observation
+```
+
+Correct pattern:
+
+```text
+AEMET
+→ Province × hour
+```
+
+```text
+Open-Meteo
+→ Province × hour
+```
+
+```text
+ESIOS
+→ Province × hour
+```
+
+Only the resulting blocks are integrated.
+
+---
+
+# 8. AEMET Aggregation
+
+AEMET current observations represent station-level meteorological
+measurements.
+
+Station geography is resolved through the validated AEMET station catalogue
+and CNIG territorial mapping.
+
+Valid station observations are aggregated to:
+
+```text
+Province × hour
+```
+
+for the metrics supported by the source.
+
+An observation whose station cannot be resolved to a valid province must not
+be assigned an invented geography.
+
+Such source observations remain available upstream in Silver.
+
+---
+
+# 9. Open-Meteo Hourly Aggregation
+
+Open-Meteo hourly observations are available at the point/station level.
+
+They are aggregated spatially to:
+
+```text
+Province × hour
+```
+
+using the available valid locations belonging to each province.
+
+Relevant metrics include:
+
+```text
+temperature_2m
+relative_humidity_2m
+precipitation
+shortwave_radiation
+direct_normal_irradiance
+```
+
+The Gold analytical names are:
+
+```text
+temperature
+humidity
+precipitation
+solar_radiation
+direct_normal_irradiance
+```
+
+---
+
+# 10. Open-Meteo 15-Minute Aggregation
+
+The Silver table:
+
+```text
+silver_open_meteo_15min
+```
+
+preserves the 15-minute source grain.
+
+Gold uses this dataset to derive hourly elevated-wind metrics.
+
+The principal variables are:
+
+```text
+wind_speed_80m
+wind_direction_80m
+wind_speed_120m
+wind_direction_120m
+```
+
+---
+
+## 10.1 Wind Speed
+
+For each meteorological point:
+
+```text
+15-minute observations
+→ hourly average
+```
+
+Then:
+
+```text
+hourly point values
+→ average across valid province points
+```
+
+The result is:
+
+```text
+Province × hour
+```
+
+for:
+
+```text
+wind_speed_80m
+wind_speed_120m
+```
+
+---
+
+## 10.2 Wind Direction
+
+Wind direction cannot be aggregated using a simple arithmetic average.
+
+Circular aggregation is required.
+
+For each point:
+
+```text
+15-minute directions
+→ circular hourly mean
+```
+
+Then:
+
+```text
+hourly point directions
+→ circular provincial mean
+```
+
+The resulting metrics are:
+
+```text
+wind_direction_80m
+wind_direction_120m
+```
+
+expressed in degrees.
+
+---
+
+# 11. Meteorological Source Fallback
+
+AEMET is the preferred source for:
+
+```text
+temperature
+humidity
+precipitation
+```
+
+when a valid AEMET value exists for the corresponding:
+
+```text
+Province × hour × metric
+```
+
+The fallback rule is metric-specific.
+
+```text
+AEMET valid value
+→ use AEMET
+```
+
+```text
+AEMET value unavailable
+→ use Open-Meteo
+```
+
+This rule is applied independently for each metric.
+
+Therefore a single row can legitimately contain, for example:
+
+```text
+temperature      from AEMET
+humidity         from Open-Meteo
+precipitation    from AEMET
+```
+
+Source provenance is retained in:
+
+```text
+temperature_source
+humidity_source
+precipitation_source
+```
+
+Fallback is not equivalent to arbitrary data imputation.
+
+---
+
+# 12. Hourly ESIOS Generation
+
+The hourly ESIOS source is:
+
+```text
+silver_esios_energy_hourly
+```
+
+The final indicator mapping is:
+
+| Indicator ID | Gold metric |
+|---:|---|
+| 1159 | `wind_generation_mwh` |
+| 1161 | `solar_photovoltaic_generation_mwh` |
+| 1162 | `solar_thermal_generation_mwh` |
+| 10035 | `hydraulic_generation_mwh` |
+| 1153 | `nuclear_generation_mwh` |
+| 1156 | `combined_cycle_generation_mwh` |
+| 1158 | `gas_natural_steam_turbine_generation_mwh` |
+| 1164 | `gas_natural_cogeneration_mwh` |
+| 10036 | `coal_generation_mwh` |
+| 10041 | `other_renewables_generation_mwh` |
+| 10043 | `total_generation_mwh` |
+
+The final active hourly scope therefore contains:
+
+```text
+11 ESIOS indicators
+```
+
+---
+
+# 13. Hourly Energy Semantics
+
+The configured hourly ESIOS generation observations represent hourly energy
+metrics.
+
+For the hourly analytical fact:
+
+```text
+Gold metric_mwh
+=
+corresponding normalized ESIOS hourly value
+```
+
+The hourly observation is not constructed using:
+
+```text
+AVG(value)
+```
+
+or:
+
+```text
+SUM(value)
+```
+
+across multiple source observations representing the same analytical key.
+
+For analytical periods longer than one hour, hourly MWh values may subsequently
+be summed by the query or visualization layer where appropriate.
+
+---
+
+## 13.1 Official Total Generation
+
+Indicator:
+
+```text
+10043
+```
+
+is retained as:
+
+```text
+total_generation_mwh
+```
+
+It represents the official ESIOS total used by the analytical model.
+
+It is not reconstructed by summing the selected individual technologies.
+
+---
+
+## 13.2 Sign Preservation
+
+Source ESIOS values preserve their published sign.
+
+Gold must not apply:
+
+```text
+ABS(value)
+```
+
+or unapproved sign inversions.
+
+A valid published:
+
+```text
+0
+```
+
+also remains:
+
+```text
+0
+```
+
+and must not be interpreted as missing data.
+
+---
+
+# 14. ESIOS Temporal Alignment
+
+Hourly ESIOS observations use the configurable Gold temporal alignment:
+
+```text
+gold_timestamp
+=
+observation_timestamp
++
+configured gap
+```
+
+The current configuration is stored in:
+
+```text
+config/gold_config.json
+```
+
+using:
+
+```json
+{
+  "esios_time_gap_hours": 1
+}
+```
+
+The offset is therefore externalized rather than hardcoded in the
+transformation.
+
+The alignment is applied in Gold before meteorology-energy integration.
+
+The monthly installed-capacity flow does not automatically use this hourly
+alignment rule.
+
+---
+
+# 15. Province × Hour Integration
+
+After independent preparation, Gold contains two intermediate blocks:
+
+```text
+Meteorological block
+Province × hour
+```
+
+and:
+
+```text
+Energy block
+Province × hour
+```
+
+Before joining them, uniqueness is validated independently on both sides.
+
+The approved integration is:
+
+```text
+Meteorological Province × hour
+          FULL OUTER JOIN
+Energy Province × hour
+```
+
+using:
+
+```text
+province_code
+gold_timestamp
+```
+
+This rule ensures that valid coverage from either source is retained.
+
+---
+
+## 15.1 FULL OUTER Semantics
+
+The final fact can therefore contain three valid row types:
+
+```text
+weather + energy
+weather only
+energy only
+```
+
+When one source is absent:
+
+```text
+missing source metrics
+→ NULL
+```
+
+The surviving source metrics remain available.
+
+Gold does not require both meteorology and energy to exist before retaining a
+valid analytical key.
+
+---
+
+# 16. NULL and Zero Semantics
+
+The fundamental Gold rule is:
+
+```text
+published value = 0
+→ 0
+```
+
+```text
+missing source observation
+→ NULL
+```
+
+Therefore:
+
+```text
+NULL ≠ 0
+```
+
+Gold must not use a general:
+
+```text
+COALESCE(metric, 0)
+```
+
+to manufacture observations.
+
+Gold also does not automatically:
+
+- interpolate gaps;
+- fabricate timestamps;
+- manufacture source records;
+- replace absence with averages;
+- replace absence with zero.
+
+The AEMET/Open-Meteo fallback is a specific approved source-integration rule and
+does not alter this principle.
+
+---
+
+# 17. `gold_fact_installed_capacity_monthly`
+
+## 17.1 Purpose
+
+This fact contains installed electricity-generation capacity by technology.
+
+Its grain is:
+
+```text
+Autonomous Community × month
+```
+
+Installed-capacity information is not artificially disaggregated to provinces.
+
+---
+
+## 17.2 Silver Source
+
+The principal Silver source is:
+
+```text
+silver_esios_installed_capacity_monthly
+```
+
+with CNIG used for canonical Autonomous Community normalization.
+
+---
+
+## 17.3 Physical Schema
+
+The current physical table contains:
+
+| Column | Type |
+|---|---|
+| `year_month` | STRING |
+| `time_key` | STRING |
+| `gold_month_timestamp` | TIMESTAMP WITH TIME ZONE |
+| `source_timestamp` | TIMESTAMP WITH TIME ZONE |
+| `geography_key` | STRING |
+| `autonomous_community_code` | STRING |
+| `autonomous_community_name` | STRING |
+| `esios_geo_id` | BIGINT |
+| `hydraulic_installed_capacity_mw` | DOUBLE |
+| `wind_installed_capacity_mw` | DOUBLE |
+| `solar_photovoltaic_installed_capacity_mw` | DOUBLE |
+| `solar_thermal_installed_capacity_mw` | DOUBLE |
+| `renewable_total_installed_capacity_mw` | DOUBLE |
+| `nuclear_installed_capacity_mw` | DOUBLE |
+| `coal_installed_capacity_mw` | DOUBLE |
+| `combined_cycle_installed_capacity_mw` | DOUBLE |
+| `other_renewables_installed_capacity_mw` | DOUBLE |
+| `gold_created_at` | TIMESTAMP WITH TIME ZONE |
+
+---
+
+## 17.4 Natural Key
+
+The natural key is:
+
+```text
+autonomous_community_code
++
+year_month
+```
+
+Exactly one row may exist for each:
+
+```text
+Autonomous Community × month
+```
+
+---
+
+# 18. Installed-Capacity Indicators
+
+The final ESIOS mapping is:
+
+| Indicator ID | Gold metric |
+|---:|---|
+| 1475 | `hydraulic_installed_capacity_mw` |
+| 1485 | `wind_installed_capacity_mw` |
+| 1486 | `solar_photovoltaic_installed_capacity_mw` |
+| 1487 | `solar_thermal_installed_capacity_mw` |
+| 10302 | `renewable_total_installed_capacity_mw` |
+| 1477 | `nuclear_installed_capacity_mw` |
+| 1478 | `coal_installed_capacity_mw` |
+| 1483 | `combined_cycle_installed_capacity_mw` |
+| 1488 | `other_renewables_installed_capacity_mw` |
+
+The final active monthly scope therefore contains:
+
+```text
+9 ESIOS indicators
+```
+
+---
+
+# 19. Installed-Capacity Semantics
+
+Installed capacity represents power.
+
+Its unit remains:
+
+```text
+MW
+```
+
+The transformation is conceptually:
+
+```text
+installed_capacity_mw
+=
+ESIOS value
+```
+
+Gold must not:
+
+- convert installed capacity to MWh;
+- sum MW values across months as if they represented energy;
+- distribute CCAA capacity artificially between provinces.
+
+---
+
+## 19.1 Official Renewable Total
+
+Indicator:
+
+```text
+10302
+```
+
+is retained as:
+
+```text
+renewable_total_installed_capacity_mw
+```
+
+This is the official ESIOS renewable installed-capacity total used by the
+platform.
+
+It is not reconstructed by summing the selected renewable technologies.
+
+---
+
+# 20. `gold_dim_geography`
+
+## 20.1 Purpose
+
+`gold_dim_geography` provides the common geographical dimension for the final
+facts.
+
+The current final physical dimension contains:
+
+```text
+Province members
++
+Autonomous Community members
+```
+
+The validated cardinality is:
+
+```text
+71 rows
+```
+
+corresponding to:
+
+```text
+52 province-level entities
++
+19 Autonomous Communities
+```
+
+No Country or Peninsula members are required by the final physical Gold facts.
+
+---
+
+## 20.2 Grain
+
+Each row represents one canonical geographical member.
+
+Valid levels in the final model are:
+
+```text
+PROVINCE
+AUTONOMOUS_COMMUNITY
+```
+
+---
+
+## 20.3 Key
+
+The dimension uses:
+
+```text
+geography_key
+```
+
+as its deterministic analytical key.
+
+Each fact row contains the corresponding:
+
+```text
+geography_key
+```
+
+appropriate to its grain.
+
+The key must be unique within the geographical dimension.
+
+---
+
+## 20.4 Hierarchy
+
+The canonical hierarchy is:
+
+```text
+Autonomous Community
+        │
+        ▼
+      Province
+```
+
+For Province members, both Province and parent Autonomous Community attributes
+can be retained.
+
+For Autonomous Community members, Province attributes remain non-applicable.
+
+Lower-level information is never manufactured.
+
+---
+
+# 21. `gold_dim_time`
+
+## 21.1 Purpose
+
+`gold_dim_time` provides the conformant temporal dimension used by the final
+Gold facts.
+
+The final physical model requires only:
+
+```text
+HOUR
+MONTH
+```
+
+temporal members.
+
+The validated current dimension contains:
+
+```text
+158 rows
+```
+
+for the currently persisted Gold state.
+
+---
+
+## 21.2 Time Key
+
+The analytical temporal key is:
+
+```text
+time_key
+```
+
+and is physically present in both final fact tables.
+
+The fact relationships are therefore:
+
+```text
+gold_fact_province_hourly.time_key
+→
+gold_dim_time.time_key
+```
+
+and:
+
+```text
+gold_fact_installed_capacity_monthly.time_key
+→
+gold_dim_time.time_key
+```
+
+The time key must be deterministic and unique.
+
+---
+
+## 21.3 Hour Members
+
+Hourly members correspond to the actual:
+
+```text
+gold_timestamp
+```
+
+values required by:
+
+```text
+gold_fact_province_hourly
+```
+
+Calendar attributes can be derived from the timestamp for analytical
+filtering and grouping.
+
+---
+
+## 21.4 Month Members
+
+Monthly members correspond to:
+
+```text
+year_month
+```
+
+values required by:
+
+```text
+gold_fact_installed_capacity_monthly
+```
+
+Monthly members must not imply artificial hourly observations.
+
+---
+
+# 22. Dimension-to-Fact Relationships
+
+The logical model is:
+
+```text
+                 gold_dim_time
+                    │     │
+                    │     │
+                    ▼     ▼
+gold_dim_geography ──► gold_fact_province_hourly
+
+
+                 gold_dim_time
+                    │
+                    ▼
+gold_dim_geography ──► gold_fact_installed_capacity_monthly
+```
+
+The cardinality is:
+
+```text
+dimension 1
+→
+N fact rows
+```
+
+There are no direct physical fact-to-fact relationships.
+
+---
+
+# 23. Logical Gold Model
+
+```mermaid
+flowchart TB
+
+    DT["gold_dim_time<br/>HOUR / MONTH"]
+    DG["gold_dim_geography<br/>PROVINCE / AUTONOMOUS_COMMUNITY"]
+
+    F1["gold_fact_province_hourly<br/>Province × hour<br/>Weather + generation"]
+
+    F2["gold_fact_installed_capacity_monthly<br/>Autonomous Community × month<br/>Installed capacity"]
+
+    DT --> F1
+    DT --> F2
+
+    DG --> F1
+    DG --> F2
+```
+
+---
+
+# 24. Peninsula Definition
+
+A validated Peninsular meteorological scope exists for geographical
+aggregation logic.
+
+The following province codes are excluded from the Peninsular scope:
+
+```text
+07
+35
+38
+51
+52
+```
+
+corresponding to:
+
+```text
+Illes Balears
+Las Palmas
+Santa Cruz de Tenerife
+Ceuta
+Melilla
+```
+
+However, the final physical Gold model does **not** materialize a dedicated
+Peninsula fact table.
+
+This definition remains available for analytical or quality logic requiring a
+Peninsular scope without confusing:
+
+```text
+Spain
+```
+
+with:
+
+```text
+Peninsula
+```
+
+---
+
+# 25. Integration Order
+
+The approved Silver-to-Gold processing order is:
+
+1. read validated Silver tables;
+2. normalize or resolve geography;
+3. apply ESIOS hourly temporal alignment where required;
+4. perform temporal aggregation to the target grain;
+5. perform geographical aggregation to the target grain;
+6. resolve AEMET/Open-Meteo metric-level fallback;
+7. produce meteorological and energy intermediate datasets;
+8. validate intermediate natural-key uniqueness;
+9. integrate compatible datasets;
+10. validate resulting fact keys;
+11. build Gold dimensions;
+12. persist Gold as Apache Iceberg tables;
+13. validate Gold through Trino.
+
+The order protects the analytical grain from accidental row multiplication.
+
+---
+
+# 26. Duplicate Protection
+
+Duplicates at an analytical grain are errors.
+
+Gold must not silently hide them with an uncontrolled:
+
+```text
+dropDuplicates()
+```
+
+after an invalid join.
+
+Required behaviour is:
+
+```text
+detect duplicate natural key
+→ fail validation
+```
+
+rather than:
+
+```text
+detect duplicate natural key
+→ arbitrarily discard rows
+```
+
+Uniqueness must be established before the principal integration joins.
+
+---
+
+# 27. Gold Data Quality
+
+Gold quality controls validate both physical structure and analytical
+correctness.
+
+The principal controls include:
+
+- non-null natural-key components;
+- natural-key uniqueness;
+- compatible timestamp grain;
+- valid geographical mapping;
+- compatible geographical grain;
+- metric-level NULL preservation;
+- preservation of ESIOS signs;
+- correct source fallback;
+- no artificial geographical expansion;
+- no accidental row multiplication;
+- dimension-key compatibility;
+- correct unit semantics.
+
+---
+
+# 28. Natural-Key Controls
+
+Required duplicate count:
+
+```text
+0
+```
+
+for:
+
+### Province-hour fact
+
+```text
+province_code
++
+gold_timestamp
+```
+
+### Installed-capacity fact
+
+```text
+autonomous_community_code
++
+year_month
+```
+
+### Geography dimension
+
+```text
+geography_key
+```
+
+### Time dimension
+
+```text
+time_key
+```
+
+---
+
+# 29. Structural NULL Controls
+
+Required key fields must not be NULL.
+
+For:
+
+```text
+gold_fact_province_hourly
+```
+
+the required analytical key includes:
+
+```text
+province_code
+gold_timestamp
+geography_key
+time_key
+```
+
+For:
+
+```text
+gold_fact_installed_capacity_monthly
+```
+
+the required analytical key includes:
+
+```text
+autonomous_community_code
+year_month
+geography_key
+time_key
+```
+
+Metric NULL values remain valid when they represent genuine source coverage
+limitations.
+
+---
+
+# 30. Coverage Controls
+
+Gold must preserve valid coverage from either source.
+
+For the hourly fact, the FULL OUTER integration means that:
+
+```text
+weather only
+```
+
+is valid,
+
+```text
+energy only
+```
+
+is valid,
+
+and:
+
+```text
+weather + energy
+```
+
+is valid.
+
+Real source differences must not be treated automatically as processing errors.
+
+The critical distinction is:
+
+```text
+source has no observation
+```
+
+versus:
+
+```text
+Gold transformation lost a valid source observation
+```
+
+---
+
+# 31. Unit Controls
+
+The final Gold model maintains explicit physical-unit semantics.
+
+## Hourly generation
+
+```text
+MWh
+```
+
+## Installed capacity
+
+```text
+MW
+```
+
+The units must not be interchanged.
+
+For exactly one hour, an average power value expressed in MW may be numerically
+equal to the corresponding energy in MWh, but the physical magnitudes remain
+different.
+
+---
+
+# 32. Gold Persistence
+
+Gold is persisted using Apache Iceberg in MinIO.
+
+The physical architecture is:
+
+```text
+Apache Spark
+     │
+     ▼
+Gold transformations
+     │
+     ▼
+Apache Iceberg
+     │
+     ▼
+    MinIO
+     ▲
+     │
+   Trino
+```
+
+Persistence must preserve the logical uniqueness of each Gold table.
+
+Reprocessing the same source state must not introduce duplicate analytical
+keys.
+
+---
+
+# 33. Idempotency
+
+Gold processing is required to be logically idempotent.
+
+Conceptually:
+
+```text
+same Silver input
++
+same Gold transformation rules
+=
+same logical Gold result
+```
+
+Repeated execution may produce new Apache Iceberg metadata or snapshots, but
+must not multiply analytical rows.
+
+Natural-key validation is therefore mandatory after persistence.
+
+---
+
+# 34. Real End-to-End Gold Validation
+
+The final Gold model was populated from real Silver data generated from the
+historical validation interval:
+
+```text
+2026-01-10 → 2026-01-15
+```
+
+The current Gold namespace contains exactly:
+
+```text
+gold_dim_geography
+gold_dim_time
+gold_fact_installed_capacity_monthly
+gold_fact_province_hourly
+```
+
+---
+
+# 35. Validated Gold Row Counts
+
+Trino returned:
+
+```text
+gold_dim_geography
+= 71
+
+gold_dim_time
+= 158
+
+gold_fact_province_hourly
+= 8147
+
+gold_fact_installed_capacity_monthly
+= 19
+```
+
+No obsolete national 5-minute or 15-minute fact is present in the final Gold
+namespace.
+
+---
+
+# 36. Province-Hour Functional Validation
+
+The current persisted fact contains:
+
+```text
+province_hourly_rows
+= 8147
+
+province_codes
+= 52
+
+rows_with_weather
+= 8100
+
+rows_with_energy
+= 6768
+
+rows_with_weather_and_energy
+= 6721
+
+duplicate_province_hour_keys
+= 0
+```
+
+The FULL OUTER integration can be reconciled directly.
+
+Weather-only rows:
+
+```text
+8100 - 6721
+= 1379
+```
+
+Energy-only rows:
+
+```text
+6768 - 6721
+= 47
+```
+
+Combined:
+
+```text
+1379
++
+47
++
+6721
+=
+8147
+```
+
+This matches the exact physical fact row count.
+
+Therefore the approved FULL OUTER integration behaviour is validated.
+
+---
+
+# 37. Installed-Capacity Functional Validation
+
+The current persisted installed-capacity fact contains:
+
+```text
+rows
+= 19
+
+distinct months
+= 1
+
+year_month
+= 2026-01
+
+rows_with_capacity_values
+= 19
+
+duplicate Autonomous Community × month keys
+= 0
+```
+
+The current validation therefore confirms exactly one row for each represented
+Autonomous Community in the validated month.
+
+---
+
+# 38. Real Integrated Gold Records
+
+Real rows queried from:
+
+```text
+gold_fact_province_hourly
+```
+
+contain meteorological and electricity-generation information together.
+
+Validated examples include provinces such as:
+
+```text
+Araba/Álava
+Albacete
+Alacant/Alicante
+Almería
+Ávila
+```
+
+with simultaneous values for metrics such as:
+
+```text
+temperature
+wind_speed_80m
+solar_radiation
+wind_generation_mwh
+solar_photovoltaic_generation_mwh
+total_generation_mwh
+```
+
+depending on actual source coverage.
+
+This confirms that the final fact contains real cross-source integration rather
+than only independently populated weather and energy columns.
+
+---
+
+# 39. Current Timestamp Coverage
+
+The principal historical E2E interval was:
+
+```text
+2026-01-10 → 2026-01-15
+```
+
+However, AEMET current observations retain their actual recent timestamps.
+
+Because the Province-hour fact uses FULL OUTER integration, valid current
+weather-only observations are also preserved.
+
+For the validated execution:
+
+```text
+province_hourly_min_timestamp
+=
+2026-01-10 00:00 UTC
+```
+
+and:
+
+```text
+province_hourly_max_timestamp
+=
+2026-08-29 18:00 UTC
+```
+
+The later timestamp therefore reflects the real AEMET current source semantics
+rather than an incorrectly generated historical record.
+
+---
+
+# 40. Trino Validation
+
+All four physical Gold tables were successfully discovered and queried through
+the shared Apache Iceberg catalog.
+
+The analytical path:
+
+```text
+Silver Iceberg
+      │
+      ▼
+Gold Spark transformation
+      │
+      ▼
+Gold Iceberg / MinIO
+      │
+      ▼
+Trino
+```
+
+is therefore validated.
+
+---
+
+# 41. Automated Gold Tests
+
+The Gold implementation contains automated tests covering areas such as:
+
+- common Gold utilities;
+- geography preparation;
+- temporal preparation;
+- meteorological aggregation;
+- wind circular aggregation;
+- ESIOS transformations;
+- weather fallback;
+- fact integration;
+- natural-key uniqueness;
+- Gold table construction;
+- persisted Gold behaviour.
+
+The latest validated Gold automated test result is:
+
+```text
+72 passed
+```
+
+No failing tests remained in that validated Gold execution.
+
+---
+
+# 42. Final End-to-End Result
+
+The complete technical data path has been validated with real data:
+
+```text
+AEMET ─────────────┐
+Open-Meteo ────────┤
+REE / ESIOS ───────┼──► Bronze / MinIO
+CNIG / IGN ────────┘
+                          │
+                          ▼
+                   Spark / Silver
+                          │
+                          ▼
+                    Iceberg Silver
+                          │
+                          ▼
+                    Spark / Gold
+                          │
+                          ▼
+                     Iceberg Gold
+                          │
+                          ▼
+                        Trino
+```
+
+Therefore:
+
+```text
+Real APIs
+→ Bronze
+→ Silver
+→ Gold
+→ Trino
+```
+
+is technically validated.
+
+---
+
+# 43. Final Design Status
+
+The final Gold design is:
+
+```text
+Physical Gold tables
+= 4
+
+Fact tables
+= 2
+
+Dimensions
+= 2
+
+Main analytical grain
+= Province × hour
+
+Installed-capacity grain
+= Autonomous Community × month
+
+Hourly generation indicators
+= 11
+
+Monthly installed-capacity indicators
+= 9
+
+Weather / energy integration
+= FULL OUTER JOIN
+
+AEMET / Open-Meteo metric fallback
+= IMPLEMENTED
+
+ESIOS hourly temporal gap
+= CONFIGURABLE
+
+Gold automated tests
+= 72 PASSED
+
+Gold Iceberg persistence
+= VALIDATED
+
+Gold Trino access
+= VALIDATED
+
+Gold analytical integration
+= VALIDATED
+
+Bronze → Silver → Gold → Trino
+= VALIDATED
+```
+
+The Gold layer is therefore implemented and validated for the final
+Energy Lakehouse Platform scope.
+
+New physical fact tables, geographical grains, temporal grains, ESIOS
+indicators or analytical transformations must not be presented as part of the
+current final model unless they are explicitly implemented and validated.

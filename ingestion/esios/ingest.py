@@ -8,10 +8,7 @@ from pathlib import Path
 from ingestion.common.config import ESIOS_HISTORICAL_CHUNK_DAYS
 from ingestion.common.date_utils import split_date_range
 from ingestion.common.logger import get_logger
-from ingestion.common.storage import (
-    LocalBronzeStorage,
-    MinIOBronzeStorage,
-)
+from ingestion.common.storage import MinIOBronzeStorage
 from ingestion.esios.client import EsiosClient
 
 
@@ -28,7 +25,7 @@ class EsiosIngestion:
     def __init__(
         self,
         client: EsiosClient | None = None,
-        storage: LocalBronzeStorage | MinIOBronzeStorage | None = None,
+        storage: MinIOBronzeStorage | None = None,
     ) -> None:
         self.client = client or EsiosClient()
         self.storage = storage or MinIOBronzeStorage()
@@ -129,7 +126,7 @@ class EsiosIngestion:
 
         Date values can be used for daily windows.
         Datetime values can be used for high-frequency windows
-        such as 5-minute or hourly ingestion.
+        such as hourly or monthly ingestion.
         """
 
         logger.info(

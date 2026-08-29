@@ -5,6 +5,13 @@ from silver.cnig import build_cnig_silver
 from silver.esios import build_esios_silver
 from silver.open_meteo import build_open_meteo_silver
 
+from silver.geography import (
+    enrich_with_cnig_autonomous_community,
+    enrich_with_cnig_province,
+    validate_all_autonomous_communities_matched,
+    validate_all_provinces_matched,
+)
+
 
 TABLES = [
     (
@@ -12,19 +19,11 @@ TABLES = [
         921,
     ),
     (
-        "silver_aemet_daily_climatology",
-        2420,
-    ),
-    (
         "silver_aemet_current_observations",
         9688,
     ),
     (
         "silver_open_meteo_hourly",
-        88416,
-    ),
-    (
-        "silver_open_meteo_historical_forecast",
         88416,
     ),
     (
@@ -45,11 +44,7 @@ TABLES = [
     ),
     (
         "silver_esios_energy_hourly",
-        30107,
-    ),
-    (
-        "silver_esios_power_5min",
-        13824,
+        25689,
     ),
     (
         "silver_esios_installed_capacity_monthly",
@@ -58,10 +53,13 @@ TABLES = [
 ]
 
 
+
 def main():
     spark = (
         SparkSession.builder
-        .appName("silver-end-to-end-validation")
+        .appName(
+            "silver-end-to-end-validation"
+        )
         .getOrCreate()
     )
 
@@ -69,51 +67,117 @@ def main():
     print("SILVER END-TO-END VALIDATION")
     print("=" * 80)
 
-    # ----------------------------------------------------------------------
-    # 1. Bronze real -> PySpark Silver
-    # ----------------------------------------------------------------------
-
-    print("STEP 1 = Bronze real -> PySpark Silver")
+    print(
+        "STEP 1 = Bronze real -> PySpark Silver"
+    )
 
     (
         aemet_stations,
-        aemet_daily,
         aemet_current,
-    ) = build_aemet_silver(spark)
+    ) = build_aemet_silver(
+        spark
+    )
 
     (
         open_meteo_hourly,
-        open_meteo_historical,
         open_meteo_15min,
-    ) = build_open_meteo_silver(spark)
+    ) = build_open_meteo_silver(
+        spark
+    )
 
     (
         cnig_provinces,
         cnig_autonomous_communities,
         cnig_municipalities,
-    ) = build_cnig_silver(spark)
+    ) = build_cnig_silver(
+        spark
+    )
 
     (
         esios_energy_hourly,
-        esios_power_5min,
         esios_installed_capacity,
-    ) = build_esios_silver(spark)
+    ) = build_esios_silver(
+        spark
+    )
+
+
+    # ------------------------------------------------------------------
+    # Canonical geographical normalization
+    #
+    # Must reproduce write_silver.py before comparing the
+    # transformed Bronze source with persisted Iceberg.
+    # ------------------------------------------------------------------
+
+    aemet_stations = enrich_with_cnig_province(
+        aemet_stations,
+        cnig_provinces,
+        source_province_column="provincia",
+    )
+    open_meteo_hourly = enrich_with_cnig_province(
+        open_meteo_hourly,
+        cnig_provinces,
+        source_province_column="province",
+    )
+
+    open_meteo_15min = enrich_with_cnig_province(
+        open_meteo_15min,
+        cnig_provinces,
+        source_province_column="province",
+    )
+
+    esios_energy_hourly = enrich_with_cnig_province(
+        esios_energy_hourly,
+        cnig_provinces,
+        source_province_column="esios_geo_name",
+    )
+
+    esios_installed_capacity = (
+        enrich_with_cnig_autonomous_community(
+            esios_installed_capacity,
+            cnig_autonomous_communities,
+            source_autonomous_community_column=(
+                "esios_geo_name"
+            ),
+        )
+    )
+
+    # Same geographical validations used by production.
+
+    validate_all_provinces_matched(
+        aemet_stations,
+        dataset_name="silver_aemet_stations",
+    )
+    validate_all_provinces_matched(
+        open_meteo_hourly,
+        dataset_name="silver_open_meteo_hourly",
+    )
+
+    validate_all_provinces_matched(
+        open_meteo_15min,
+        dataset_name="silver_open_meteo_15min",
+    )
+
+    validate_all_provinces_matched(
+        esios_energy_hourly,
+        dataset_name="silver_esios_energy_hourly",
+    )
+
+    validate_all_autonomous_communities_matched(
+        esios_installed_capacity,
+        dataset_name=(
+            "silver_esios_installed_capacity_monthly"
+        ),
+    )
 
     source_dataframes = {
         "silver_aemet_stations":
             aemet_stations,
-
-        "silver_aemet_daily_climatology":
-            aemet_daily,
 
         "silver_aemet_current_observations":
             aemet_current,
 
         "silver_open_meteo_hourly":
             open_meteo_hourly,
-
-        "silver_open_meteo_historical_forecast":
-            open_meteo_historical,
 
         "silver_open_meteo_15min":
             open_meteo_15min,
@@ -130,19 +194,15 @@ def main():
         "silver_esios_energy_hourly":
             esios_energy_hourly,
 
-        "silver_esios_power_5min":
-            esios_power_5min,
-
         "silver_esios_installed_capacity_monthly":
             esios_installed_capacity,
     }
 
-    # ----------------------------------------------------------------------
-    # 2. Compare transformed Bronze with persisted Iceberg
-    # ----------------------------------------------------------------------
-
     print("=" * 80)
-    print("STEP 2 = PySpark Silver -> Iceberg persisted tables")
+    print(
+        "STEP 2 = PySpark Silver -> "
+        "Iceberg persisted tables"
+    )
     print("=" * 80)
 
     for table_name, expected_rows in TABLES:
@@ -180,44 +240,84 @@ def main():
             persisted_rows == expected_rows
         )
 
-        schema_match = (
+        source_schema = {
+            field.name: field.dataType.simpleString()
+            for field in source_df.schema.fields
+        }
+
+        persisted_schema = {
+            field.name: field.dataType.simpleString()
+            for field in persisted_df.schema.fields
+        }
+
+        column_order_match = (
             source_columns
             == persisted_columns
+        )
+
+        column_set_match = (
+            set(source_columns)
+            == set(persisted_columns)
+        )
+
+        schema_match = (
+            source_schema
+            == persisted_schema
+        )
+
+        source_only_columns = sorted(
+            set(source_columns)
+            - set(persisted_columns)
+        )
+
+        target_only_columns = sorted(
+            set(persisted_columns)
+            - set(source_columns)
         )
 
         print("-" * 80)
         print(
             f"TABLE = {table_name}"
         )
-
         print(
             "BRONZE_TO_SILVER_ROWS =",
             source_rows,
         )
-
         print(
             "ICEBERG_ROWS =",
             persisted_rows,
         )
-
         print(
             "EXPECTED_ROWS =",
             expected_rows,
         )
-
         print(
             "SOURCE_TARGET_COUNT_MATCH =",
             count_match,
         )
-
         print(
             "EXPECTED_COUNT_MATCH =",
             expected_match,
         )
-
         print(
             "COLUMN_ORDER_MATCH =",
+            column_order_match,
+        )
+        print(
+            "COLUMN_SET_MATCH =",
+            column_set_match,
+        )
+        print(
+            "SCHEMA_NAME_TYPE_MATCH =",
             schema_match,
+        )
+        print(
+            "SOURCE_ONLY_COLUMNS =",
+            source_only_columns,
+        )
+        print(
+            "TARGET_ONLY_COLUMNS =",
+            target_only_columns,
         )
 
         if not count_match:
@@ -232,18 +332,23 @@ def main():
                 f"{table_name}"
             )
 
-        if not schema_match:
+        if not column_set_match:
             raise RuntimeError(
-                f"Source/target column mismatch: "
+                f"Source/target column-set mismatch: "
                 f"{table_name}"
             )
 
-    # ----------------------------------------------------------------------
-    # 3. Real SQL query against persisted Iceberg
-    # ----------------------------------------------------------------------
+        if not schema_match:
+            raise RuntimeError(
+                f"Source/target schema type mismatch: "
+                f"{table_name}"
+            )
 
     print("=" * 80)
-    print("STEP 3 = Real SQL queries against Iceberg Silver")
+    print(
+        "STEP 3 = Real SQL queries "
+        "against Iceberg Silver"
+    )
     print("=" * 80)
 
     for table_name, expected_rows in TABLES:
@@ -272,10 +377,13 @@ def main():
             )
 
     print("=" * 80)
-    print("SILVER END-TO-END VALIDATION COMPLETE")
+    print(
+        "SILVER END-TO-END VALIDATION COMPLETE"
+    )
     print("=" * 80)
 
     spark.stop()
+
 
 
 if __name__ == "__main__":

@@ -8,10 +8,7 @@ from zipfile import ZipFile
 
 from ingestion.cnig.client import CnigClient
 from ingestion.common.logger import get_logger
-from ingestion.common.storage import (
-    LocalBronzeStorage,
-    MinIOBronzeStorage,
-)
+from ingestion.common.storage import MinIOBronzeStorage
 
 
 logger = get_logger(__name__)
@@ -33,7 +30,7 @@ class CnigIngestion:
     def __init__(
         self,
         client: CnigClient | None = None,
-        storage: LocalBronzeStorage | MinIOBronzeStorage | None = None,
+        storage: MinIOBronzeStorage | None = None,
     ) -> None:
         self.client = client or CnigClient()
         self.storage = storage or MinIOBronzeStorage()
@@ -76,7 +73,6 @@ class CnigIngestion:
                     raw_bytes,
                     source=self.SOURCE,
                     dataset=dataset,
-                    ingestion_mode="snapshot",
                     extension="csv",
                     content_type="text/csv",
                 )

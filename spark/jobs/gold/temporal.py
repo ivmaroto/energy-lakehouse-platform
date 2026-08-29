@@ -72,38 +72,6 @@ def add_hour_timestamp(
     )
 
 
-def add_15min_timestamp(
-    df: DataFrame,
-    *,
-    timestamp_column: str = "gold_timestamp",
-    target_column: str = "gold_timestamp_15min",
-) -> DataFrame:
-    """
-    Assign an existing timestamp to its natural 15-minute bucket.
-
-    This is used only when aggregating real 5-minute ESIOS observations
-    into a 15-minute Gold interval.
-    """
-    if timestamp_column not in df.columns:
-        raise ValueError(
-            f"Missing timestamp column: {timestamp_column}"
-        )
-
-    seconds = F.unix_timestamp(
-        F.col(timestamp_column)
-    )
-
-    bucket_seconds = (
-        F.floor(seconds / F.lit(900))
-        * F.lit(900)
-    )
-
-    return df.withColumn(
-        target_column,
-        F.to_timestamp(
-            F.from_unixtime(bucket_seconds)
-        ),
-    )
 
 
 # ============================================================================
@@ -234,128 +202,8 @@ def aggregate_open_meteo_wind_to_hourly_point(
 
 
 # ============================================================================
-# ESIOS 5-minute power -> interval energy
 # ============================================================================
 
-def add_esios_5min_energy(
-    df: DataFrame,
-    metric_mapping: Mapping[int, str],
-) -> DataFrame:
-    """
-    Convert each real ESIOS 5-minute power observation into interval energy.
-
-    For every observation:
-
-        energy_mwh_5min = power_mw * (5 / 60)
-
-    The original sign is preserved.
-    """
-    required_columns = {
-        "indicator_id",
-        "value",
-        "gold_timestamp",
-    }
-
-    missing = sorted(
-        required_columns.difference(df.columns)
-    )
-
-    if missing:
-        raise ValueError(
-            "Missing required ESIOS columns: "
-            f"{missing}"
-        )
-
-    indicator_ids = list(
-        metric_mapping.keys()
-    )
-
-    filtered = df.filter(
-        F.col("indicator_id").isin(
-            indicator_ids
-        )
-    )
-
-    return (
-        filtered
-        .withColumn(
-            "power_mw",
-            F.col("value"),
-        )
-        .withColumn(
-            "energy_mwh_5min",
-            F.col("power_mw")
-            * F.lit(5.0 / 60.0),
-        )
-    )
-
-
-# ============================================================================
-# ESIOS 5 min -> 15 min energy
-# ============================================================================
-
-def aggregate_esios_energy_5min_to_15min(
-    df: DataFrame,
-) -> DataFrame:
-    """
-    Aggregate real 5-minute ESIOS interval energy to 15 minutes.
-
-    Approved rule:
-
-        energy_mwh_15min =
-            SUM(three energy_mwh_5min intervals)
-
-    Power MW is never summed.
-    """
-    required_columns = {
-        "indicator_id",
-        "esios_geo_id",
-        "esios_geo_name",
-        "gold_timestamp",
-        "energy_mwh_5min",
-    }
-
-    missing = sorted(
-        required_columns.difference(df.columns)
-    )
-
-    if missing:
-        raise ValueError(
-            "Missing required ESIOS columns: "
-            f"{missing}"
-        )
-
-    bucketed = add_15min_timestamp(
-        df,
-        timestamp_column="gold_timestamp",
-        target_column="gold_timestamp_15min",
-    )
-
-    return (
-        bucketed
-        .groupBy(
-            "indicator_id",
-            "esios_geo_id",
-            "esios_geo_name",
-            "gold_timestamp_15min",
-        )
-        .agg(
-            F.sum(
-                "energy_mwh_5min"
-            ).alias(
-                "energy_mwh_15min"
-            ),
-            F.count(
-                F.lit(1)
-            ).alias(
-                "source_interval_count"
-            ),
-        )
-        .withColumnRenamed(
-            "gold_timestamp_15min",
-            "gold_timestamp",
-        )
-    )
 
 # ============================================================================
 # Deterministic Gold time keys
@@ -372,24 +220,20 @@ def add_deterministic_time_key(
     """
     Add the deterministic Gold time identifier.
 
-    Approved grains:
+    Approved Gold grains:
 
-        FIVE_MINUTES
-        FIFTEEN_MINUTES
         HOUR
         MONTH
 
-    Submonthly keys are generated from:
+    Hourly keys are generated from:
 
-        time_grain + canonical timestamp
+        HOUR + canonical timestamp
 
     Monthly keys are generated from:
 
         MONTH + year_month
     """
     valid_grains = {
-        "FIVE_MINUTES",
-        "FIFTEEN_MINUTES",
         "HOUR",
         "MONTH",
     }
@@ -416,13 +260,11 @@ def add_deterministic_time_key(
         if timestamp_column not in df.columns:
             raise ValueError(
                 "Missing timestamp column required "
-                f"for {time_grain} time_key."
+                "for HOUR time_key."
             )
 
         temporal_value = F.date_format(
-            F.col(
-                timestamp_column
-            ),
+            F.col(timestamp_column),
             "yyyy-MM-dd'T'HH:mm:ss",
         )
 
@@ -431,9 +273,7 @@ def add_deterministic_time_key(
         F.sha2(
             F.concat_ws(
                 "||",
-                F.lit(
-                    time_grain
-                ),
+                F.lit(time_grain),
                 temporal_value,
             ),
             256,

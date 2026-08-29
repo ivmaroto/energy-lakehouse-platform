@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from functools import reduce
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
@@ -15,7 +14,6 @@ from silver.common import (
 SOURCE = "aemet"
 
 STATIONS_DATASET = "stations"
-DAILY_DATASET = "daily_climatological_values"
 CURRENT_OBSERVATIONS_DATASET = "current_observations"
 
 
@@ -33,35 +31,6 @@ STATION_COLUMNS = [
     "indsinop",
 ]
 
-DAILY_COLUMNS = [
-    "altitud",
-    "dir",
-    "fecha",
-    "horaHrMax",
-    "horaHrMin",
-    "horaPIntMax",
-    "horaPresMax",
-    "horaPresMin",
-    "horaracha",
-    "horatmax",
-    "horatmin",
-    "hrMax",
-    "hrMedia",
-    "hrMin",
-    "indicativo",
-    "nombre",
-    "pintMax",
-    "prec",
-    "presMax",
-    "presMin",
-    "provincia",
-    "racha",
-    "sol",
-    "tmax",
-    "tmed",
-    "tmin",
-    "velmedia",
-]
 
 CURRENT_OBSERVATION_COLUMNS = [
     "alt",
@@ -107,23 +76,6 @@ CURRENT_OBSERVATION_COLUMNS = [
 
 
 # Daily fields validated as numeric measurements represented as strings.
-DAILY_NUMERIC_COLUMNS = [
-    "altitud",
-    "dir",
-    "hrMax",
-    "hrMedia",
-    "hrMin",
-    "pintMax",
-    "prec",
-    "presMax",
-    "presMin",
-    "racha",
-    "sol",
-    "tmax",
-    "tmed",
-    "tmin",
-    "velmedia",
-]
 
 
 # ---------------------------------------------------------------------------
@@ -241,9 +193,9 @@ def _aemet_coordinate_to_decimal(
     """
     Convert an AEMET DMS coordinate to decimal degrees.
 
-    Expected source structure:
+    Expected source structure observed in AEMET:
         latitude  -> DDMMSSH
-        longitude -> DDDMMSSH
+        longitude -> DDMMSSH
 
     where H is one of:
         N, S, E, W
@@ -322,13 +274,6 @@ def read_stations_bronze(
     )
 
 
-def read_daily_climatology_bronze(
-    spark: SparkSession,
-) -> DataFrame:
-    return _read_all_json_objects(
-        spark,
-        DAILY_DATASET,
-    )
 
 
 def read_current_observations_bronze(
@@ -386,7 +331,7 @@ def transform_stations(
         ),
         _aemet_coordinate_to_decimal(
             "longitud",
-            degree_digits=3,
+            degree_digits=2,
         ).alias(
             "longitude"
         ),
@@ -405,80 +350,6 @@ def transform_stations(
 # Daily climatology
 # ---------------------------------------------------------------------------
 
-def transform_daily_climatology(
-    bronze_df: DataFrame,
-) -> DataFrame:
-    """
-    Transform AEMET daily climatological data to Silver.
-
-    Approved structural normalization:
-        indicativo -> station_id
-        fecha      -> observation_date
-
-    Meteorological AEMET field names are otherwise preserved.
-
-    Natural key:
-        station_id + observation_date
-    """
-    _require_columns(
-        bronze_df,
-        DAILY_COLUMNS,
-    )
-
-    traced = _with_traceability(
-        bronze_df,
-    )
-
-    expressions = [
-        F.col("indicativo").alias(
-            "station_id"
-        ),
-        F.to_date(
-            F.col("fecha"),
-            "yyyy-MM-dd",
-        ).alias(
-            "observation_date"
-        ),
-    ]
-
-    for column_name in DAILY_COLUMNS:
-        if column_name in {
-            "indicativo",
-            "fecha",
-        }:
-            continue
-
-        if column_name in DAILY_NUMERIC_COLUMNS:
-            expressions.append(
-                decimal_comma_to_double(
-                    column_name
-                ).alias(
-                    column_name
-                )
-            )
-        else:
-            expressions.append(
-                F.col(column_name)
-            )
-
-    expressions.extend(
-        [
-            F.col("source"),
-            F.col("ingestion_timestamp"),
-        ]
-    )
-
-    silver = traced.select(
-        *expressions
-    )
-
-    return deduplicate(
-        silver,
-        [
-            "station_id",
-            "observation_date",
-        ],
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -574,24 +445,17 @@ def build_aemet_silver(
 ) -> tuple[
     DataFrame,
     DataFrame,
-    DataFrame,
 ]:
     """
-    Build the three approved AEMET Silver DataFrames.
+    Build the two active AEMET Silver DataFrames.
 
-    This function performs Bronze -> Silver transformation only.
-    Iceberg persistence belongs to the subsequent implementation step.
+    Active AEMET scope:
+        stations
+        current observations
     """
-    stations_bronze = (
-        read_stations_bronze(
-            spark
-        )
-    )
 
-    daily_bronze = (
-        read_daily_climatology_bronze(
-            spark
-        )
+    stations_bronze = read_stations_bronze(
+        spark
     )
 
     current_bronze = (
@@ -600,16 +464,8 @@ def build_aemet_silver(
         )
     )
 
-    stations_silver = (
-        transform_stations(
-            stations_bronze
-        )
-    )
-
-    daily_silver = (
-        transform_daily_climatology(
-            daily_bronze
-        )
+    stations_silver = transform_stations(
+        stations_bronze
     )
 
     current_silver = (
@@ -620,6 +476,5 @@ def build_aemet_silver(
 
     return (
         stations_silver,
-        daily_silver,
         current_silver,
     )

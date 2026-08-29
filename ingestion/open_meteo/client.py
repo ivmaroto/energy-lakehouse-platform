@@ -8,7 +8,6 @@ from typing import Any
 from ingestion.common.config import (
     OPEN_METEO_ARCHIVE_URL,
     OPEN_METEO_BASE_URL,
-    OPEN_METEO_HISTORICAL_FORECAST_URL,
 )
 from ingestion.common.exceptions import InvalidDateRangeError
 from ingestion.common.http_client import HTTPClient
@@ -116,50 +115,6 @@ class OpenMeteoClient:
             params=params,
         )
 
-    def get_historical_forecast(
-        self,
-        *,
-        latitude: float,
-        longitude: float,
-        start_date: date,
-        end_date: date,
-        hourly_variables: list[str],
-        timezone: str = "UTC",
-    ) -> dict[str, Any] | list[Any]:
-        """
-        Retrieve historical forecast data.
-
-        This endpoint is used for variables that are not available
-        through the Historical Weather API, such as the validated
-        wind variables at 80 m and 120 m.
-        """
-
-        self._validate_coordinates(latitude, longitude)
-        self._validate_date_range(start_date, end_date)
-        self._validate_variables(
-            hourly_variables,
-            variable_type="historical forecast hourly",
-        )
-
-        params = {
-            "latitude": latitude,
-            "longitude": longitude,
-            "start_date": start_date.isoformat(),
-            "end_date": end_date.isoformat(),
-            "hourly": ",".join(hourly_variables),
-            "timezone": timezone,
-        }
-
-        logger.info(
-            "Requesting Open-Meteo historical forecast data: %s -> %s",
-            start_date,
-            end_date,
-        )
-
-        return self.http_client.get_json(
-            OPEN_METEO_HISTORICAL_FORECAST_URL,
-            params=params,
-        )
 
     def get_minutely_15_weather(
             self,
@@ -222,44 +177,6 @@ class OpenMeteoClient:
             "Requesting Open-Meteo 15-minutely data: %s -> %s",
             start_datetime,
             end_datetime,
-        )
-
-        return self.http_client.get_json(
-            OPEN_METEO_BASE_URL,
-            params=params,
-        )
-
-
-    def get_current_weather(
-        self,
-        *,
-        latitude: float,
-        longitude: float,
-        current_variables: list[str],
-        timezone: str = "UTC",
-    ) -> dict[str, Any] | list[Any]:
-        """
-        Retrieve current meteorological data.
-        """
-
-        self._validate_coordinates(latitude, longitude)
-        self._validate_variables(
-            current_variables,
-            variable_type="current",
-        )
-
-        params = {
-            "latitude": latitude,
-            "longitude": longitude,
-            "current": ",".join(current_variables),
-            "timezone": timezone,
-        }
-
-        logger.info(
-            "Requesting current Open-Meteo data for "
-            "latitude=%s longitude=%s",
-            latitude,
-            longitude,
         )
 
         return self.http_client.get_json(

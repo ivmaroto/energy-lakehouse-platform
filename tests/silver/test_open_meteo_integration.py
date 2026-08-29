@@ -218,7 +218,6 @@ def main() -> None:
 
     (
         hourly,
-        historical_forecast,
         weather_15min,
     ) = build_open_meteo_silver(
         spark
@@ -237,18 +236,20 @@ def main() -> None:
     )
 
     validate_dataset(
-        name="weather_historical_forecast",
-        df=historical_forecast,
-        expected_minutes=60,
-    )
-
-    validate_dataset(
         name="weather_15min",
         df=weather_15min,
         expected_minutes=15,
     )
 
+    print("=" * 80)
+    print(
+        "OPEN-METEO ACTIVE SILVER "
+        "FAMILIES VALIDATED"
+    )
+    print("=" * 80)
+
     spark.stop()
+
 
 
 if __name__ == "__main__":

@@ -4,13 +4,8 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
 from gold.metrics import (
-    HIGH_FREQUENCY_ENERGY_5MIN_METRICS,
-    HIGH_FREQUENCY_POWER_METRICS,
     HOURLY_ENERGY_METRICS,
     INSTALLED_CAPACITY_METRICS,
-    PENINSULA_HIGH_FREQUENCY_INDICATORS,
-    SPAIN_HIGH_FREQUENCY_INDICATORS,
-    prepare_country_5min_metrics,
     prepare_hourly_energy_metrics,
     prepare_installed_capacity_metrics,
     select_approved_indicators,
@@ -34,9 +29,6 @@ TABLE_ESIOS_INSTALLED_CAPACITY = (
     "silver_esios_installed_capacity_monthly"
 )
 
-TABLE_ESIOS_POWER_5MIN = (
-    "lakehouse.silver.silver_esios_power_5min"
-)
 
 
 # ============================================================================
@@ -515,298 +507,6 @@ def validate_installed_capacity_metrics(
 # Real Silver -> Gold 5-minute metric validation
 # ============================================================================
 
-def validate_power_5min_metrics(
-    spark: SparkSession,
-) -> None:
-    source = spark.table(
-        TABLE_ESIOS_POWER_5MIN
-    )
-
-    assert_required_columns(
-        source,
-        {
-            "indicator_id",
-            "observation_timestamp",
-            "esios_geo_id",
-            "esios_geo_name",
-            "value",
-        },
-        TABLE_ESIOS_POWER_5MIN,
-    )
-
-    source_ids = (
-        collect_distinct_indicator_ids(
-            source
-        )
-    )
-
-    approved_ids = set(
-        HIGH_FREQUENCY_POWER_METRICS
-    )
-
-    validate_all_approved_ids_present(
-        source_ids,
-        approved_ids,
-        TABLE_ESIOS_POWER_5MIN,
-    )
-
-    approved_source = (
-        select_approved_indicators(
-            source,
-            HIGH_FREQUENCY_POWER_METRICS,
-            dataset_name=(
-                "real Silver 5-minute ESIOS"
-            ),
-        )
-    )
-
-    # ------------------------------------------------------------------------
-    # Assign the geographical scope explicitly approved in Gold design.
-    #
-    # 1293:
-    #     Peninsula
-    #
-    # 2038..2065 selected indicators:
-    #     Spain
-    #
-    # Spain and Peninsula remain analytically distinct.
-    #
-    # The temporal +1-hour rule is intentionally not exercised here because
-    # it belongs to temporal.py and already has its own validation.
-    # ------------------------------------------------------------------------
-
-    prepared_source = (
-        approved_source
-        .withColumn(
-            "gold_timestamp",
-            F.col(
-                "observation_timestamp"
-            ),
-        )
-        .withColumn(
-            "geography_key",
-            F.when(
-                F.col(
-                    "indicator_id"
-                ).isin(
-                    list(
-                        PENINSULA_HIGH_FREQUENCY_INDICATORS
-                    )
-                ),
-                F.lit(
-                    PENINSULA_ES_GEOGRAPHY_KEY
-                ),
-            )
-            .when(
-                F.col(
-                    "indicator_id"
-                ).isin(
-                    list(
-                        SPAIN_HIGH_FREQUENCY_INDICATORS
-                    )
-                ),
-                F.lit(
-                    COUNTRY_ES_GEOGRAPHY_KEY
-                ),
-            ),
-        )
-        .withColumn(
-            "geography_level",
-            F.when(
-                F.col(
-                    "indicator_id"
-                ).isin(
-                    list(
-                        PENINSULA_HIGH_FREQUENCY_INDICATORS
-                    )
-                ),
-                F.lit(
-                    "peninsula"
-                ),
-            )
-            .otherwise(
-                F.lit(
-                    "COUNTRY"
-                ),
-            ),
-        )
-        .withColumn(
-            "geography_name",
-            F.when(
-                F.col(
-                    "indicator_id"
-                ).isin(
-                    list(
-                        PENINSULA_HIGH_FREQUENCY_INDICATORS
-                    )
-                ),
-                F.lit(
-                    "Península"
-                ),
-            )
-            .otherwise(
-                F.lit(
-                    "España"
-                ),
-            ),
-        )
-    )
-
-    invalid_scope_rows = (
-        prepared_source
-        .filter(
-            F.col(
-                "geography_key"
-            ).isNull()
-            |
-            F.col(
-                "geography_level"
-            ).isNull()
-            |
-            F.col(
-                "geography_name"
-            ).isNull()
-        )
-        .count()
-    )
-
-    if invalid_scope_rows != 0:
-        raise AssertionError(
-            f"{invalid_scope_rows} approved 5-minute "
-            "rows have no approved Gold geographical scope."
-        )
-
-    result = (
-        prepare_country_5min_metrics(
-            prepared_source
-        )
-    )
-
-    validate_result_columns(
-        result,
-        set(
-            HIGH_FREQUENCY_POWER_METRICS.values()
-        )
-        |
-        set(
-            HIGH_FREQUENCY_ENERGY_5MIN_METRICS.values()
-        ),
-        "Gold 5-minute metrics integration",
-    )
-
-    validate_unique_rows(
-        result,
-        [
-            "gold_timestamp",
-            "geography_key",
-            "geography_level",
-            "geography_name",
-            "esios_geo_id",
-        ],
-        "Gold 5-minute metrics integration",
-    )
-
-    # ------------------------------------------------------------------------
-    # Validate numerically on real persisted observations:
-    #
-    #     energy_mwh_5min = power_mw * 5 / 60
-    #
-    # Do it after the wide transformation for every approved metric pair.
-    # ------------------------------------------------------------------------
-
-    tolerance = 1e-9
-
-    invalid_energy_rows = None
-
-    for indicator_id, power_metric in (
-        HIGH_FREQUENCY_POWER_METRICS.items()
-    ):
-        energy_metric = (
-            HIGH_FREQUENCY_ENERGY_5MIN_METRICS[
-                indicator_id
-            ]
-        )
-
-        invalid_condition = (
-            F.col(
-                power_metric
-            ).isNotNull()
-            &
-            (
-                F.abs(
-                    F.col(
-                        energy_metric
-                    )
-                    -
-                    (
-                        F.col(
-                            power_metric
-                        )
-                        * F.lit(
-                            5.0 / 60.0
-                        )
-                    )
-                )
-                > F.lit(
-                    tolerance
-                )
-            )
-        )
-
-        if invalid_energy_rows is None:
-            invalid_energy_rows = (
-                invalid_condition
-            )
-        else:
-            invalid_energy_rows = (
-                invalid_energy_rows
-                |
-                invalid_condition
-            )
-
-    invalid_conversion_count = (
-        result
-        .filter(
-            invalid_energy_rows
-        )
-        .count()
-    )
-
-    if invalid_conversion_count != 0:
-        raise AssertionError(
-            "Real 5-minute Gold metrics contain "
-            f"{invalid_conversion_count} invalid MW -> "
-            "interval-MWh conversions."
-        )
-
-    source_rows = source.count()
-    approved_rows = approved_source.count()
-    result_rows = result.count()
-
-    if approved_rows == 0:
-        raise AssertionError(
-            "No approved 5-minute ESIOS observations "
-            "were found in real Silver."
-        )
-
-    if result_rows == 0:
-        raise AssertionError(
-            "5-minute Gold metric preparation "
-            "produced zero rows."
-        )
-
-    print_validation_block(
-        "ESIOS 5-MINUTE GOLD METRICS",
-        source_rows=source_rows,
-        approved_source_rows=approved_rows,
-        result_rows=result_rows,
-        source_indicator_count=len(
-            source_ids
-        ),
-        approved_indicator_count=len(
-            approved_ids
-        ),
-    )
 
 
 # ============================================================================
@@ -822,14 +522,10 @@ def main() -> None:
         .getOrCreate()
     )
 
-    spark.sparkContext.setLogLevel(
-        "WARN"
-    )
+    spark.sparkContext.setLogLevel("WARN")
 
     print("=" * 80)
-    print(
-        "VALIDATE GOLD METRICS AGAINST REAL SILVER"
-    )
+    print("VALIDATE GOLD METRICS AGAINST REAL SILVER")
     print("=" * 80)
 
     assert_table_exists(
@@ -842,11 +538,6 @@ def main() -> None:
         TABLE_ESIOS_INSTALLED_CAPACITY,
     )
 
-    assert_table_exists(
-        spark,
-        TABLE_ESIOS_POWER_5MIN,
-    )
-
     validate_hourly_energy_metrics(
         spark
     )
@@ -855,17 +546,15 @@ def main() -> None:
         spark
     )
 
-    validate_power_5min_metrics(
-        spark
-    )
-
     print("=" * 80)
     print(
-        "ALL GOLD METRICS INTEGRATION VALIDATED"
+        "ALL ACTIVE GOLD METRICS "
+        "INTEGRATION VALIDATED"
     )
     print("=" * 80)
 
     spark.stop()
+
 
 
 if __name__ == "__main__":

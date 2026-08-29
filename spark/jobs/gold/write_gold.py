@@ -6,8 +6,6 @@ from pyspark.sql import functions as F
 from gold.common import (
     TABLE_GOLD_DIM_GEOGRAPHY,
     TABLE_GOLD_DIM_TIME,
-    TABLE_GOLD_FACT_COUNTRY_15MIN,
-    TABLE_GOLD_FACT_COUNTRY_5MIN,
     TABLE_GOLD_FACT_INSTALLED_CAPACITY_MONTHLY,
     TABLE_GOLD_FACT_PROVINCE_HOURLY,
     TABLE_SILVER_AEMET_CURRENT,
@@ -16,30 +14,20 @@ from gold.common import (
     TABLE_SILVER_CNIG_PROVINCES,
     TABLE_SILVER_ESIOS_ENERGY_HOURLY,
     TABLE_SILVER_ESIOS_INSTALLED_CAPACITY_MONTHLY,
-    TABLE_SILVER_ESIOS_POWER_5MIN,
     TABLE_SILVER_OPEN_METEO_15MIN,
     TABLE_SILVER_OPEN_METEO_HOURLY,
     get_esios_time_gap_hours,
-    get_peninsula_excluded_province_codes,
     read_silver_table,
     validate_table_exists,
 )
 
 from gold.geography import (
-    COUNTRY_ES_GEOGRAPHY_KEY,
-    PENINSULA_ES_GEOGRAPHY_KEY,
     add_deterministic_geography_key,
 )
 
 from gold.metrics import (
-    HIGH_FREQUENCY_POWER_METRICS,
-    PENINSULA_HIGH_FREQUENCY_INDICATORS,
-    SPAIN_HIGH_FREQUENCY_INDICATORS,
-    prepare_country_15min_energy_metrics,
-    prepare_country_5min_metrics,
     prepare_hourly_energy_metrics,
     prepare_installed_capacity_metrics,
-    select_approved_indicators,
 )
 
 from gold.province_hourly_integration import (
@@ -48,19 +36,11 @@ from gold.province_hourly_integration import (
 
 from gold.temporal import (
     add_deterministic_time_key,
-    add_esios_5min_energy,
-    aggregate_esios_energy_5min_to_15min,
     apply_esios_time_gap,
 )
 
 from gold.weather import (
-    prepare_country_15min_weather,
-    prepare_peninsula_15min_weather,
     prepare_province_hourly_weather,
-)
-
-from gold.country_15min_integration import (
-    integrate_country_15min_weather_energy,
 )
 
 
@@ -70,20 +50,12 @@ from gold.country_15min_integration import (
 
 GOLD_NATURAL_KEYS = {
     TABLE_GOLD_FACT_PROVINCE_HOURLY: [
-        "province_code",
+        "geography_key",
         "gold_timestamp",
     ],
     TABLE_GOLD_FACT_INSTALLED_CAPACITY_MONTHLY: [
-        "autonomous_community_code",
+        "geography_key",
         "year_month",
-    ],
-    TABLE_GOLD_FACT_COUNTRY_15MIN: [
-        "geography_key",
-        "gold_timestamp",
-    ],
-    TABLE_GOLD_FACT_COUNTRY_5MIN: [
-        "geography_key",
-        "gold_timestamp",
     ],
     TABLE_GOLD_DIM_TIME: [
         "time_key",
@@ -155,7 +127,7 @@ def build_gold_fact_province_hourly(
 
     Natural grain:
 
-        province_code + gold_timestamp
+        geography_key + gold_timestamp
     """
 
     # ========================================================================
@@ -254,512 +226,10 @@ def build_gold_fact_province_hourly(
         )
     )
 
-    # ========================================================================
-    # Gold technical metadata
-    # ========================================================================
-
     result = (
-        add_gold_created_at(
-            result
-        )
-    )
-
-    return result
-
-
-# ============================================================================
-# Gold country 15-minute fact
-# ============================================================================
-
-def build_gold_fact_country_15min(
-    spark: SparkSession,
-) -> DataFrame:
-    """
-    Build the physical Gold Spain/Peninsula x 15-minute fact from
-    validated Silver data.
-
-    Weather:
-
-        Open-Meteo 15-minute
-            -> independent Spain aggregation
-            -> independent Peninsula aggregation
-
-    Energy:
-
-        ESIOS 5-minute power
-            -> configurable temporal alignment
-            -> MW * 5/60
-            -> MWh per real 5-minute interval
-            -> SUM of three real intervals
-            -> MWh per 15-minute interval
-            -> approved Spain/Peninsula scope
-            -> approved 15-minute energy metrics
-
-    Final integration:
-
-        weather FULL OUTER energy
-            -> gold_created_at
-
-    Natural grain:
-
-        geography_key + gold_timestamp
-    """
-
-    # ========================================================================
-    # Read real persisted Silver
-    # ========================================================================
-
-    open_meteo_15min = (
-        read_silver_table(
-            spark=spark,
-            table_name=TABLE_SILVER_OPEN_METEO_15MIN,
-        )
-    )
-
-    esios_power_5min = (
-        read_silver_table(
-            spark=spark,
-            table_name=TABLE_SILVER_ESIOS_POWER_5MIN,
-        )
-    )
-
-    # ========================================================================
-    # Gold configuration
-    # ========================================================================
-
-    esios_time_gap_hours = (
-        get_esios_time_gap_hours()
-    )
-
-    excluded_province_codes = (
-        get_peninsula_excluded_province_codes()
-    )
-
-    # ========================================================================
-    # Spain and Peninsula 15-minute meteorology
-    #
-    # Peninsula is calculated independently from eligible provinces.
-    # It must never be obtained by simply relabelling the Spain aggregate.
-    # ========================================================================
-
-    weather_spain = (
-        prepare_country_15min_weather(
-            open_meteo_15min,
-            geography_key=(
-                COUNTRY_ES_GEOGRAPHY_KEY
-            ),
-        )
-    )
-
-    weather_peninsula = (
-        prepare_peninsula_15min_weather(
-            open_meteo_15min,
-            geography_key=(
-                PENINSULA_ES_GEOGRAPHY_KEY
-            ),
-            excluded_province_codes=(
-                excluded_province_codes
-            ),
-        )
-    )
-
-    weather = (
-        weather_spain
-        .unionByName(
-            weather_peninsula
-        )
-    )
-
-    # ========================================================================
-    # ESIOS temporal alignment
-    # ========================================================================
-
-    aligned = (
-        apply_esios_time_gap(
-            esios_power_5min,
-            gap_hours=esios_time_gap_hours,
-        )
-    )
-
-    # ========================================================================
-    # 5-minute power -> real 5-minute interval energy
-    #
-    #     MWh = MW * 5 / 60
-    # ========================================================================
-
-    energy_5min = (
-        add_esios_5min_energy(
-            aligned,
-            HIGH_FREQUENCY_POWER_METRICS,
-        )
-    )
-
-    # ========================================================================
-    # Three real 5-minute intervals -> one 15-minute energy interval
-    # ========================================================================
-
-    energy_15min_long = (
-        aggregate_esios_energy_5min_to_15min(
-            energy_5min
-        )
-    )
-
-    incomplete_interval_count = (
-        energy_15min_long
-        .filter(
-            F.col(
-                "source_interval_count"
-            )
-            != F.lit(
-                3
-            )
-        )
-        .count()
-    )
-
-    if incomplete_interval_count != 0:
-        raise ValueError(
-            "Cannot build Gold country 15-minute fact: "
-            f"{incomplete_interval_count} intervals do not contain "
-            "exactly three real 5-minute source observations."
-        )
-
-    # ========================================================================
-    # Approved geographical scope
-    #
-    # Demand indicator:
-    #     Peninsula
-    #
-    # Approved generation/pumping indicators:
-    #     Spain
-    #
-    # Spain and Peninsula remain analytically distinct.
-    # ========================================================================
-
-    scoped_energy = (
-        energy_15min_long
-        .withColumn(
-            "geography_key",
-            F.when(
-                F.col(
-                    "indicator_id"
-                ).isin(
-                    list(
-                        PENINSULA_HIGH_FREQUENCY_INDICATORS
-                    )
-                ),
-                F.lit(
-                    PENINSULA_ES_GEOGRAPHY_KEY
-                ),
-            )
-            .when(
-                F.col(
-                    "indicator_id"
-                ).isin(
-                    list(
-                        SPAIN_HIGH_FREQUENCY_INDICATORS
-                    )
-                ),
-                F.lit(
-                    COUNTRY_ES_GEOGRAPHY_KEY
-                ),
-            ),
-        )
-        .withColumn(
-            "geography_level",
-            F.when(
-                F.col(
-                    "indicator_id"
-                ).isin(
-                    list(
-                        PENINSULA_HIGH_FREQUENCY_INDICATORS
-                    )
-                ),
-                F.lit(
-                    "PENINSULA"
-                ),
-            )
-            .otherwise(
-                F.lit(
-                    "COUNTRY"
-                ),
-            ),
-        )
-        .withColumn(
-            "geography_name",
-            F.when(
-                F.col(
-                    "indicator_id"
-                ).isin(
-                    list(
-                        PENINSULA_HIGH_FREQUENCY_INDICATORS
-                    )
-                ),
-                F.lit(
-                    "Península"
-                ),
-            )
-            .otherwise(
-                F.lit(
-                    "España"
-                ),
-            ),
-        )
-    )
-
-    invalid_scope_count = (
-        scoped_energy
-        .filter(
-            F.col(
-                "geography_key"
-            ).isNull()
-            |
-            F.col(
-                "geography_level"
-            ).isNull()
-            |
-            F.col(
-                "geography_name"
-            ).isNull()
-        )
-        .count()
-    )
-
-    if invalid_scope_count != 0:
-        raise ValueError(
-            "Cannot build Gold country 15-minute fact: "
-            f"{invalid_scope_count} rows have no approved "
-            "geographical scope."
-        )
-
-    # ========================================================================
-    # Approved 15-minute energy metrics
-    # ========================================================================
-
-    energy = (
-        prepare_country_15min_energy_metrics(
-            scoped_energy
-        )
-    )
-
-    # ========================================================================
-    # Weather <-> energy integration
-    # ========================================================================
-
-    result = (
-        integrate_country_15min_weather_energy(
-            weather,
-            energy,
-        )
-    )
-
-    # ========================================================================
-    # Gold technical metadata
-    # ========================================================================
-
-    result = (
-        add_gold_created_at(
-            result
-        )
-    )
-
-    return result
-
-
-# ============================================================================
-# Gold country 5-minute fact
-# ============================================================================
-
-def build_gold_fact_country_5min(
-    spark: SparkSession,
-) -> DataFrame:
-    """
-    Build the physical Gold Spain/Peninsula x 5-minute fact from
-    validated Silver data.
-
-    Pipeline:
-
-        ESIOS 5-minute power
-            -> approved indicator selection
-            -> configurable temporal alignment
-            -> explicit Spain/Peninsula scope
-            -> approved power metrics in MW
-            -> derived interval-energy metrics in MWh
-            -> gold_created_at
-
-    Natural grain:
-
-        geography_key + gold_timestamp
-
-    Spain and Peninsula remain analytically distinct.
-    """
-
-    # ========================================================================
-    # Read real persisted Silver
-    # ========================================================================
-
-    source = (
-        read_silver_table(
-            spark=spark,
-            table_name=TABLE_SILVER_ESIOS_POWER_5MIN,
-        )
-    )
-
-    # ========================================================================
-    # Approved high-frequency indicators
-    # ========================================================================
-
-    approved_source = (
-        select_approved_indicators(
-            source,
-            HIGH_FREQUENCY_POWER_METRICS,
-            dataset_name=(
-                "Gold country 5-minute real Silver source"
-            ),
-        )
-    )
-
-    # ========================================================================
-    # ESIOS temporal alignment
-    #
-    # Unlike the isolated metrics integration test, the physical Gold
-    # persistence pipeline applies the approved configurable temporal gap.
-    # ========================================================================
-
-    esios_time_gap_hours = (
-        get_esios_time_gap_hours()
-    )
-
-    aligned = (
-        apply_esios_time_gap(
-            approved_source,
-            gap_hours=esios_time_gap_hours,
-        )
-    )
-
-    # ========================================================================
-    # Approved geographical scope
-    #
-    # 1293:
-    #     Peninsula
-    #
-    # 2038..2065 approved indicators:
-    #     Spain
-    # ========================================================================
-
-    prepared_source = (
-        aligned
-        .withColumn(
-            "geography_key",
-            F.when(
-                F.col(
-                    "indicator_id"
-                ).isin(
-                    list(
-                        PENINSULA_HIGH_FREQUENCY_INDICATORS
-                    )
-                ),
-                F.lit(
-                    PENINSULA_ES_GEOGRAPHY_KEY
-                ),
-            )
-            .when(
-                F.col(
-                    "indicator_id"
-                ).isin(
-                    list(
-                        SPAIN_HIGH_FREQUENCY_INDICATORS
-                    )
-                ),
-                F.lit(
-                    COUNTRY_ES_GEOGRAPHY_KEY
-                ),
-            ),
-        )
-        .withColumn(
-            "geography_level",
-            F.when(
-                F.col(
-                    "indicator_id"
-                ).isin(
-                    list(
-                        PENINSULA_HIGH_FREQUENCY_INDICATORS
-                    )
-                ),
-                F.lit(
-                    "PENINSULA"
-                ),
-            )
-            .otherwise(
-                F.lit(
-                    "COUNTRY"
-                ),
-            ),
-        )
-        .withColumn(
-            "geography_name",
-            F.when(
-                F.col(
-                    "indicator_id"
-                ).isin(
-                    list(
-                        PENINSULA_HIGH_FREQUENCY_INDICATORS
-                    )
-                ),
-                F.lit(
-                    "Península"
-                ),
-            )
-            .otherwise(
-                F.lit(
-                    "España"
-                ),
-            ),
-        )
-    )
-
-    # ========================================================================
-    # Structural geography validation
-    # ========================================================================
-
-    invalid_scope_count = (
-        prepared_source
-        .filter(
-            F.col(
-                "geography_key"
-            ).isNull()
-            |
-            F.col(
-                "geography_level"
-            ).isNull()
-            |
-            F.col(
-                "geography_name"
-            ).isNull()
-        )
-        .count()
-    )
-
-    if invalid_scope_count != 0:
-        raise ValueError(
-            "Cannot build Gold country 5-minute fact: "
-            f"{invalid_scope_count} rows have no approved "
-            "geographical scope."
-        )
-
-    # ========================================================================
-    # Power MW + real 5-minute interval energy MWh
-    #
-    # prepare_country_5min_metrics() applies:
-    #
-    #     energy_mwh_5min = power_mw * (5 / 60)
-    #
-    # Original signs are preserved.
-    # ========================================================================
-
-    result = (
-        prepare_country_5min_metrics(
-            prepared_source
+        add_deterministic_time_key(
+            result,
+            time_grain="HOUR",
         )
     )
 
@@ -783,18 +253,13 @@ def build_gold_fact_country_5min(
 def build_gold_dim_time(
     fact_province_hourly: DataFrame,
     fact_installed_capacity_monthly: DataFrame,
-    fact_country_15min: DataFrame,
-    fact_country_5min: DataFrame,
 ) -> DataFrame:
     """
-    Build the Gold time dimension from the real temporal grains present
-    in the four Gold facts.
+    Build the Gold time dimension from the real temporal grains present in the two Gold facts.
 
     Supported grains:
 
         HOUR
-        FIFTEEN_MINUTES
-        FIVE_MINUTES
         MONTH
 
     day_of_week follows ISO analytical convention:
@@ -915,211 +380,6 @@ def build_gold_dim_time(
         )
     )
 
-    # ========================================================================
-    # Fifteen minutes
-    # ========================================================================
-
-    fifteen_minutes = (
-        fact_country_15min
-        .select(
-            "gold_timestamp"
-        )
-        .distinct()
-        .withColumn(
-            "time_grain",
-            F.lit(
-                "FIFTEEN_MINUTES"
-            ),
-        )
-        .withColumn(
-            "date",
-            F.to_date(
-                F.col(
-                    "gold_timestamp"
-                )
-            ),
-        )
-        .withColumn(
-            "year",
-            F.year(
-                F.col(
-                    "gold_timestamp"
-                )
-            ),
-        )
-        .withColumn(
-            "month",
-            F.month(
-                F.col(
-                    "gold_timestamp"
-                )
-            ),
-        )
-        .withColumn(
-            "year_month",
-            F.date_format(
-                F.col(
-                    "gold_timestamp"
-                ),
-                "yyyy-MM",
-            ),
-        )
-        .withColumn(
-            "day",
-            F.dayofmonth(
-                F.col(
-                    "gold_timestamp"
-                )
-            ),
-        )
-        .withColumn(
-            "day_of_week",
-            (
-                F.pmod(
-                    F.dayofweek(
-                        F.col(
-                            "gold_timestamp"
-                        )
-                    )
-                    + F.lit(
-                        5
-                    ),
-                    F.lit(
-                        7
-                    ),
-                )
-                + F.lit(
-                    1
-                )
-            ),
-        )
-        .withColumn(
-            "hour",
-            F.hour(
-                F.col(
-                    "gold_timestamp"
-                )
-            ),
-        )
-        .withColumn(
-            "minute",
-            F.minute(
-                F.col(
-                    "gold_timestamp"
-                )
-            ),
-        )
-    )
-
-    fifteen_minutes = (
-        add_deterministic_time_key(
-            fifteen_minutes,
-            time_grain="FIFTEEN_MINUTES",
-        )
-    )
-
-    # ========================================================================
-    # Five minutes
-    # ========================================================================
-
-    five_minutes = (
-        fact_country_5min
-        .select(
-            "gold_timestamp"
-        )
-        .distinct()
-        .withColumn(
-            "time_grain",
-            F.lit(
-                "FIVE_MINUTES"
-            ),
-        )
-        .withColumn(
-            "date",
-            F.to_date(
-                F.col(
-                    "gold_timestamp"
-                )
-            ),
-        )
-        .withColumn(
-            "year",
-            F.year(
-                F.col(
-                    "gold_timestamp"
-                )
-            ),
-        )
-        .withColumn(
-            "month",
-            F.month(
-                F.col(
-                    "gold_timestamp"
-                )
-            ),
-        )
-        .withColumn(
-            "year_month",
-            F.date_format(
-                F.col(
-                    "gold_timestamp"
-                ),
-                "yyyy-MM",
-            ),
-        )
-        .withColumn(
-            "day",
-            F.dayofmonth(
-                F.col(
-                    "gold_timestamp"
-                )
-            ),
-        )
-        .withColumn(
-            "day_of_week",
-            (
-                F.pmod(
-                    F.dayofweek(
-                        F.col(
-                            "gold_timestamp"
-                        )
-                    )
-                    + F.lit(
-                        5
-                    ),
-                    F.lit(
-                        7
-                    ),
-                )
-                + F.lit(
-                    1
-                )
-            ),
-        )
-        .withColumn(
-            "hour",
-            F.hour(
-                F.col(
-                    "gold_timestamp"
-                )
-            ),
-        )
-        .withColumn(
-            "minute",
-            F.minute(
-                F.col(
-                    "gold_timestamp"
-                )
-            ),
-        )
-    )
-
-    five_minutes = (
-        add_deterministic_time_key(
-            five_minutes,
-            time_grain="FIVE_MINUTES",
-        )
-    )
 
     # ========================================================================
     # Month
@@ -1234,12 +494,6 @@ def build_gold_dim_time(
     result = (
         hourly
         .unionByName(
-            fifteen_minutes
-        )
-        .unionByName(
-            five_minutes
-        )
-        .unionByName(
             monthly
         )
         .select(
@@ -1288,7 +542,7 @@ def build_gold_fact_installed_capacity_monthly(
 
     Natural grain:
 
-        autonomous_community_code + year_month
+        geography_key + year_month
 
     No automatic ESIOS +1-hour temporal correction is applied to monthly
     installed capacity.
@@ -1365,6 +619,13 @@ def build_gold_fact_installed_capacity_monthly(
         )
     )
 
+    result = (
+        add_deterministic_time_key(
+            result,
+            time_grain="MONTH",
+        )
+    )
+
     # ========================================================================
     # Gold technical metadata
     # ========================================================================
@@ -1385,11 +646,9 @@ def build_gold_fact_installed_capacity_monthly(
 def build_gold_dim_geography(
     spark: SparkSession,
     fact_installed_capacity_monthly: DataFrame,
-    fact_country_15min: DataFrame,
-    fact_country_5min: DataFrame,
 ) -> DataFrame:
     """
-    Build the complete Gold geography dimension.
+    Build the Gold geography dimension.
 
     Sources:
 
@@ -1400,9 +659,6 @@ def build_gold_dim_geography(
         Autonomous communities
             -> canonical CNIG autonomous-community master
             -> real ESIOS identifier when available
-
-        Country / Peninsula
-            -> validated national Gold fact scopes
 
     Natural key:
 
@@ -1673,210 +929,6 @@ def build_gold_dim_geography(
         )
     )
 
-    # ========================================================================
-    # National Gold scopes
-    #
-    # Geography definition is obtained from both national facts.
-    # ESIOS geographical identifier is obtained only where it actually exists:
-    # country 5-minute fact.
-    # ========================================================================
-
-    national_scope_definitions = (
-        fact_country_15min
-        .select(
-            "geography_key",
-            "geography_level",
-            "geography_name",
-        )
-        .unionByName(
-            fact_country_5min
-            .select(
-                "geography_key",
-                "geography_level",
-                "geography_name",
-            )
-        )
-        .distinct()
-    )
-
-    national_scope_conflicts = (
-        national_scope_definitions
-        .groupBy(
-            "geography_key"
-        )
-        .agg(
-            F.countDistinct(
-                F.concat_ws(
-                    "||",
-                    F.col(
-                        "geography_level"
-                    ),
-                    F.col(
-                        "geography_name"
-                    ),
-                )
-            ).alias(
-                "definition_count"
-            )
-        )
-        .filter(
-            F.col(
-                "definition_count"
-            )
-            > F.lit(
-                1
-            )
-        )
-        .count()
-    )
-
-    if national_scope_conflicts != 0:
-        raise ValueError(
-            "Cannot build Gold geography dimension: "
-            f"{national_scope_conflicts} national geography keys "
-            "have contradictory definitions."
-        )
-
-    national_scope_definitions = (
-        national_scope_definitions
-        .groupBy(
-            "geography_key"
-        )
-        .agg(
-            F.first(
-                "geography_level"
-            ).alias(
-                "geography_level"
-            ),
-            F.first(
-                "geography_name"
-            ).alias(
-                "geography_name"
-            ),
-        )
-    )
-
-    national_esios_ids = (
-        fact_country_5min
-        .select(
-            "geography_key",
-            "esios_geo_id",
-        )
-        .filter(
-            F.col(
-                "esios_geo_id"
-            ).isNotNull()
-        )
-        .distinct()
-    )
-
-    national_esios_conflicts = (
-        national_esios_ids
-        .groupBy(
-            "geography_key"
-        )
-        .agg(
-            F.countDistinct(
-                "esios_geo_id"
-            ).alias(
-                "esios_geo_id_count"
-            )
-        )
-        .filter(
-            F.col(
-                "esios_geo_id_count"
-            )
-            > F.lit(
-                1
-            )
-        )
-        .count()
-    )
-
-    if national_esios_conflicts != 0:
-        raise ValueError(
-            "Cannot build Gold geography dimension: "
-            f"{national_esios_conflicts} national geography keys "
-            "map to multiple ESIOS geographical identifiers."
-        )
-
-    national = (
-        national_scope_definitions
-        .join(
-            national_esios_ids,
-            on="geography_key",
-            how="left",
-        )
-        .withColumn(
-            "geography_code",
-            F.when(
-                F.col(
-                    "geography_key"
-                )
-                == F.lit(
-                    COUNTRY_ES_GEOGRAPHY_KEY
-                ),
-                F.lit(
-                    "ES"
-                ),
-            )
-            .when(
-                F.col(
-                    "geography_key"
-                )
-                == F.lit(
-                    PENINSULA_ES_GEOGRAPHY_KEY
-                ),
-                F.lit(
-                    "ES-PEN"
-                ),
-            ),
-        )
-        .withColumn(
-            "province_code",
-            F.lit(
-                None
-            ).cast(
-                "string"
-            ),
-        )
-        .withColumn(
-            "province_name",
-            F.lit(
-                None
-            ).cast(
-                "string"
-            ),
-        )
-        .withColumn(
-            "autonomous_community_code",
-            F.lit(
-                None
-            ).cast(
-                "string"
-            ),
-        )
-        .withColumn(
-            "autonomous_community_name",
-            F.lit(
-                None
-            ).cast(
-                "string"
-            ),
-        )
-        .withColumn(
-            "country_code",
-            F.lit(
-                "ES"
-            ),
-        )
-        .withColumn(
-            "country_name",
-            F.lit(
-                "España"
-            ),
-        )
-    )
 
     # ========================================================================
     # Complete Gold geography dimension
@@ -1903,12 +955,6 @@ def build_gold_dim_geography(
         )
         .unionByName(
             autonomous_communities
-            .select(
-                *geography_columns
-            )
-        )
-        .unionByName(
-            national
             .select(
                 *geography_columns
             )
@@ -2559,11 +1605,11 @@ def main() -> None:
 
     Execution order:
 
-        1. Build the four Gold facts from real persisted Silver.
+        1. Build the two Gold facts from real persisted Silver.
         2. Materialize the facts.
         3. Build the two dimensions from the real Gold datasets.
         4. Validate every dataset before the first physical write.
-        5. Persist all six tables through idempotent Iceberg MERGE.
+        5. Persist all four tables through idempotent Iceberg MERGE.
         6. Validate persisted row counts and natural-key uniqueness.
 
     No blind append is performed.
@@ -2614,20 +1660,6 @@ def main() -> None:
             .cache()
         )
 
-        fact_country_15min = (
-            build_gold_fact_country_15min(
-                spark
-            )
-            .cache()
-        )
-
-        fact_country_5min = (
-            build_gold_fact_country_5min(
-                spark
-            )
-            .cache()
-        )
-
         # ====================================================================
         # Materialize facts
         #
@@ -2643,14 +1675,6 @@ def main() -> None:
             fact_installed_capacity_monthly.count()
         )
 
-        fact_country_15min_count = (
-            fact_country_15min.count()
-        )
-
-        fact_country_5min_count = (
-            fact_country_5min.count()
-        )
-
         print(
             "FACT_PROVINCE_HOURLY_ROWS = "
             f"{fact_province_hourly_count}"
@@ -2661,16 +1685,6 @@ def main() -> None:
             f"{fact_installed_capacity_monthly_count}"
         )
 
-        print(
-            "FACT_COUNTRY_15MIN_ROWS = "
-            f"{fact_country_15min_count}"
-        )
-
-        print(
-            "FACT_COUNTRY_5MIN_ROWS = "
-            f"{fact_country_5min_count}"
-        )
-
         # ====================================================================
         # Build Gold dimensions from materialized facts
         # ====================================================================
@@ -2679,8 +1693,6 @@ def main() -> None:
             build_gold_dim_time(
                 fact_province_hourly,
                 fact_installed_capacity_monthly,
-                fact_country_15min,
-                fact_country_5min,
             )
             .cache()
         )
@@ -2689,8 +1701,6 @@ def main() -> None:
             build_gold_dim_geography(
                 spark,
                 fact_installed_capacity_monthly,
-                fact_country_15min,
-                fact_country_5min,
             )
             .cache()
         )
@@ -2745,16 +1755,6 @@ def main() -> None:
                 "gold_fact_installed_capacity_monthly_source",
             ),
             (
-                TABLE_GOLD_FACT_COUNTRY_15MIN,
-                fact_country_15min,
-                "gold_fact_country_15min_source",
-            ),
-            (
-                TABLE_GOLD_FACT_COUNTRY_5MIN,
-                fact_country_5min,
-                "gold_fact_country_5min_source",
-            ),
-            (
                 TABLE_GOLD_DIM_TIME,
                 dim_time,
                 "gold_dim_time_source",
@@ -2769,7 +1769,7 @@ def main() -> None:
         # ====================================================================
         # Pre-write validation
         #
-        # ALL SIX datasets are validated before the first MERGE.
+        # ALL FOUR datasets are validated before the first MERGE.
         # ====================================================================
 
         print(

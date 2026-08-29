@@ -9,22 +9,11 @@ TABLES = {
         "key": ["station_id"],
         "canonical_geography": True,
     },
-    "silver_aemet_daily_climatology": {
-        "expected_rows": 2420,
-        "key": ["station_id", "observation_date"],
-        "canonical_geography": True,
-    },
     "silver_aemet_current_observations": {
         "expected_rows": 9688,
         "key": ["station_id", "observation_timestamp"],
     },
     "silver_open_meteo_hourly": {
-        "expected_rows": 88416,
-        "key": ["station_id", "observation_timestamp"],
-        "expected_minutes": 60,
-        "canonical_geography": True,
-    },
-    "silver_open_meteo_historical_forecast": {
         "expected_rows": 88416,
         "key": ["station_id", "observation_timestamp"],
         "expected_minutes": 60,
@@ -49,7 +38,7 @@ TABLES = {
         "key": ["municipality_ine_code"],
     },
     "silver_esios_energy_hourly": {
-        "expected_rows": 30107,
+        "expected_rows": 25689,
         "key": [
             "indicator_id",
             "esios_geo_id",
@@ -57,15 +46,6 @@ TABLES = {
         ],
         "expected_minutes": 60,
         "allow_temporal_gaps": True,
-    },
-    "silver_esios_power_5min": {
-        "expected_rows": 13824,
-        "key": [
-            "indicator_id",
-            "esios_geo_id",
-            "observation_timestamp",
-        ],
-        "expected_minutes": 5,
     },
     "silver_esios_installed_capacity_monthly": {
         "expected_rows": 123,

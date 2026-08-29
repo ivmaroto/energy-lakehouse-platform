@@ -3,9 +3,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql.types import StringType, StructField, StructType
 
 from silver.aemet import (
-    DAILY_COLUMNS,
     transform_current_observations,
-    transform_daily_climatology,
     transform_stations,
 )
 
@@ -161,7 +159,7 @@ def test_transform_stations(spark):
                 "MADRID",
                 "667",
                 "402443N",
-                "0034049W",
+                "034049W",
                 "08222",
             ),
         ],
@@ -207,7 +205,7 @@ def test_transform_stations_deduplicates_by_station_id(spark):
                 "MADRID",
                 "667",
                 "402443N",
-                "0034049W",
+                "034049W",
                 "08222",
             ),
             (
@@ -216,7 +214,7 @@ def test_transform_stations_deduplicates_by_station_id(spark):
                 "MADRID",
                 "667",
                 "402443N",
-                "0034049W",
+                "034049W",
                 "08222",
             ),
         ],
@@ -236,61 +234,8 @@ def test_transform_stations_deduplicates_by_station_id(spark):
     assert result.count() == 1
 
 
-def test_transform_daily_climatology(spark):
-    df = spark.createDataFrame(
-        [
-            DAILY_ROW,
-        ],
-        DAILY_COLUMNS,
-    )
-
-    result = transform_daily_climatology(df)
-    row = result.first()
-
-    assert result.count() == 1
-
-    assert row["station_id"] == "3195"
-    assert str(row["observation_date"]) == "2026-08-17"
-
-    assert row["altitud"] == pytest.approx(667.0)
-    assert row["dir"] == pytest.approx(180.0)
-
-    assert row["hrMax"] == pytest.approx(80.0)
-    assert row["hrMedia"] == pytest.approx(55.0)
-    assert row["hrMin"] == pytest.approx(30.0)
-
-    assert row["pintMax"] == pytest.approx(0.0)
-    assert row["prec"] == pytest.approx(0.0)
-
-    assert row["presMax"] == pytest.approx(950.2)
-    assert row["presMin"] == pytest.approx(940.1)
-
-    assert row["racha"] == pytest.approx(12.5)
-    assert row["sol"] == pytest.approx(10.2)
-
-    assert row["tmax"] == pytest.approx(32.1)
-    assert row["tmed"] == pytest.approx(24.3)
-    assert row["tmin"] == pytest.approx(16.5)
-
-    assert row["velmedia"] == pytest.approx(3.4)
-
-    assert row["nombre"] == "MADRID, RETIRO"
-    assert row["provincia"] == "MADRID"
-    assert row["source"] == "aemet"
 
 
-def test_daily_natural_key_deduplicates(spark):
-    df = spark.createDataFrame(
-        [
-            DAILY_ROW,
-            DAILY_ROW,
-        ],
-        DAILY_COLUMNS,
-    )
-
-    result = transform_daily_climatology(df)
-
-    assert result.count() == 1
 
 
 def test_transform_current_observations(spark):

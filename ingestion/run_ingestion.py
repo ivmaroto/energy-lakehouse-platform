@@ -9,6 +9,7 @@ import sys
 from datetime import date
 
 from ingestion.aemet.ingest import AemetIngestion
+from ingestion.cnig.ingest import CnigIngestion
 from ingestion.common.exceptions import IngestionError
 from ingestion.common.logger import get_logger
 from ingestion.esios.ingest import EsiosIngestion
@@ -45,10 +46,6 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
     )
 
-    # ---------------------------------------------------------
-    # Open-Meteo
-    # ---------------------------------------------------------
-
     open_meteo_parser = subparsers.add_parser(
         "open_meteo",
         help="Run Open-Meteo ingestion.",
@@ -58,9 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--mode",
         choices=(
             "historical",
-            "historical_forecast",
             "minutely_15",
-            "current",
         ),
         required=True,
     )
@@ -87,10 +82,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=parse_date,
     )
 
-    # ---------------------------------------------------------
-    # AEMET
-    # ---------------------------------------------------------
-
     aemet_parser = subparsers.add_parser(
         "aemet",
         help="Run AEMET ingestion.",
@@ -99,32 +90,16 @@ def build_parser() -> argparse.ArgumentParser:
     aemet_parser.add_argument(
         "--mode",
         choices=(
-            "historical",
-            "incremental",
             "stations",
             "observations",
-            "radiation",
         ),
         required=True,
     )
 
-    aemet_parser.add_argument(
-        "--station-id",
+    subparsers.add_parser(
+        "cnig",
+        help="Run CNIG / IGN master-data ingestion.",
     )
-
-    aemet_parser.add_argument(
-        "--start-date",
-        type=parse_date,
-    )
-
-    aemet_parser.add_argument(
-        "--end-date",
-        type=parse_date,
-    )
-
-    # ---------------------------------------------------------
-    # ESIOS
-    # ---------------------------------------------------------
 
     esios_parser = subparsers.add_parser(
         "esios",
@@ -133,7 +108,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     esios_parser.add_argument(
         "--mode",
-        choices=("historical", "incremental"),
+        choices=(
+            "historical",
+            "incremental",
+        ),
         required=True,
     )
 
@@ -186,40 +164,23 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+
+
 def validate_date_arguments(
     args: argparse.Namespace,
 ) -> None:
     """
-    Validate source-specific argument requirements.
+    Validate source-specific date requirements.
     """
 
     if args.source == "open_meteo":
-        if args.mode in {
-            "historical",
-            "historical_forecast",
-            "minutely_15",
-        }:
-            if args.start_date is None or args.end_date is None:
-                raise ValueError(
-                    f"Open-Meteo mode '{args.mode}' requires "
-                    "--start-date and --end-date."
-                )
+        if args.start_date is None or args.end_date is None:
+            raise ValueError(
+                f"Open-Meteo mode '{args.mode}' requires "
+                "--start-date and --end-date."
+            )
 
-    if args.source == "aemet":
-        if args.mode in {
-            "historical",
-            "incremental",
-        }:
-            if not args.station_id:
-                raise ValueError(
-                    f"AEMET mode '{args.mode}' requires --station-id."
-                )
 
-            if args.start_date is None or args.end_date is None:
-                raise ValueError(
-                    f"AEMET mode '{args.mode}' requires "
-                    "--start-date and --end-date."
-                )
 
 
 def log_output_paths(
@@ -262,15 +223,7 @@ def run_open_meteo(
             end_date=args.end_date,
         )
 
-    elif args.mode == "historical_forecast":
-        output = ingestion.ingest_historical_forecast(
-            latitude=args.latitude,
-            longitude=args.longitude,
-            start_date=args.start_date,
-            end_date=args.end_date,
-        )
-
-    elif args.mode == "minutely_15":
+    else:
         from datetime import datetime, timezone
 
         start_datetime = datetime.combine(
@@ -292,47 +245,43 @@ def run_open_meteo(
             end_datetime=end_datetime,
         )
 
-    else:
-        output = ingestion.ingest_current(
-            latitude=args.latitude,
-            longitude=args.longitude,
-        )
-
     log_output_paths(output)
+
 
 
 def run_aemet(
     args: argparse.Namespace,
 ) -> None:
-    """Execute AEMET ingestion."""
+    """Execute active AEMET ingestion."""
 
     ingestion = AemetIngestion()
 
-    if args.mode == "historical":
-        output = ingestion.ingest_historical(
-            station_id=args.station_id,
-            start_date=args.start_date,
-            end_date=args.end_date,
-        )
-
-    elif args.mode == "incremental":
-        output = ingestion.ingest_incremental(
-            station_id=args.station_id,
-            start_date=args.start_date,
-            end_date=args.end_date,
-        )
-
-    elif args.mode == "stations":
+    if args.mode == "stations":
         output = ingestion.ingest_stations()
 
     elif args.mode == "observations":
-        output = ingestion.ingest_current_observations()
+        output = (
+            ingestion
+            .ingest_current_observations()
+        )
 
     else:
-        output = ingestion.ingest_radiation()
+        raise ValueError(
+            f"Unsupported AEMET mode: {args.mode}"
+        )
 
     log_output_paths(output)
 
+
+
+
+def run_cnig() -> None:
+    """Execute CNIG / IGN master-data ingestion."""
+
+    ingestion = CnigIngestion()
+    output = ingestion.ingest_ngmep()
+
+    log_output_paths(output)
 
 def run_esios(
     args: argparse.Namespace,
@@ -381,6 +330,9 @@ def main() -> int:
 
         elif args.source == "aemet":
             run_aemet(args)
+
+        elif args.source == "cnig":
+            run_cnig()
 
         elif args.source == "esios":
             run_esios(args)

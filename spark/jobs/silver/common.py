@@ -28,18 +28,6 @@ def get_required_env(name: str) -> str:
     return value.strip()
 
 
-def get_spark_session(app_name: str) -> SparkSession:
-    """
-    Return the SparkSession configured through spark-defaults.conf.
-
-    Iceberg, JDBC catalog, MinIO S3FileIO and S3A configuration are
-    provided externally by the Spark runtime configuration.
-    """
-    return (
-        SparkSession.builder
-        .appName(app_name)
-        .getOrCreate()
-    )
 
 
 def get_bronze_base_path() -> str:
@@ -168,18 +156,6 @@ def decimal_comma_to_double(
     )
 
 
-def empty_string_to_null(
-    column_name: str,
-):
-    """
-    Convert empty/blank strings to NULL without imputing values.
-    """
-    value = F.trim(F.col(column_name))
-
-    return F.when(
-        value == "",
-        F.lit(None),
-    ).otherwise(value)
 
 
 def deduplicate(
@@ -211,49 +187,3 @@ def deduplicate(
         )
 
     return df.dropDuplicates(keys)
-
-
-def count_null_keys(
-    df: DataFrame,
-    natural_keys: Sequence[str],
-) -> int:
-    """
-    Count rows containing at least one NULL natural-key component.
-    """
-    keys = list(natural_keys)
-
-    if not keys:
-        raise ValueError(
-            "At least one natural key column is required."
-        )
-
-    condition = F.lit(False)
-
-    for key in keys:
-        if key not in df.columns:
-            raise ValueError(
-                f"Natural key column '{key}' is not present."
-            )
-
-        condition = condition | F.col(key).isNull()
-
-    return df.filter(condition).count()
-
-
-def create_namespace_if_not_exists(
-    spark: SparkSession,
-    namespace: str,
-) -> None:
-    """
-    Create an Iceberg namespace in the configured catalog.
-
-    The namespace must be provided explicitly by the caller.
-    """
-    if not namespace.strip():
-        raise ValueError(
-            "namespace cannot be empty."
-        )
-
-    spark.sql(
-        f"CREATE NAMESPACE IF NOT EXISTS {namespace}"
-    )

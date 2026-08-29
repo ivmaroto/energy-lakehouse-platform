@@ -11,7 +11,6 @@ from pyspark.sql.types import (
 
 from silver.open_meteo import (
     transform_weather_15min,
-    transform_weather_historical_forecast,
     transform_weather_hourly,
 )
 
@@ -514,67 +513,10 @@ def test_weather_hourly_deduplicates(spark):
 
 
 # ============================================================================
-# weather_historical_forecast
 # ============================================================================
 
-def test_transform_weather_historical_forecast(spark):
-    df = spark.createDataFrame(
-        [
-            (
-                HISTORICAL_DATA,
-                HOURLY_METADATA,
-            ),
-        ],
-        schema=WEATHER_HISTORICAL_SCHEMA,
-    )
-
-    result = transform_weather_historical_forecast(df)
-
-    rows = (
-        result
-        .orderBy("observation_timestamp")
-        .collect()
-    )
-
-    assert len(rows) == 2
-
-    assert rows[0]["station_id"] == "3195"
-
-    assert rows[0]["wind_speed_80m"] == pytest.approx(7.0)
-    assert rows[0]["wind_direction_80m"] == 185
-
-    assert rows[0]["wind_speed_120m"] == pytest.approx(8.5)
-    assert rows[0]["wind_direction_120m"] == 190
-
-    assert rows[0]["source"] == "open_meteo"
-    assert rows[0]["observation_timestamp"] is not None
 
 
-def test_historical_forecast_deduplicates(spark):
-    single_data = dict(HISTORICAL_DATA)
-
-    single_data["hourly"] = {
-        key: [value[0]]
-        for key, value in HISTORICAL_DATA["hourly"].items()
-    }
-
-    df = spark.createDataFrame(
-        [
-            (
-                single_data,
-                HOURLY_METADATA,
-            ),
-            (
-                single_data,
-                HOURLY_METADATA,
-            ),
-        ],
-        schema=WEATHER_HISTORICAL_SCHEMA,
-    )
-
-    result = transform_weather_historical_forecast(df)
-
-    assert result.count() == 1
 
 
 # ============================================================================

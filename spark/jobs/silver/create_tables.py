@@ -28,10 +28,6 @@ TABLE_AEMET_STATIONS = (
     f"{CATALOG}.{NAMESPACE}.silver_aemet_stations"
 )
 
-TABLE_AEMET_DAILY = (
-    f"{CATALOG}.{NAMESPACE}.silver_aemet_daily_climatology"
-)
-
 TABLE_AEMET_CURRENT = (
     f"{CATALOG}.{NAMESPACE}.silver_aemet_current_observations"
 )
@@ -41,9 +37,6 @@ TABLE_OPEN_METEO_HOURLY = (
     f"{CATALOG}.{NAMESPACE}.silver_open_meteo_hourly"
 )
 
-TABLE_OPEN_METEO_HISTORICAL = (
-    f"{CATALOG}.{NAMESPACE}.silver_open_meteo_historical_forecast"
-)
 
 TABLE_OPEN_METEO_15MIN = (
     f"{CATALOG}.{NAMESPACE}.silver_open_meteo_15min"
@@ -67,9 +60,6 @@ TABLE_ESIOS_ENERGY_HOURLY = (
     f"{CATALOG}.{NAMESPACE}.silver_esios_energy_hourly"
 )
 
-TABLE_ESIOS_POWER_5MIN = (
-    f"{CATALOG}.{NAMESPACE}.silver_esios_power_5min"
-)
 
 TABLE_ESIOS_INSTALLED_CAPACITY = (
     f"{CATALOG}.{NAMESPACE}."
@@ -216,14 +206,8 @@ def main() -> None:
     )
 
     print("=" * 80)
-    print(
-        "CREATE SILVER ICEBERG TABLES"
-    )
+    print("CREATE SILVER ICEBERG TABLES")
     print("=" * 80)
-
-    # ------------------------------------------------------------------------
-    # Silver namespace
-    # ------------------------------------------------------------------------
 
     spark.sql(
         f"CREATE NAMESPACE IF NOT EXISTS "
@@ -231,20 +215,11 @@ def main() -> None:
     )
 
     print(
-        f"NAMESPACE READY = "
-        f"{CATALOG}.{NAMESPACE}"
+        f"NAMESPACE READY = {CATALOG}.{NAMESPACE}"
     )
-
-    # ------------------------------------------------------------------------
-    # Build validated Silver DataFrames
-    #
-    # Their schemas are used as the physical schemas of the Iceberg tables.
-    # No data is written in this step.
-    # ------------------------------------------------------------------------
 
     (
         aemet_stations,
-        aemet_daily,
         aemet_current,
     ) = build_aemet_silver(
         spark
@@ -252,7 +227,6 @@ def main() -> None:
 
     (
         open_meteo_hourly,
-        open_meteo_historical,
         open_meteo_15min,
     ) = build_open_meteo_silver(
         spark
@@ -268,68 +242,33 @@ def main() -> None:
 
     (
         esios_energy_hourly,
-        esios_power_5min,
         esios_installed_capacity,
     ) = build_esios_silver(
         spark
     )
 
-    # ------------------------------------------------------------------------
-    # Canonical geographical normalization
-    #
-    # CNIG is the canonical province master.
-    #
-    # Original source province names remain available for traceability.
-    # Canonical identifiers/names are added before deriving the physical
-    # Iceberg schemas.
-    # ------------------------------------------------------------------------
-
-    aemet_stations = (
-        enrich_with_cnig_province(
-            aemet_stations,
-            cnig_provinces,
-            source_province_column="provincia",
-        )
+    aemet_stations = enrich_with_cnig_province(
+        aemet_stations,
+        cnig_provinces,
+        source_province_column="provincia",
     )
 
-    aemet_daily = (
-        enrich_with_cnig_province(
-            aemet_daily,
-            cnig_provinces,
-            source_province_column="provincia",
-        )
+    open_meteo_hourly = enrich_with_cnig_province(
+        open_meteo_hourly,
+        cnig_provinces,
+        source_province_column="province",
     )
 
-    open_meteo_hourly = (
-        enrich_with_cnig_province(
-            open_meteo_hourly,
-            cnig_provinces,
-            source_province_column="province",
-        )
+    open_meteo_15min = enrich_with_cnig_province(
+        open_meteo_15min,
+        cnig_provinces,
+        source_province_column="province",
     )
 
-    open_meteo_historical = (
-        enrich_with_cnig_province(
-            open_meteo_historical,
-            cnig_provinces,
-            source_province_column="province",
-        )
-    )
-
-    open_meteo_15min = (
-        enrich_with_cnig_province(
-            open_meteo_15min,
-            cnig_provinces,
-            source_province_column="province",
-        )
-    )
-
-    esios_energy_hourly = (
-        enrich_with_cnig_province(
-            esios_energy_hourly,
-            cnig_provinces,
-            source_province_column="esios_geo_name",
-        )
+    esios_energy_hourly = enrich_with_cnig_province(
+        esios_energy_hourly,
+        cnig_provinces,
+        source_province_column="esios_geo_name",
     )
 
     esios_installed_capacity = (
@@ -340,74 +279,35 @@ def main() -> None:
         )
     )
 
-    # ------------------------------------------------------------------------
-    # Validate canonical province resolution
-    # ------------------------------------------------------------------------
-
     validate_all_provinces_matched(
         aemet_stations,
-        dataset_name=(
-            "silver_aemet_stations"
-        ),
-    )
-
-    validate_all_provinces_matched(
-        aemet_daily,
-        dataset_name=(
-            "silver_aemet_daily_climatology"
-        ),
+        dataset_name="silver_aemet_stations",
     )
 
     validate_all_provinces_matched(
         open_meteo_hourly,
-        dataset_name=(
-            "silver_open_meteo_hourly"
-        ),
-    )
-
-    validate_all_provinces_matched(
-        open_meteo_historical,
-        dataset_name=(
-            "silver_open_meteo_historical_forecast"
-        ),
+        dataset_name="silver_open_meteo_hourly",
     )
 
     validate_all_provinces_matched(
         open_meteo_15min,
-        dataset_name=(
-            "silver_open_meteo_15min"
-        ),
+        dataset_name="silver_open_meteo_15min",
     )
 
     validate_all_provinces_matched(
         esios_energy_hourly,
-        dataset_name=(
-            "silver_esios_energy_hourly"
-        ),
+        dataset_name="silver_esios_energy_hourly",
     )
 
     validate_all_autonomous_communities_matched(
         esios_installed_capacity,
-        dataset_name=(
-            "silver_esios_installed_capacity_monthly"
-        ),
+        dataset_name="silver_esios_installed_capacity_monthly",
     )
-
-    # ------------------------------------------------------------------------
-    # AEMET
-    # ------------------------------------------------------------------------
 
     create_unpartitioned_table(
         spark,
         aemet_stations,
         TABLE_AEMET_STATIONS,
-    )
-
-    create_month_partitioned_table(
-        spark,
-        aemet_daily,
-        TABLE_AEMET_DAILY,
-        "observation_date",
     )
 
     create_day_partitioned_table(
@@ -416,10 +316,6 @@ def main() -> None:
         TABLE_AEMET_CURRENT,
         "observation_timestamp",
     )
-
-    # ------------------------------------------------------------------------
-    # Open-Meteo
-    # ------------------------------------------------------------------------
 
     create_day_partitioned_table(
         spark,
@@ -430,21 +326,10 @@ def main() -> None:
 
     create_day_partitioned_table(
         spark,
-        open_meteo_historical,
-        TABLE_OPEN_METEO_HISTORICAL,
-        "observation_timestamp",
-    )
-
-    create_day_partitioned_table(
-        spark,
         open_meteo_15min,
         TABLE_OPEN_METEO_15MIN,
         "observation_timestamp",
     )
-
-    # ------------------------------------------------------------------------
-    # CNIG
-    # ------------------------------------------------------------------------
 
     create_unpartitioned_table(
         spark,
@@ -464,21 +349,10 @@ def main() -> None:
         TABLE_CNIG_MUNICIPALITIES,
     )
 
-    # ------------------------------------------------------------------------
-    # ESIOS
-    # ------------------------------------------------------------------------
-
     create_day_partitioned_table(
         spark,
         esios_energy_hourly,
         TABLE_ESIOS_ENERGY_HOURLY,
-        "observation_timestamp",
-    )
-
-    create_day_partitioned_table(
-        spark,
-        esios_power_5min,
-        TABLE_ESIOS_POWER_5MIN,
         "observation_timestamp",
     )
 
@@ -496,6 +370,7 @@ def main() -> None:
     print("=" * 80)
 
     spark.stop()
+
 
 
 if __name__ == "__main__":

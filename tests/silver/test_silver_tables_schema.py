@@ -3,30 +3,23 @@ from pyspark.sql import SparkSession
 
 TABLES = [
     "lakehouse.silver.silver_aemet_stations",
-    "lakehouse.silver.silver_aemet_daily_climatology",
     "lakehouse.silver.silver_aemet_current_observations",
     "lakehouse.silver.silver_open_meteo_hourly",
-    "lakehouse.silver.silver_open_meteo_historical_forecast",
     "lakehouse.silver.silver_open_meteo_15min",
     "lakehouse.silver.silver_cnig_provinces",
     "lakehouse.silver.silver_cnig_autonomous_communities",
     "lakehouse.silver.silver_cnig_municipalities",
     "lakehouse.silver.silver_esios_energy_hourly",
-    "lakehouse.silver.silver_esios_power_5min",
     "lakehouse.silver.silver_esios_installed_capacity_monthly",
 ]
 
 
 EXPECTED_PARTITIONING = {
     "lakehouse.silver.silver_aemet_stations": None,
-    "lakehouse.silver.silver_aemet_daily_climatology":
-        "months(observation_date)",
     "lakehouse.silver.silver_aemet_current_observations":
         "days(observation_timestamp)",
 
     "lakehouse.silver.silver_open_meteo_hourly":
-        "days(observation_timestamp)",
-    "lakehouse.silver.silver_open_meteo_historical_forecast":
         "days(observation_timestamp)",
     "lakehouse.silver.silver_open_meteo_15min":
         "days(observation_timestamp)",
@@ -36,8 +29,6 @@ EXPECTED_PARTITIONING = {
     "lakehouse.silver.silver_cnig_municipalities": None,
 
     "lakehouse.silver.silver_esios_energy_hourly":
-        "days(observation_timestamp)",
-    "lakehouse.silver.silver_esios_power_5min":
         "days(observation_timestamp)",
     "lakehouse.silver.silver_esios_installed_capacity_monthly":
         "months(observation_timestamp)",
@@ -51,19 +42,7 @@ EXPECTED_CANONICAL_GEOGRAPHY_COLUMNS = {
         "autonomous_community_code",
         "autonomous_community_name",
     },
-    "lakehouse.silver.silver_aemet_daily_climatology": {
-        "province_code",
-        "province_name",
-        "autonomous_community_code",
-        "autonomous_community_name",
-    },
     "lakehouse.silver.silver_open_meteo_hourly": {
-        "province_code",
-        "province_name",
-        "autonomous_community_code",
-        "autonomous_community_name",
-    },
-    "lakehouse.silver.silver_open_meteo_historical_forecast": {
         "province_code",
         "province_name",
         "autonomous_community_code",
@@ -119,6 +98,31 @@ def main():
             missing.append(full_name)
 
     print("MISSING_TABLES =", missing)
+
+    expected_names = {
+        full_name.split(".")[-1]
+        for full_name in TABLES
+    }
+
+    unexpected = sorted(
+        found_names
+        - expected_names
+    )
+
+    print(
+        "UNEXPECTED_TABLES =",
+        unexpected,
+    )
+
+    if missing:
+        raise RuntimeError(
+            f"Missing Silver tables: {missing}"
+        )
+
+    if unexpected:
+        raise RuntimeError(
+            f"Unexpected Silver tables: {unexpected}"
+        )
 
     for table_name in TABLES:
         print("=" * 80)

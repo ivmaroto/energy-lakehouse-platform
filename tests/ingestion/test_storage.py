@@ -1,127 +1,153 @@
 import json
-from pathlib import Path
+from unittest.mock import Mock
 
-from ingestion.common.storage import LocalBronzeStorage
+import pytest
+
+from ingestion.common.exceptions import StorageError
+from ingestion.common.storage import MinIOBronzeStorage
 
 
-def test_save_json_creates_bronze_file(tmp_path):
-    storage = LocalBronzeStorage(base_path=tmp_path)
+def build_storage(monkeypatch):
+    client = Mock()
+    client.bucket_exists.return_value = True
 
-    data = {
-        "temperature": 21.5,
-        "humidity": 55,
-    }
-
-    output_path = storage.save_json(
-        data,
-        source="open_meteo",
-        dataset="weather",
-        ingestion_mode="historical",
-        requested_start_date="2026-08-01",
-        requested_end_date="2026-08-02",
+    monkeypatch.setattr(
+        "ingestion.common.storage.Minio",
+        lambda *args, **kwargs: client,
     )
 
-    assert output_path.exists()
-    assert output_path.is_file()
+    storage = MinIOBronzeStorage(
+        endpoint="minio:9000",
+        access_key="test-access",
+        secret_key="test-secret",
+        bucket="energy-lakehouse",
+        secure=False,
+    )
+
+    return storage, client
 
 
-def test_save_json_creates_expected_directory_structure(tmp_path):
-    storage = LocalBronzeStorage(base_path=tmp_path)
+def test_save_json_uses_bronze_object_structure(
+    monkeypatch,
+):
+    storage, client = build_storage(monkeypatch)
 
-    output_path = storage.save_json(
+    object_name = storage.save_json(
         {"value": 123},
         source="esios",
         dataset="generation",
         ingestion_mode="historical",
     )
 
-    relative_path = output_path.relative_to(tmp_path)
+    assert object_name.startswith(
+        "bronze/esios/generation/year="
+    )
+    assert object_name.endswith(".json")
 
-    parts = relative_path.parts
+    kwargs = client.put_object.call_args.kwargs
 
-    assert parts[0] == "esios"
-    assert parts[1] == "generation"
-    assert parts[2].startswith("year=")
-    assert parts[3].startswith("month=")
-    assert parts[4].startswith("day=")
+    assert kwargs["bucket_name"] == "energy-lakehouse"
+    assert kwargs["object_name"] == object_name
+    assert kwargs["content_type"] == "application/json"
 
 
-def test_save_json_contains_metadata_and_data(tmp_path):
-    storage = LocalBronzeStorage(base_path=tmp_path)
+def test_save_json_contains_metadata_and_data(
+    monkeypatch,
+):
+    storage, client = build_storage(monkeypatch)
 
-    original_data = [
-        {"value": 1},
-        {"value": 2},
-    ]
-
-    output_path = storage.save_json(
-        original_data,
+    storage.save_json(
+        [{"value": 1}, {"value": 2}],
         source="aemet",
-        dataset="daily_climatological_values",
+        dataset="stations",
         ingestion_mode="incremental",
         requested_start_date="2026-08-09",
         requested_end_date="2026-08-10",
     )
 
-    with output_path.open(
-        "r",
-        encoding="utf-8",
-    ) as file:
-        payload = json.load(file)
+    stream = client.put_object.call_args.kwargs["data"]
+    payload = json.loads(
+        stream.getvalue().decode("utf-8")
+    )
 
-    assert "metadata" in payload
-    assert "data" in payload
-
-    assert payload["data"] == original_data
+    assert payload["data"] == [
+        {"value": 1},
+        {"value": 2},
+    ]
 
     metadata = payload["metadata"]
 
     assert metadata["source"] == "aemet"
-    assert metadata["dataset"] == "daily_climatological_values"
+    assert metadata["dataset"] == (
+        "stations"
+    )
     assert metadata["ingestion_mode"] == "incremental"
-    assert metadata["requested_start_date"] == "2026-08-09"
-    assert metadata["requested_end_date"] == "2026-08-10"
+    assert metadata["requested_start_date"] == (
+        "2026-08-09"
+    )
+    assert metadata["requested_end_date"] == (
+        "2026-08-10"
+    )
     assert metadata["ingestion_timestamp"]
 
 
-def test_save_json_generates_unique_files(tmp_path):
-    storage = LocalBronzeStorage(base_path=tmp_path)
+def test_save_json_generates_unique_objects(
+    monkeypatch,
+):
+    storage, _ = build_storage(monkeypatch)
 
-    first_path = storage.save_json(
+    first = storage.save_json(
         {"value": 1},
         source="open_meteo",
-        dataset="weather",
-        ingestion_mode="incremental",
-    )
-
-    second_path = storage.save_json(
-        {"value": 2},
-        source="open_meteo",
-        dataset="weather",
-        ingestion_mode="incremental",
-    )
-
-    assert first_path != second_path
-    assert first_path.exists()
-    assert second_path.exists()
-
-
-def test_generated_file_is_valid_json(tmp_path):
-    storage = LocalBronzeStorage(base_path=tmp_path)
-
-    output_path = storage.save_json(
-        {"test": True},
-        source="open_meteo",
-        dataset="weather",
+        dataset="weather_hourly",
         ingestion_mode="historical",
     )
 
-    content = output_path.read_text(
-        encoding="utf-8",
+    second = storage.save_json(
+        {"value": 2},
+        source="open_meteo",
+        dataset="weather_hourly",
+        ingestion_mode="historical",
     )
 
-    parsed_content = json.loads(content)
+    assert first != second
 
-    assert parsed_content["data"] == {
-        "test": True,
-    }
+
+def test_save_bytes_preserves_raw_payload(
+    monkeypatch,
+):
+    storage, client = build_storage(monkeypatch)
+
+    raw_data = b"COD_PROV;PROVINCIA\n01;Araba"
+
+    object_name = storage.save_bytes(
+        raw_data,
+        source="cnig",
+        dataset="provinces",
+        extension="csv",
+        content_type="text/csv",
+    )
+
+    kwargs = client.put_object.call_args.kwargs
+    stream = kwargs["data"]
+
+    assert object_name.startswith(
+        "bronze/cnig/provinces/year="
+    )
+    assert stream.getvalue() == raw_data
+    assert kwargs["content_type"] == "text/csv"
+
+
+def test_missing_bucket_raises_storage_error(
+    monkeypatch,
+):
+    storage, client = build_storage(monkeypatch)
+    client.bucket_exists.return_value = False
+
+    with pytest.raises(StorageError):
+        storage.save_json(
+            {"value": 1},
+            source="aemet",
+            dataset="stations",
+            ingestion_mode="snapshot",
+        )

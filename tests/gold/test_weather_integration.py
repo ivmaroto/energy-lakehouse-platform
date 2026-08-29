@@ -7,16 +7,12 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
 from gold.weather import (
-    COUNTRY_15MIN_WEATHER_METRICS,
     PROVINCE_HOURLY_WEATHER_METRICS,
     prepare_aemet_province_hourly,
-    prepare_country_15min_weather,
-    prepare_open_meteo_province_15min,
     prepare_open_meteo_province_hourly,
     prepare_open_meteo_wind_point_hourly,
     prepare_open_meteo_wind_province_hourly,
     prepare_province_hourly_weather,
-    prepare_peninsula_15min_weather,
 )
 
 
@@ -870,438 +866,13 @@ def validate_complete_province_hourly_weather(
 # Province × 15 min real integration
 # ============================================================================
 
-def validate_province_15min_weather(
-    open_meteo_15min: DataFrame,
-) -> None:
-    result = (
-        prepare_open_meteo_province_15min(
-            open_meteo_15min
-        )
-    )
-
-    result_count = validate_non_empty(
-        result,
-        (
-            "Real Open-Meteo "
-            "Province × 15 min"
-        ),
-    )
-
-    validate_metric_columns_exist(
-        result,
-        COUNTRY_15MIN_WEATHER_METRICS,
-        (
-            "Real Open-Meteo "
-            "Province × 15 min"
-        ),
-    )
-
-    validate_unique_grain(
-        result,
-        [
-            "province_code",
-            "gold_timestamp",
-        ],
-        (
-            "Real Open-Meteo "
-            "Province × 15 min"
-        ),
-    )
-
-    validate_structural_columns_not_null(
-        result,
-        [
-            "province_code",
-            "gold_timestamp",
-        ],
-        (
-            "Real Open-Meteo "
-            "Province × 15 min"
-        ),
-    )
-
-    validate_wind_directions(
-        result,
-        (
-            "Real Open-Meteo "
-            "Province × 15 min"
-        ),
-    )
-
-    print_validation_block(
-        "OPEN-METEO REAL PROVINCE-15MIN WEATHER",
-        {
-            "RESULT_ROWS": (
-                result_count
-            ),
-            "DISTINCT_PROVINCES": (
-                result
-                .select(
-                    "province_code"
-                )
-                .distinct()
-                .count()
-            ),
-        },
-    )
 
 
 # ============================================================================
 # Spain × 15 min real integration
 # ============================================================================
 
-def validate_country_15min_weather(
-    open_meteo_15min: DataFrame,
-) -> None:
-    result = (
-        prepare_country_15min_weather(
-            open_meteo_15min,
-            geography_key=(
-                TEST_COUNTRY_GEOGRAPHY_KEY
-            ),
-        )
-    )
 
-    result_count = validate_non_empty(
-        result,
-        "Real Gold Spain × 15 min weather",
-    )
-
-    validate_metric_columns_exist(
-        result,
-        COUNTRY_15MIN_WEATHER_METRICS,
-        "Real Gold Spain × 15 min weather",
-    )
-
-    validate_unique_grain(
-        result,
-        [
-            "geography_key",
-            "gold_timestamp",
-        ],
-        "Real Gold Spain × 15 min weather",
-    )
-
-    validate_structural_columns_not_null(
-        result,
-        [
-            "geography_key",
-            "gold_timestamp",
-        ],
-        "Real Gold Spain × 15 min weather",
-    )
-
-    validate_wind_directions(
-        result,
-        "Real Gold Spain × 15 min weather",
-    )
-
-    wrong_geography_count = (
-        result
-        .filter(
-            (
-                F.col(
-                    "geography_key"
-                )
-                != F.lit(
-                    TEST_COUNTRY_GEOGRAPHY_KEY
-                )
-            )
-            |
-            (
-                F.col(
-                    "geography_level"
-                )
-                != F.lit(
-                    "COUNTRY"
-                )
-            )
-            |
-            (
-                F.col(
-                    "geography_name"
-                )
-                != F.lit(
-                    "España"
-                )
-            )
-        )
-        .count()
-    )
-
-    if wrong_geography_count != 0:
-        raise AssertionError(
-            "Spain 15-minute weather contains "
-            f"{wrong_geography_count} rows with "
-            "unexpected geography."
-        )
-
-    print_validation_block(
-        "COMPLETE REAL GOLD SPAIN-15MIN WEATHER",
-        {
-            "RESULT_ROWS": (
-                result_count
-            ),
-            "GEOGRAPHY_KEY": (
-                TEST_COUNTRY_GEOGRAPHY_KEY
-            ),
-            "MIN_TIMESTAMP": (
-                result
-                .agg(
-                    F.min(
-                        "gold_timestamp"
-                    )
-                )
-                .first()[0]
-            ),
-            "MAX_TIMESTAMP": (
-                result
-                .agg(
-                    F.max(
-                        "gold_timestamp"
-                    )
-                )
-                .first()[0]
-            ),
-        },
-    )
-
-def validate_peninsula_15min_weather(
-    open_meteo_15min: DataFrame,
-) -> None:
-    """
-    Validate the real Peninsula × 15 min meteorological product.
-
-    Validated Gold geographical rule:
-
-        Open-Meteo points
-        -> Province × 15 min
-        -> exclude configured non-peninsular CNIG provinces
-        -> Peninsula × 15 min
-
-    Spain is never relabelled as Peninsula.
-    Peninsula is independently aggregated from real province-level weather.
-    """
-    excluded_codes = (
-        load_peninsula_excluded_province_codes()
-    )
-
-    province = (
-        prepare_open_meteo_province_15min(
-            open_meteo_15min
-        )
-        .cache()
-    )
-
-    source_province_count = (
-        province
-        .select(
-            "province_code"
-        )
-        .distinct()
-        .count()
-    )
-
-    excluded_present = (
-        province
-        .filter(
-            F.col(
-                "province_code"
-            ).isin(
-                excluded_codes
-            )
-        )
-        .select(
-            "province_code"
-        )
-        .distinct()
-        .count()
-    )
-
-    eligible_province_count = (
-        province
-        .filter(
-            ~F.col(
-                "province_code"
-            ).isin(
-                excluded_codes
-            )
-        )
-        .select(
-            "province_code"
-        )
-        .distinct()
-        .count()
-    )
-
-    if source_province_count != 52:
-        raise AssertionError(
-            "Expected 52 real Open-Meteo provincial "
-            "entities, found "
-            f"{source_province_count}."
-        )
-
-    if excluded_present != 5:
-        raise AssertionError(
-            "Expected all 5 validated non-peninsular "
-            "province codes in real Open-Meteo coverage, "
-            f"found {excluded_present}."
-        )
-
-    if eligible_province_count != 47:
-        raise AssertionError(
-            "Expected 47 peninsular provincial entities, "
-            f"found {eligible_province_count}."
-        )
-
-    result = (
-        prepare_peninsula_15min_weather(
-            open_meteo_15min,
-            geography_key=(
-                TEST_PENINSULA_GEOGRAPHY_KEY
-            ),
-            excluded_province_codes=(
-                excluded_codes
-            ),
-        )
-        .cache()
-    )
-
-    result_count = (
-        result.count()
-    )
-
-    assert_required_columns(
-        result,
-        {
-            "gold_timestamp",
-            "geography_key",
-            "geography_level",
-            "geography_name",
-            *COUNTRY_15MIN_WEATHER_METRICS,
-        },
-        "Real Gold Peninsula × 15 min weather",
-    )
-
-    validate_structural_columns_not_null(
-        result,
-        [
-            "geography_key",
-            "gold_timestamp",
-        ],
-        "Real Gold Peninsula × 15 min weather",
-    )
-
-    validate_wind_directions(
-        result,
-        "Real Gold Peninsula × 15 min weather",
-    )
-
-    duplicate_count = (
-        result
-        .groupBy(
-            "geography_key",
-            "gold_timestamp",
-        )
-        .count()
-        .filter(
-            F.col(
-                "count"
-            ) > 1
-        )
-        .count()
-    )
-
-    if duplicate_count != 0:
-        raise AssertionError(
-            "Peninsula 15-minute weather contains "
-            f"{duplicate_count} duplicated Gold grains."
-        )
-
-    wrong_geography_count = (
-        result
-        .filter(
-            (
-                F.col(
-                    "geography_key"
-                )
-                != F.lit(
-                    TEST_PENINSULA_GEOGRAPHY_KEY
-                )
-            )
-            |
-            (
-                F.col(
-                    "geography_level"
-                )
-                != F.lit(
-                    "PENINSULA"
-                )
-            )
-            |
-            (
-                F.col(
-                    "geography_name"
-                )
-                != F.lit(
-                    "Península"
-                )
-            )
-        )
-        .count()
-    )
-
-    if wrong_geography_count != 0:
-        raise AssertionError(
-            "Peninsula 15-minute weather contains "
-            f"{wrong_geography_count} rows with "
-            "unexpected geography."
-        )
-
-    print_validation_block(
-        "COMPLETE REAL GOLD PENINSULA-15MIN WEATHER",
-        {
-            "SOURCE_PROVINCES": (
-                source_province_count
-            ),
-            "EXCLUDED_PROVINCES": (
-                excluded_present
-            ),
-            "PENINSULA_PROVINCES": (
-                eligible_province_count
-            ),
-            "RESULT_ROWS": (
-                result_count
-            ),
-            "DUPLICATED_GRAINS": (
-                duplicate_count
-            ),
-            "GEOGRAPHY_KEY": (
-                TEST_PENINSULA_GEOGRAPHY_KEY
-            ),
-            "MIN_TIMESTAMP": (
-                result
-                .agg(
-                    F.min(
-                        "gold_timestamp"
-                    )
-                )
-                .first()[0]
-            ),
-            "MAX_TIMESTAMP": (
-                result
-                .agg(
-                    F.max(
-                        "gold_timestamp"
-                    )
-                )
-                .first()[0]
-            ),
-        },
-    )
-
-    result.unpersist()
-    province.unpersist()
 
 # ============================================================================
 # Main
@@ -1316,9 +887,7 @@ def main() -> None:
         .getOrCreate()
     )
 
-    spark.sparkContext.setLogLevel(
-        "WARN"
-    )
+    spark.sparkContext.setLogLevel("WARN")
 
     print("=" * 80)
     print(
@@ -1375,25 +944,15 @@ def main() -> None:
         open_meteo_15min,
     )
 
-    validate_province_15min_weather(
-        open_meteo_15min
-    )
-
-    validate_country_15min_weather(
-        open_meteo_15min
-    )
-
-    validate_peninsula_15min_weather(
-        open_meteo_15min
-    )
-
     print("=" * 80)
     print(
-        "ALL GOLD WEATHER INTEGRATION VALIDATED"
+        "ALL ACTIVE GOLD WEATHER "
+        "INTEGRATION VALIDATED"
     )
     print("=" * 80)
 
     spark.stop()
+
 
 
 if __name__ == "__main__":

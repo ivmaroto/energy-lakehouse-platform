@@ -12,7 +12,6 @@ from pyspark.sql.types import (
 from silver.esios import (
     build_esios_energy_hourly,
     build_esios_installed_capacity_monthly,
-    build_esios_power_5min,
     transform_esios_dataset,
 )
 
@@ -296,38 +295,6 @@ def test_build_esios_energy_hourly(spark):
     assert rows[0]["indicator_id"] == 1001
 
 
-def test_build_esios_power_5min(spark):
-    df = spark.createDataFrame(
-        [
-            (
-                1001,
-                13,
-                4,
-            ),
-            (
-                1002,
-                20,
-                219,
-            ),
-            (
-                1003,
-                20,
-                2,
-            ),
-        ],
-        [
-            "indicator_id",
-            "magnitude_id",
-            "time_id",
-        ],
-    )
-
-    result = build_esios_power_5min(df)
-
-    rows = result.collect()
-
-    assert len(rows) == 1
-    assert rows[0]["indicator_id"] == 1002
 
 
 def test_build_esios_installed_capacity_monthly(spark):

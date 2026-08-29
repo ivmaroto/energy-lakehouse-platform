@@ -22,17 +22,6 @@ PROVINCE_HOURLY_WEATHER_METRICS: tuple[str, ...] = (
     "direct_normal_irradiance",
 )
 
-COUNTRY_15MIN_WEATHER_METRICS: tuple[str, ...] = (
-    "temperature",
-    "humidity",
-    "precipitation",
-    "wind_speed_80m",
-    "wind_direction_80m",
-    "wind_speed_120m",
-    "wind_direction_120m",
-    "solar_radiation",
-    "direct_normal_irradiance",
-)
 
 
 # ============================================================================
@@ -226,7 +215,7 @@ def circular_mean_expression(
 
 
 # ============================================================================
-# AEMET -> Province × hour
+# AEMET -> Province Ã— hour
 # ============================================================================
 
 def prepare_aemet_province_hourly(
@@ -234,7 +223,7 @@ def prepare_aemet_province_hourly(
     aemet_stations_df: DataFrame,
 ) -> DataFrame:
     """
-    Aggregate AEMET current observations to Province × hour.
+    Aggregate AEMET current observations to Province Ã— hour.
 
     Approved source mapping:
         ta   -> temperature
@@ -248,7 +237,7 @@ def prepare_aemet_province_hourly(
 
     Observations whose station_id cannot be resolved to canonical province
     geography remain preserved upstream in Bronze/Silver but are not eligible
-    for the Province × hour Gold product.
+    for the Province Ã— hour Gold product.
 
     No geographical value is manufactured in Gold.
 
@@ -319,7 +308,7 @@ def prepare_aemet_province_hourly(
     )
 
     # ------------------------------------------------------------------------
-    # Gold Province × hour requires canonical province geography.
+    # Gold Province Ã— hour requires canonical province geography.
     #
     # AEMET current observations whose station_id is absent from the
     # validated AEMET station catalogue remain available in Bronze/Silver
@@ -372,7 +361,7 @@ def prepare_aemet_province_hourly(
 
     # ------------------------------------------------------------------------
     # Only observations with validated canonical geography are eligible for
-    # the Province × hour Gold analytical product.
+    # the Province Ã— hour Gold analytical product.
     #
     # This is an analytical eligibility rule, not deletion of source data.
     # ------------------------------------------------------------------------
@@ -453,7 +442,7 @@ def prepare_aemet_province_hourly(
             "gold_timestamp",
         ],
         dataset_name=(
-            "AEMET Province × hour"
+            "AEMET Province Ã— hour"
         ),
     )
 
@@ -461,14 +450,14 @@ def prepare_aemet_province_hourly(
 
 
 # ============================================================================
-# Open-Meteo hourly -> Province × hour
+# Open-Meteo hourly -> Province Ã— hour
 # ============================================================================
 
 def prepare_open_meteo_province_hourly(
     open_meteo_hourly_df: DataFrame,
 ) -> DataFrame:
     """
-    Aggregate Open-Meteo hourly observations to Province × hour.
+    Aggregate Open-Meteo hourly observations to Province Ã— hour.
 
     Approved uses:
         temperature_2m
@@ -574,7 +563,7 @@ def prepare_open_meteo_province_hourly(
             "gold_timestamp",
         ],
         dataset_name=(
-            "Open-Meteo hourly Province × hour"
+            "Open-Meteo hourly Province Ã— hour"
         ),
     )
 
@@ -582,7 +571,7 @@ def prepare_open_meteo_province_hourly(
 
 
 # ============================================================================
-# Open-Meteo 15 min wind -> Point × hour
+# Open-Meteo 15 min wind -> Point Ã— hour
 # ============================================================================
 
 def prepare_open_meteo_wind_point_hourly(
@@ -675,7 +664,7 @@ def prepare_open_meteo_wind_point_hourly(
             "gold_timestamp",
         ],
         dataset_name=(
-            "Open-Meteo wind Point × hour"
+            "Open-Meteo wind Point Ã— hour"
         ),
     )
 
@@ -683,7 +672,7 @@ def prepare_open_meteo_wind_point_hourly(
 
 
 # ============================================================================
-# Open-Meteo wind Point × hour -> Province × hour
+# Open-Meteo wind Point Ã— hour -> Province Ã— hour
 # ============================================================================
 
 def prepare_open_meteo_wind_province_hourly(
@@ -694,7 +683,7 @@ def prepare_open_meteo_wind_province_hourly(
 
         15 min
         -> hourly per point
-        -> Province × hour.
+        -> Province Ã— hour.
 
     Speeds:
         AVG points.
@@ -756,7 +745,7 @@ def prepare_open_meteo_wind_province_hourly(
             "gold_timestamp",
         ],
         dataset_name=(
-            "Open-Meteo wind Province × hour"
+            "Open-Meteo wind Province Ã— hour"
         ),
     )
 
@@ -774,7 +763,7 @@ def prepare_province_hourly_weather(
     open_meteo_15min_df: DataFrame,
 ) -> DataFrame:
     """
-    Build the complete approved meteorological product at Province × hour.
+    Build the complete approved meteorological product at Province Ã— hour.
 
     Rules:
         temperature:
@@ -830,7 +819,7 @@ def prepare_province_hourly_weather(
     # ------------------------------------------------------------------------
     # First combine Open-Meteo hourly and Open-Meteo wind.
     #
-    # Both are already Province × hour before this join.
+    # Both are already Province Ã— hour before this join.
     # ------------------------------------------------------------------------
 
     open_meteo_complete = (
@@ -858,7 +847,7 @@ def prepare_province_hourly_weather(
             "gold_timestamp",
         ],
         dataset_name=(
-            "Combined Open-Meteo Province × hour"
+            "Combined Open-Meteo Province Ã— hour"
         ),
     )
 
@@ -866,7 +855,7 @@ def prepare_province_hourly_weather(
     # Full outer join because AEMET current coverage is intentionally shorter
     # than the reproducible Open-Meteo historical coverage.
     #
-    # Join only after both sources have reached Province × hour.
+    # Join only after both sources have reached Province Ã— hour.
     # ------------------------------------------------------------------------
 
     joined = (
@@ -1070,7 +1059,7 @@ def prepare_province_hourly_weather(
             "gold_timestamp",
         ],
         dataset_name=(
-            "Gold Province × hour weather"
+            "Gold Province Ã— hour weather"
         ),
     )
 
@@ -1081,7 +1070,7 @@ def prepare_province_hourly_weather(
             "gold_timestamp",
         ],
         dataset_name=(
-            "Gold Province × hour weather"
+            "Gold Province Ã— hour weather"
         ),
     )
 
@@ -1089,511 +1078,11 @@ def prepare_province_hourly_weather(
 
 
 # ============================================================================
-# Open-Meteo 15 min -> Province × 15 min
+# Open-Meteo 15 min -> Province Ã— 15 min
 # ============================================================================
 
-def prepare_open_meteo_province_15min(
-    open_meteo_15min_df: DataFrame,
-) -> DataFrame:
-    """
-    First spatial stage for the approved national 15-minute weather product.
-
-        points
-        -> Province × 15 min
-
-    There is no temporal aggregation.
-
-    Scalars:
-        arithmetic AVG.
-
-    Directions:
-        circular mean.
-    """
-    validate_required_columns(
-        open_meteo_15min_df,
-        {
-            "observation_timestamp",
-            "province_code",
-            "province_name",
-            "temperature_2m",
-            "relative_humidity_2m",
-            "precipitation",
-            "wind_speed_80m",
-            "wind_direction_80m",
-            "wind_speed_120m",
-            "wind_direction_120m",
-            "shortwave_radiation",
-            "direct_normal_irradiance",
-        },
-        "silver_open_meteo_15min",
-    )
-
-    result = (
-        open_meteo_15min_df
-        .groupBy(
-            "province_code",
-            "province_name",
-            F.col(
-                "observation_timestamp"
-            ).alias(
-                "gold_timestamp"
-            ),
-        )
-        .agg(
-            F.avg(
-                F.col(
-                    "temperature_2m"
-                )
-            ).cast(
-                "double"
-            ).alias(
-                "temperature"
-            ),
-
-            F.avg(
-                F.col(
-                    "relative_humidity_2m"
-                )
-            ).cast(
-                "double"
-            ).alias(
-                "humidity"
-            ),
-
-            F.avg(
-                F.col(
-                    "precipitation"
-                )
-            ).cast(
-                "double"
-            ).alias(
-                "precipitation"
-            ),
-
-            F.avg(
-                F.col(
-                    "wind_speed_80m"
-                )
-            ).cast(
-                "double"
-            ).alias(
-                "wind_speed_80m"
-            ),
-
-            circular_mean_expression(
-                "wind_direction_80m"
-            ).alias(
-                "wind_direction_80m"
-            ),
-
-            F.avg(
-                F.col(
-                    "wind_speed_120m"
-                )
-            ).cast(
-                "double"
-            ).alias(
-                "wind_speed_120m"
-            ),
-
-            circular_mean_expression(
-                "wind_direction_120m"
-            ).alias(
-                "wind_direction_120m"
-            ),
-
-            F.avg(
-                F.col(
-                    "shortwave_radiation"
-                )
-            ).cast(
-                "double"
-            ).alias(
-                "solar_radiation"
-            ),
-
-            F.avg(
-                F.col(
-                    "direct_normal_irradiance"
-                )
-            ).cast(
-                "double"
-            ).alias(
-                "direct_normal_irradiance"
-            ),
-        )
-    )
-
-    validate_unique_grain(
-        result,
-        grain_columns=[
-            "province_code",
-            "gold_timestamp",
-        ],
-        dataset_name=(
-            "Open-Meteo Province × 15 min"
-        ),
-    )
-
-    return result
 
 
 # ============================================================================
-# Province × 15 min -> Spain × 15 min
+# Province Ã— 15 min -> Spain Ã— 15 min
 # ============================================================================
-
-def prepare_country_15min_weather(
-    open_meteo_15min_df: DataFrame,
-    *,
-    geography_key: str,
-) -> DataFrame:
-    """
-    Build the approved national meteorological product:
-
-        Open-Meteo point
-        -> Province × 15 min
-        -> Spain × 15 min.
-
-    Scalars:
-        AVG of province-level averages.
-
-    Directions:
-        circular mean of province-level circular means.
-
-    Spain weather is COUNTRY geography.
-    Peninsula is not manufactured from meteorological data.
-
-    geography_key is supplied by the Gold geography implementation so that
-    weather.py does not invent the literal serialization of the deterministic
-    geography key.
-    """
-    province = (
-        prepare_open_meteo_province_15min(
-            open_meteo_15min_df
-        )
-    )
-
-    result = (
-        province
-        .groupBy(
-            "gold_timestamp"
-        )
-        .agg(
-            F.avg(
-                F.col(
-                    "temperature"
-                )
-            ).cast(
-                "double"
-            ).alias(
-                "temperature"
-            ),
-
-            F.avg(
-                F.col(
-                    "humidity"
-                )
-            ).cast(
-                "double"
-            ).alias(
-                "humidity"
-            ),
-
-            F.avg(
-                F.col(
-                    "precipitation"
-                )
-            ).cast(
-                "double"
-            ).alias(
-                "precipitation"
-            ),
-
-            F.avg(
-                F.col(
-                    "wind_speed_80m"
-                )
-            ).cast(
-                "double"
-            ).alias(
-                "wind_speed_80m"
-            ),
-
-            circular_mean_expression(
-                "wind_direction_80m"
-            ).alias(
-                "wind_direction_80m"
-            ),
-
-            F.avg(
-                F.col(
-                    "wind_speed_120m"
-                )
-            ).cast(
-                "double"
-            ).alias(
-                "wind_speed_120m"
-            ),
-
-            circular_mean_expression(
-                "wind_direction_120m"
-            ).alias(
-                "wind_direction_120m"
-            ),
-
-            F.avg(
-                F.col(
-                    "solar_radiation"
-                )
-            ).cast(
-                "double"
-            ).alias(
-                "solar_radiation"
-            ),
-
-            F.avg(
-                F.col(
-                    "direct_normal_irradiance"
-                )
-            ).cast(
-                "double"
-            ).alias(
-                "direct_normal_irradiance"
-            ),
-        )
-        .withColumn(
-            "geography_key",
-            F.lit(
-                geography_key
-            ),
-        )
-        .withColumn(
-            "geography_level",
-            F.lit(
-                "COUNTRY"
-            ),
-        )
-        .withColumn(
-            "geography_name",
-            F.lit(
-                "España"
-            ),
-        )
-        .select(
-            "gold_timestamp",
-            "geography_key",
-            "geography_level",
-            "geography_name",
-            *COUNTRY_15MIN_WEATHER_METRICS,
-        )
-    )
-
-    validate_non_null_structural_columns(
-        result,
-        structural_columns=[
-            "geography_key",
-            "gold_timestamp",
-        ],
-        dataset_name=(
-            "Gold Spain × 15 min weather"
-        ),
-    )
-
-    validate_unique_grain(
-        result,
-        grain_columns=[
-            "geography_key",
-            "gold_timestamp",
-        ],
-        dataset_name=(
-            "Gold Spain × 15 min weather"
-        ),
-    )
-
-    return result
-
-def prepare_peninsula_15min_weather(
-    open_meteo_15min_df: DataFrame,
-    *,
-    geography_key: str,
-    excluded_province_codes: Iterable[str],
-) -> DataFrame:
-    """
-    Build the approved Peninsula × 15 min meteorological product.
-
-    Source flow:
-        Open-Meteo points
-        -> Province × 15 min
-        -> validated peninsular provinces
-        -> Peninsula × 15 min
-
-    The Peninsula scope is defined externally through Gold configuration.
-
-    Spain is never converted into Peninsula.
-    The aggregation starts from real province-level meteorological data.
-
-    Scalars:
-        AVG of province-level averages.
-
-    Directions:
-        circular mean of province-level circular means.
-    """
-    province = (
-        prepare_open_meteo_province_15min(
-            open_meteo_15min_df
-        )
-    )
-
-    excluded_codes = list(
-        excluded_province_codes
-    )
-
-    peninsula = (
-        province
-        .filter(
-            ~F.col(
-                "province_code"
-            ).isin(
-                excluded_codes
-            )
-        )
-    )
-
-    result = (
-        peninsula
-        .groupBy(
-            "gold_timestamp"
-        )
-        .agg(
-            F.avg(
-                F.col(
-                    "temperature"
-                )
-            ).cast(
-                "double"
-            ).alias(
-                "temperature"
-            ),
-
-            F.avg(
-                F.col(
-                    "humidity"
-                )
-            ).cast(
-                "double"
-            ).alias(
-                "humidity"
-            ),
-
-            F.avg(
-                F.col(
-                    "precipitation"
-                )
-            ).cast(
-                "double"
-            ).alias(
-                "precipitation"
-            ),
-
-            F.avg(
-                F.col(
-                    "wind_speed_80m"
-                )
-            ).cast(
-                "double"
-            ).alias(
-                "wind_speed_80m"
-            ),
-
-            circular_mean_expression(
-                "wind_direction_80m"
-            ).alias(
-                "wind_direction_80m"
-            ),
-
-            F.avg(
-                F.col(
-                    "wind_speed_120m"
-                )
-            ).cast(
-                "double"
-            ).alias(
-                "wind_speed_120m"
-            ),
-
-            circular_mean_expression(
-                "wind_direction_120m"
-            ).alias(
-                "wind_direction_120m"
-            ),
-
-            F.avg(
-                F.col(
-                    "solar_radiation"
-                )
-            ).cast(
-                "double"
-            ).alias(
-                "solar_radiation"
-            ),
-
-            F.avg(
-                F.col(
-                    "direct_normal_irradiance"
-                )
-            ).cast(
-                "double"
-            ).alias(
-                "direct_normal_irradiance"
-            ),
-        )
-        .withColumn(
-            "geography_key",
-            F.lit(
-                geography_key
-            ),
-        )
-        .withColumn(
-            "geography_level",
-            F.lit(
-                "PENINSULA"
-            ),
-        )
-        .withColumn(
-            "geography_name",
-            F.lit(
-                "Península"
-            ),
-        )
-        .select(
-            "gold_timestamp",
-            "geography_key",
-            "geography_level",
-            "geography_name",
-            *COUNTRY_15MIN_WEATHER_METRICS,
-        )
-    )
-
-    validate_non_null_structural_columns(
-        result,
-        structural_columns=[
-            "geography_key",
-            "gold_timestamp",
-        ],
-        dataset_name=(
-            "Gold Peninsula × 15 min weather"
-        ),
-    )
-
-    validate_unique_grain(
-        result,
-        grain_columns=[
-            "geography_key",
-            "gold_timestamp",
-        ],
-        dataset_name=(
-            "Gold Peninsula × 15 min weather"
-        ),
-    )
-
-    return result

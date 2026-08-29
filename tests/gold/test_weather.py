@@ -15,16 +15,12 @@ from pyspark.sql.types import (
 )
 
 from gold.weather import (
-    COUNTRY_15MIN_WEATHER_METRICS,
     PROVINCE_HOURLY_WEATHER_METRICS,
     circular_mean_expression,
     prepare_aemet_province_hourly,
-    prepare_country_15min_weather,
-    prepare_open_meteo_province_15min,
     prepare_open_meteo_province_hourly,
     prepare_open_meteo_wind_point_hourly,
     prepare_open_meteo_wind_province_hourly,
-    prepare_peninsula_15min_weather,
     prepare_province_hourly_weather,
     validate_non_null_structural_columns,
     validate_required_columns,
@@ -83,18 +79,6 @@ def test_province_hourly_weather_metric_contract_is_exact():
     )
 
 
-def test_country_15min_weather_metric_contract_is_exact():
-    assert COUNTRY_15MIN_WEATHER_METRICS == (
-        "temperature",
-        "humidity",
-        "precipitation",
-        "wind_speed_80m",
-        "wind_direction_80m",
-        "wind_speed_120m",
-        "wind_direction_120m",
-        "solar_radiation",
-        "direct_normal_irradiance",
-    )
 
 
 # ============================================================================
@@ -330,7 +314,7 @@ def test_circular_mean_ignores_nulls(
 
 
 # ============================================================================
-# AEMET Province × hour
+# AEMET Province Ã— hour
 # ============================================================================
 
 def test_prepare_aemet_province_hourly_aggregates_stations(
@@ -367,16 +351,16 @@ def test_prepare_aemet_province_hourly_aggregates_stations(
             (
                 "A",
                 "01",
-                "Álava",
+                "Ãlava",
                 "16",
-                "País Vasco/Euskadi",
+                "PaÃ­s Vasco/Euskadi",
             ),
             (
                 "B",
                 "01",
-                "Álava",
+                "Ãlava",
                 "16",
-                "País Vasco/Euskadi",
+                "PaÃ­s Vasco/Euskadi",
             ),
         ],
         [
@@ -449,9 +433,9 @@ def test_prepare_aemet_province_hourly_excludes_unmatched_station(
             (
                 "A",
                 "01",
-                "Álava",
+                "Ãlava",
                 "16",
-                "País Vasco/Euskadi",
+                "PaÃ­s Vasco/Euskadi",
             ),
         ],
         [
@@ -498,7 +482,7 @@ def test_prepare_aemet_province_hourly_excludes_unmatched_station(
 
 
 # ============================================================================
-# Open-Meteo hourly Province × hour
+# Open-Meteo hourly Province Ã— hour
 # ============================================================================
 
 def test_prepare_open_meteo_province_hourly_aggregates_points(
@@ -509,9 +493,9 @@ def test_prepare_open_meteo_province_hourly_aggregates_points(
             (
                 "2026-08-23 10:00:00",
                 "01",
-                "Álava",
+                "Ãlava",
                 "16",
-                "País Vasco/Euskadi",
+                "PaÃ­s Vasco/Euskadi",
                 20.0,
                 50.0,
                 1.0,
@@ -521,9 +505,9 @@ def test_prepare_open_meteo_province_hourly_aggregates_points(
             (
                 "2026-08-23 10:00:00",
                 "01",
-                "Álava",
+                "Ãlava",
                 "16",
-                "País Vasco/Euskadi",
+                "PaÃ­s Vasco/Euskadi",
                 24.0,
                 70.0,
                 3.0,
@@ -596,9 +580,9 @@ def test_prepare_open_meteo_wind_point_hourly_uses_avg_and_circular_mean(
                 "station-1",
                 "2026-08-23 10:00:00",
                 "01",
-                "Álava",
+                "Ãlava",
                 "16",
-                "País Vasco/Euskadi",
+                "PaÃ­s Vasco/Euskadi",
                 10.0,
                 350.0,
                 20.0,
@@ -608,9 +592,9 @@ def test_prepare_open_meteo_wind_point_hourly_uses_avg_and_circular_mean(
                 "station-1",
                 "2026-08-23 10:15:00",
                 "01",
-                "Álava",
+                "Ãlava",
                 "16",
-                "País Vasco/Euskadi",
+                "PaÃ­s Vasco/Euskadi",
                 20.0,
                 10.0,
                 40.0,
@@ -620,9 +604,9 @@ def test_prepare_open_meteo_wind_point_hourly_uses_avg_and_circular_mean(
                 "station-1",
                 "2026-08-23 10:30:00",
                 "01",
-                "Álava",
+                "Ãlava",
                 "16",
-                "País Vasco/Euskadi",
+                "PaÃ­s Vasco/Euskadi",
                 30.0,
                 350.0,
                 60.0,
@@ -632,9 +616,9 @@ def test_prepare_open_meteo_wind_point_hourly_uses_avg_and_circular_mean(
                 "station-1",
                 "2026-08-23 10:45:00",
                 "01",
-                "Álava",
+                "Ãlava",
                 "16",
-                "País Vasco/Euskadi",
+                "PaÃ­s Vasco/Euskadi",
                 40.0,
                 10.0,
                 80.0,
@@ -690,7 +674,7 @@ def test_prepare_open_meteo_wind_point_hourly_uses_avg_and_circular_mean(
 
 
 # ============================================================================
-# Open-Meteo wind Province × hour
+# Open-Meteo wind Province Ã— hour
 # ============================================================================
 
 def test_prepare_open_meteo_wind_province_hourly_aggregates_points(
@@ -723,9 +707,9 @@ def test_prepare_open_meteo_wind_province_hourly_aggregates_points(
                     station_id,
                     f"2026-08-23 10:{minute}:00",
                     "01",
-                    "Álava",
+                    "Ãlava",
                     "16",
-                    "País Vasco/Euskadi",
+                    "PaÃ­s Vasco/Euskadi",
                     speed_80,
                     direction,
                     speed_120,
@@ -807,9 +791,9 @@ def test_prepare_province_hourly_weather_uses_aemet_priority_per_variable(
             (
                 "A",
                 "01",
-                "Álava",
+                "Ãlava",
                 "16",
-                "País Vasco/Euskadi",
+                "PaÃ­s Vasco/Euskadi",
             ),
         ],
         [
@@ -826,9 +810,9 @@ def test_prepare_province_hourly_weather_uses_aemet_priority_per_variable(
             (
                 "2026-08-23 10:00:00",
                 "01",
-                "Álava",
+                "Ãlava",
                 "16",
-                "País Vasco/Euskadi",
+                "PaÃ­s Vasco/Euskadi",
                 25.0,
                 70.0,
                 5.0,
@@ -856,9 +840,9 @@ def test_prepare_province_hourly_weather_uses_aemet_priority_per_variable(
                 "A",
                 f"2026-08-23 10:{minute}:00",
                 "01",
-                "Álava",
+                "Ãlava",
                 "16",
-                "País Vasco/Euskadi",
+                "PaÃ­s Vasco/Euskadi",
                 10.0,
                 90.0,
                 20.0,
@@ -983,9 +967,9 @@ def test_prepare_province_hourly_weather_does_not_convert_missing_to_zero(
             (
                 "2026-08-23 10:00:00",
                 "01",
-                "Álava",
+                "Ãlava",
                 "16",
-                "País Vasco/Euskadi",
+                "PaÃ­s Vasco/Euskadi",
                 None,
                 None,
                 None,
@@ -1013,9 +997,9 @@ def test_prepare_province_hourly_weather_does_not_convert_missing_to_zero(
                 "A",
                 "2026-08-23 10:00:00",
                 "01",
-                "Álava",
+                "Ãlava",
                 "16",
-                "País Vasco/Euskadi",
+                "PaÃ­s Vasco/Euskadi",
                 None,
                 None,
                 None,
@@ -1054,515 +1038,11 @@ def test_prepare_province_hourly_weather_does_not_convert_missing_to_zero(
 
 
 # ============================================================================
-# Province × 15 min
+# Province Ã— 15 min
 # ============================================================================
 
-def test_prepare_open_meteo_province_15min_aggregates_points(
-    spark,
-):
-    df = spark.createDataFrame(
-        [
-            (
-                "2026-08-23 10:00:00",
-                "01",
-                "Álava",
-                20.0,
-                50.0,
-                1.0,
-                10.0,
-                350.0,
-                20.0,
-                350.0,
-                100.0,
-                200.0,
-            ),
-            (
-                "2026-08-23 10:00:00",
-                "01",
-                "Álava",
-                24.0,
-                70.0,
-                3.0,
-                30.0,
-                10.0,
-                40.0,
-                10.0,
-                300.0,
-                400.0,
-            ),
-        ],
-        [
-            "observation_timestamp",
-            "province_code",
-            "province_name",
-            "temperature_2m",
-            "relative_humidity_2m",
-            "precipitation",
-            "wind_speed_80m",
-            "wind_direction_80m",
-            "wind_speed_120m",
-            "wind_direction_120m",
-            "shortwave_radiation",
-            "direct_normal_irradiance",
-        ],
-    )
-
-    row = (
-        prepare_open_meteo_province_15min(
-            df
-        )
-        .first()
-    )
-
-    assert row[
-        "temperature"
-    ] == pytest.approx(
-        22.0
-    )
-
-    assert row[
-        "humidity"
-    ] == pytest.approx(
-        60.0
-    )
-
-    assert row[
-        "precipitation"
-    ] == pytest.approx(
-        2.0
-    )
-
-    assert row[
-        "wind_speed_80m"
-    ] == pytest.approx(
-        20.0
-    )
-
-    assert row[
-        "wind_direction_80m"
-    ] == pytest.approx(
-        0.0,
-        abs=1e-6,
-    )
-
-    assert row[
-        "solar_radiation"
-    ] == pytest.approx(
-        200.0
-    )
 
 
 # ============================================================================
-# Country × 15 min
+# Country Ã— 15 min
 # ============================================================================
-
-def test_prepare_country_15min_weather_uses_avg_of_provinces(
-    spark,
-):
-    df = spark.createDataFrame(
-        [
-            (
-                "2026-08-23 10:00:00",
-                "01",
-                "Province A",
-                20.0,
-                40.0,
-                1.0,
-                10.0,
-                350.0,
-                20.0,
-                350.0,
-                100.0,
-                200.0,
-            ),
-            (
-                "2026-08-23 10:00:00",
-                "02",
-                "Province B",
-                30.0,
-                60.0,
-                3.0,
-                30.0,
-                10.0,
-                40.0,
-                10.0,
-                300.0,
-                400.0,
-            ),
-        ],
-        [
-            "observation_timestamp",
-            "province_code",
-            "province_name",
-            "temperature_2m",
-            "relative_humidity_2m",
-            "precipitation",
-            "wind_speed_80m",
-            "wind_direction_80m",
-            "wind_speed_120m",
-            "wind_direction_120m",
-            "shortwave_radiation",
-            "direct_normal_irradiance",
-        ],
-    )
-
-    row = (
-        prepare_country_15min_weather(
-            df,
-            geography_key="COUNTRY_ES",
-        )
-        .first()
-    )
-
-    assert row[
-        "geography_key"
-    ] == "COUNTRY_ES"
-
-    assert row[
-        "geography_level"
-    ] == "COUNTRY"
-
-    assert row[
-        "geography_name"
-    ] == "España"
-
-    assert row[
-        "temperature"
-    ] == pytest.approx(
-        25.0
-    )
-
-    assert row[
-        "humidity"
-    ] == pytest.approx(
-        50.0
-    )
-
-    assert row[
-        "precipitation"
-    ] == pytest.approx(
-        2.0
-    )
-
-    assert row[
-        "wind_speed_80m"
-    ] == pytest.approx(
-        20.0
-    )
-
-    assert row[
-        "wind_direction_80m"
-    ] == pytest.approx(
-        0.0,
-        abs=1e-6,
-    )
-
-    assert row[
-        "solar_radiation"
-    ] == pytest.approx(
-        200.0
-    )
-
-    assert row[
-        "direct_normal_irradiance"
-    ] == pytest.approx(
-        300.0
-    )
-
-
-def test_prepare_country_15min_weather_does_not_create_peninsula_geography(
-    spark,
-):
-    df = spark.createDataFrame(
-        [
-            (
-                "2026-08-23 10:00:00",
-                "01",
-                "Province A",
-                20.0,
-                40.0,
-                1.0,
-                10.0,
-                90.0,
-                20.0,
-                180.0,
-                100.0,
-                200.0,
-            ),
-        ],
-        [
-            "observation_timestamp",
-            "province_code",
-            "province_name",
-            "temperature_2m",
-            "relative_humidity_2m",
-            "precipitation",
-            "wind_speed_80m",
-            "wind_direction_80m",
-            "wind_speed_120m",
-            "wind_direction_120m",
-            "shortwave_radiation",
-            "direct_normal_irradiance",
-        ],
-    )
-
-    row = (
-        prepare_country_15min_weather(
-            df,
-            geography_key="COUNTRY_ES",
-        )
-        .first()
-    )
-
-    assert (
-        row["geography_level"]
-        == "COUNTRY"
-    )
-
-    assert (
-        row["geography_name"]
-        == "España"
-    )
-
-
-def test_prepare_peninsula_15min_weather_excludes_non_peninsular_provinces(
-    spark,
-):
-    """
-    Peninsula weather must be aggregated from province-level observations
-    after excluding the five CNIG-validated non-peninsular province codes.
-
-    Validated exclusions:
-        07 -> Illes Balears
-        35 -> Las Palmas
-        38 -> Santa Cruz de Tenerife
-        51 -> Ceuta
-        52 -> Melilla
-    """
-    schema = StructType(
-        [
-            StructField(
-                "observation_timestamp",
-                TimestampType(),
-                False,
-            ),
-            StructField(
-                "province_code",
-                StringType(),
-                False,
-            ),
-            StructField(
-                "province_name",
-                StringType(),
-                False,
-            ),
-            StructField(
-                "temperature_2m",
-                DoubleType(),
-                True,
-            ),
-            StructField(
-                "relative_humidity_2m",
-                DoubleType(),
-                True,
-            ),
-            StructField(
-                "precipitation",
-                DoubleType(),
-                True,
-            ),
-            StructField(
-                "wind_speed_80m",
-                DoubleType(),
-                True,
-            ),
-            StructField(
-                "wind_direction_80m",
-                DoubleType(),
-                True,
-            ),
-            StructField(
-                "wind_speed_120m",
-                DoubleType(),
-                True,
-            ),
-            StructField(
-                "wind_direction_120m",
-                DoubleType(),
-                True,
-            ),
-            StructField(
-                "shortwave_radiation",
-                DoubleType(),
-                True,
-            ),
-            StructField(
-                "direct_normal_irradiance",
-                DoubleType(),
-                True,
-            ),
-        ]
-    )
-
-    timestamp = datetime(
-        2026,
-        8,
-        23,
-        10,
-        0,
-    )
-
-    rows = [
-        (
-            timestamp,
-            "28",
-            "Madrid",
-            20.0,
-            50.0,
-            0.0,
-            10.0,
-            180.0,
-            12.0,
-            190.0,
-            300.0,
-            200.0,
-        ),
-        (
-            timestamp,
-            "07",
-            "Illes Balears",
-            100.0,
-            90.0,
-            10.0,
-            50.0,
-            90.0,
-            60.0,
-            90.0,
-            900.0,
-            800.0,
-        ),
-        (
-            timestamp,
-            "35",
-            "Las Palmas",
-            100.0,
-            90.0,
-            10.0,
-            50.0,
-            90.0,
-            60.0,
-            90.0,
-            900.0,
-            800.0,
-        ),
-        (
-            timestamp,
-            "38",
-            "Santa Cruz de Tenerife",
-            100.0,
-            90.0,
-            10.0,
-            50.0,
-            90.0,
-            60.0,
-            90.0,
-            900.0,
-            800.0,
-        ),
-        (
-            timestamp,
-            "51",
-            "Ceuta",
-            100.0,
-            90.0,
-            10.0,
-            50.0,
-            90.0,
-            60.0,
-            90.0,
-            900.0,
-            800.0,
-        ),
-        (
-            timestamp,
-            "52",
-            "Melilla",
-            100.0,
-            90.0,
-            10.0,
-            50.0,
-            90.0,
-            60.0,
-            90.0,
-            900.0,
-            800.0,
-        ),
-    ]
-
-    source = spark.createDataFrame(
-        rows,
-        schema=schema,
-    )
-
-    result = (
-        prepare_peninsula_15min_weather(
-            source,
-            geography_key="TEST_PENINSULA",
-            excluded_province_codes=[
-                "07",
-                "35",
-                "38",
-                "51",
-                "52",
-            ],
-        )
-    )
-
-    assert result.count() == 1
-
-    row = result.first()
-
-    assert row[
-        "geography_key"
-    ] == "TEST_PENINSULA"
-
-    assert row[
-        "geography_level"
-    ] == "PENINSULA"
-
-    assert row[
-        "geography_name"
-    ] == "Península"
-
-    # Only Madrid is eligible for the Peninsula aggregation.
-    # If any excluded territory entered the calculation this value
-    # would differ dramatically.
-    assert row[
-        "temperature"
-    ] == pytest.approx(
-        20.0
-    )
-
-    assert row[
-        "humidity"
-    ] == pytest.approx(
-        50.0
-    )
-
-    assert row[
-        "precipitation"
-    ] == pytest.approx(
-        0.0
-    )
-
-    assert row[
-        "solar_radiation"
-    ] == pytest.approx(
-        300.0
-    )
-
-    assert row[
-        "direct_normal_irradiance"
-    ] == pytest.approx(
-        200.0
-    )

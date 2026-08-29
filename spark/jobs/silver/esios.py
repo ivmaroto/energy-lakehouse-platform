@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from functools import reduce
+import json
+from pathlib import Path
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
@@ -27,43 +29,56 @@ SOURCE = "esios"
 # Validated Bronze datasets
 # ============================================================================
 
-ESIOS_DATASETS = [
-    "demanda_en_consumo",
-    "demanda_medida_discriminacion_horaria_total",
-    "demanda_real",
-    "demanda_real_suma_generacion",
-    "generacion_medida_carbon",
-    "generacion_medida_ciclo_combinado",
-    "generacion_medida_eolica_terrestre",
-    "generacion_medida_gas_natural_cogeneracion",
-    "generacion_medida_gas_natural_turbina_vapor",
-    "generacion_medida_hidraulica",
-    "generacion_medida_nuclear",
-    "generacion_medida_otras_renovables",
-    "generacion_medida_solar_fotovoltaica",
-    "generacion_medida_solar_termica",
-    "generacion_medida_total",
-    "generacion_medida_total_tipo_produccion",
-    "generacion_treal_carbon_nacional",
-    "generacion_treal_ciclo_combinado_nacional",
-    "generacion_treal_cogeneracion_residuos_nacional",
-    "generacion_treal_consumo_bombeo_nacional",
-    "generacion_treal_eolica_nacional",
-    "generacion_treal_hidraulica_nacional",
-    "generacion_treal_nuclear_nacional",
-    "generacion_treal_solar_fotovoltaica_nacional",
-    "generacion_treal_solar_termica_nacional",
-    "generacion_treal_termica_renovable_nacional",
-    "potencia_instalada_carbon",
-    "potencia_instalada_ciclo_combinado",
-    "potencia_instalada_eolica",
-    "potencia_instalada_hidraulica",
-    "potencia_instalada_nuclear",
-    "potencia_instalada_otras_renovables",
-    "potencia_instalada_solar_fotovoltaica",
-    "potencia_instalada_solar_termica",
-    "potencia_instalada_total_renovable",
-]
+ESIOS_INDICATORS_CONFIG = (
+    Path(__file__).resolve().parents[3]
+    / "config"
+    / "esios_indicators.json"
+)
+
+
+def _load_active_esios_datasets() -> tuple[str, ...]:
+    """
+    Load the active ESIOS Bronze datasets from the shared
+    project configuration.
+
+    config/esios_indicators.json is the single source of truth
+    for ingestion and Silver dataset scope.
+    """
+
+    with ESIOS_INDICATORS_CONFIG.open(
+        "r",
+        encoding="utf-8",
+    ) as file:
+        config = json.load(file)
+
+    datasets: list[str] = []
+
+    for group in (
+        "hourly",
+        "monthly",
+    ):
+        indicators = config.get(group)
+
+        if not isinstance(indicators, dict):
+            raise ValueError(
+                "Invalid or missing ESIOS indicator group: "
+                f"{group}"
+            )
+
+        datasets.extend(
+            str(dataset)
+            for dataset in indicators.values()
+        )
+
+    if len(datasets) != len(set(datasets)):
+        raise ValueError(
+            "Duplicate ESIOS Bronze dataset configured."
+        )
+
+    return tuple(datasets)
+
+
+ESIOS_DATASETS = _load_active_esios_datasets()
 
 
 # ============================================================================
@@ -74,7 +89,6 @@ MAGNITUDE_ENERGY_ID = 13
 MAGNITUDE_POWER_ID = 20
 
 TIME_HOUR_ID = 4
-TIME_FIVE_MINUTES_ID = 219
 TIME_MONTH_ID = 2
 
 
@@ -446,16 +460,16 @@ def transform_esios_dataset(
 
 
 # ============================================================================
-# Build normalized observations for all 35 datasets
+# Build normalized observations for all active datasets
 # ============================================================================
 
 def build_all_esios_observations(
     spark: SparkSession,
 ) -> DataFrame:
     """
-    Read and normalize every validated ESIOS Bronze dataset.
+    Read and normalize every active ESIOS Bronze dataset.
 
-    The result still contains all three temporal families.
+    Dataset scope is defined by config/esios_indicators.json.
     """
 
     transformed = []
@@ -505,7 +519,7 @@ def build_esios_energy_hourly(
     silver_esios_energy_hourly
 
     Validated classification:
-        magnitude = Energía  (13)
+        magnitude = EnergÃ­a  (13)
         time      = Hora     (4)
     """
 
@@ -516,25 +530,6 @@ def build_esios_energy_hourly(
     )
 
 
-def build_esios_power_5min(
-    observations: DataFrame,
-) -> DataFrame:
-    """
-    silver_esios_power_5min
-
-    Validated classification:
-        magnitude = Potencia       (20)
-        time      = Cinco minutos  (219)
-    """
-
-    return observations.filter(
-        (F.col("magnitude_id") == MAGNITUDE_POWER_ID)
-        &
-        (
-            F.col("time_id")
-            == TIME_FIVE_MINUTES_ID
-        )
-    )
 
 
 def build_esios_installed_capacity_monthly(
@@ -564,10 +559,9 @@ def build_esios_silver(
 ) -> tuple[
     DataFrame,
     DataFrame,
-    DataFrame,
 ]:
     """
-    Build the three approved ESIOS Silver DataFrames.
+    Build the two active ESIOS Silver DataFrames.
 
     Bronze -> Silver transformation only.
 
@@ -580,16 +574,8 @@ def build_esios_silver(
         spark
     )
 
-    energy_hourly = (
-        build_esios_energy_hourly(
-            observations
-        )
-    )
-
-    power_5min = (
-        build_esios_power_5min(
-            observations
-        )
+    energy_hourly = build_esios_energy_hourly(
+        observations
     )
 
     installed_capacity_monthly = (
@@ -600,6 +586,5 @@ def build_esios_silver(
 
     return (
         energy_hourly,
-        power_5min,
         installed_capacity_monthly,
     )

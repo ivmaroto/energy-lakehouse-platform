@@ -1,18 +1,4 @@
 {
-  "five_minute": {
-    "1293": "demanda_real",
-    "10004": "demanda_real_suma_generacion",
-    "2038": "generacion_treal_eolica_nacional",
-    "2039": "generacion_treal_nuclear_nacional",
-    "2040": "generacion_treal_carbon_nacional",
-    "2041": "generacion_treal_ciclo_combinado_nacional",
-    "2042": "generacion_treal_hidraulica_nacional",
-    "2044": "generacion_treal_solar_fotovoltaica_nacional",
-    "2045": "generacion_treal_solar_termica_nacional",
-    "2046": "generacion_treal_termica_renovable_nacional",
-    "2051": "generacion_treal_cogeneracion_residuos_nacional",
-    "2065": "generacion_treal_consumo_bombeo_nacional"
-  },
   "hourly": {
     "1159": "generacion_medida_eolica_terrestre",
     "1161": "generacion_medida_solar_fotovoltaica",
@@ -24,10 +10,7 @@
     "1164": "generacion_medida_gas_natural_cogeneracion",
     "10036": "generacion_medida_carbon",
     "10041": "generacion_medida_otras_renovables",
-    "10043": "generacion_medida_total",
-    "10195": "generacion_medida_total_tipo_produccion",
-    "1193": "demanda_en_consumo",
-    "10267": "demanda_medida_discriminacion_horaria_total"
+    "10043": "generacion_medida_total"
   },
   "monthly": {
     "1475": "potencia_instalada_hidraulica",

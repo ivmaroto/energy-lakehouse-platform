@@ -1,70 +1,65 @@
 """
-Airflow DAG for 15-minute Open-Meteo ingestion.
-"""
+15-minute Open-Meteo Bronze ingestion.
 
-import json
+The complete AEMET station master is loaded
+at task execution time.
+"""
 
 from datetime import timedelta
 
 from airflow import DAG
-from airflow.models import Variable
 from airflow.operators.python import PythonOperator
 from airflow.utils.dates import days_ago
 
-from ingestion.open_meteo.ingest import OpenMeteoIngestion
+from ingestion.aemet.master import load_aemet_station_locations
+from ingestion.open_meteo.batch import OpenMeteoBatchIngestion
 
 
-def ingest_location(
-    *,
-    location_id: str,
-    latitude: float,
-    longitude: float,
+def ingest_all_aemet_locations(
     **context,
-) -> str:
-    """
-    Ingest 15-minute Open-Meteo data for one configured location.
-    """
+):
+    locations = load_aemet_station_locations()
 
-    data_interval_start = context["data_interval_start"]
-    data_interval_end = context["data_interval_end"]
+    start = context["data_interval_start"]
+    end = (
+        context["data_interval_end"]
+        - timedelta(seconds=1)
+    )
 
-    request_end = data_interval_end - timedelta(seconds=1)
+    paths = (
+        OpenMeteoBatchIngestion()
+        .ingest_15min_locations(
+            locations=locations,
+            start_datetime=start,
+            end_datetime=end,
+        )
+    )
 
-    ingestion = OpenMeteoIngestion()
-
-    return ingestion.ingest_minutely_15(
-        location_id=location_id,
-        latitude=latitude,
-        longitude=longitude,
-        start_datetime=data_interval_start,
-        end_datetime=request_end,
+    return (
+        f"{len(locations)} stations; "
+        f"{len(paths)} Bronze files"
     )
 
 
 with DAG(
     dag_id="open_meteo_15min",
-    description="Ingest 15-minute Open-Meteo data into Bronze.",
+    description=(
+        "15-minute Open-Meteo ingestion for "
+        "the complete AEMET station master."
+    ),
     schedule="*/15 * * * *",
     start_date=days_ago(1),
     catchup=False,
     max_active_runs=1,
-    tags=["open_meteo", "bronze", "15min"],
+    tags=[
+        "open_meteo",
+        "aemet_master",
+        "bronze",
+        "15min",
+    ],
 ) as dag:
 
-    locations = json.loads(
-        Variable.get(
-            "OPEN_METEO_LOCATIONS",
-            default_var="[]",
-        )
+    PythonOperator(
+        task_id="open_meteo_15min_all_stations",
+        python_callable=ingest_all_aemet_locations,
     )
-
-    for location in locations:
-        PythonOperator(
-            task_id=f"ingest_{location['location_id']}",
-            python_callable=ingest_location,
-            op_kwargs={
-                "location_id": location["location_id"],
-                "latitude": location["latitude"],
-                "longitude": location["longitude"],
-            },
-        )

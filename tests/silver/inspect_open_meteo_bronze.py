@@ -5,7 +5,6 @@ from silver.common import read_bronze_json
 
 DATASETS = [
     "weather_15min",
-    "weather_historical_forecast",
     "weather_hourly",
 ]
 

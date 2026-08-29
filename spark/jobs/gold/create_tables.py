@@ -19,8 +19,6 @@ GOLD_NAMESPACE = "lakehouse.gold"
 GOLD_TABLES = (
     "gold_fact_province_hourly",
     "gold_fact_installed_capacity_monthly",
-    "gold_fact_country_15min",
-    "gold_fact_country_5min",
     "gold_dim_time",
     "gold_dim_geography",
 )
@@ -38,6 +36,7 @@ CREATE NAMESPACE IF NOT EXISTS {GOLD_NAMESPACE}
 CREATE_GOLD_FACT_PROVINCE_HOURLY_SQL = f"""
 CREATE TABLE IF NOT EXISTS {GOLD_NAMESPACE}.gold_fact_province_hourly (
     gold_timestamp TIMESTAMP,
+    time_key STRING,
     geography_key STRING,
     province_code STRING,
     province_name STRING,
@@ -84,6 +83,7 @@ PARTITIONED BY (
 CREATE_GOLD_FACT_INSTALLED_CAPACITY_MONTHLY_SQL = f"""
 CREATE TABLE IF NOT EXISTS {GOLD_NAMESPACE}.gold_fact_installed_capacity_monthly (
     year_month STRING,
+    time_key STRING,
     gold_month_timestamp TIMESTAMP,
     source_timestamp TIMESTAMP,
 
@@ -109,90 +109,6 @@ PARTITIONED BY (
     year_month
 )
 """
-
-
-CREATE_GOLD_FACT_COUNTRY_15MIN_SQL = f"""
-CREATE TABLE IF NOT EXISTS {GOLD_NAMESPACE}.gold_fact_country_15min (
-    gold_timestamp TIMESTAMP,
-
-    geography_key STRING,
-    geography_level STRING,
-    geography_name STRING,
-
-    temperature DOUBLE,
-    humidity DOUBLE,
-    precipitation DOUBLE,
-
-    wind_speed_80m DOUBLE,
-    wind_direction_80m DOUBLE,
-    wind_speed_120m DOUBLE,
-    wind_direction_120m DOUBLE,
-
-    solar_radiation DOUBLE,
-    direct_normal_irradiance DOUBLE,
-
-    real_demand_energy_mwh_15min DOUBLE,
-    wind_generation_energy_mwh_15min DOUBLE,
-    nuclear_generation_energy_mwh_15min DOUBLE,
-    coal_generation_energy_mwh_15min DOUBLE,
-    combined_cycle_generation_energy_mwh_15min DOUBLE,
-    hydraulic_generation_energy_mwh_15min DOUBLE,
-    solar_photovoltaic_generation_energy_mwh_15min DOUBLE,
-    solar_thermal_generation_energy_mwh_15min DOUBLE,
-    renewable_thermal_generation_energy_mwh_15min DOUBLE,
-    cogeneration_waste_generation_energy_mwh_15min DOUBLE,
-    pumping_consumption_energy_mwh_15min DOUBLE,
-
-    gold_created_at TIMESTAMP
-)
-USING iceberg
-PARTITIONED BY (
-    days(gold_timestamp)
-)
-"""
-
-
-CREATE_GOLD_FACT_COUNTRY_5MIN_SQL = f"""
-CREATE TABLE IF NOT EXISTS {GOLD_NAMESPACE}.gold_fact_country_5min (
-    gold_timestamp TIMESTAMP,
-
-    geography_key STRING,
-    geography_level STRING,
-    geography_name STRING,
-    esios_geo_id BIGINT,
-
-    real_demand_mw DOUBLE,
-    wind_generation_power_mw DOUBLE,
-    nuclear_generation_power_mw DOUBLE,
-    coal_generation_power_mw DOUBLE,
-    combined_cycle_generation_power_mw DOUBLE,
-    hydraulic_generation_power_mw DOUBLE,
-    solar_photovoltaic_generation_power_mw DOUBLE,
-    solar_thermal_generation_power_mw DOUBLE,
-    renewable_thermal_generation_power_mw DOUBLE,
-    cogeneration_waste_generation_power_mw DOUBLE,
-    pumping_consumption_power_mw DOUBLE,
-
-    real_demand_energy_mwh_5min DOUBLE,
-    wind_generation_energy_mwh_5min DOUBLE,
-    nuclear_generation_energy_mwh_5min DOUBLE,
-    coal_generation_energy_mwh_5min DOUBLE,
-    combined_cycle_generation_energy_mwh_5min DOUBLE,
-    hydraulic_generation_energy_mwh_5min DOUBLE,
-    solar_photovoltaic_generation_energy_mwh_5min DOUBLE,
-    solar_thermal_generation_energy_mwh_5min DOUBLE,
-    renewable_thermal_generation_energy_mwh_5min DOUBLE,
-    cogeneration_waste_generation_energy_mwh_5min DOUBLE,
-    pumping_consumption_energy_mwh_5min DOUBLE,
-
-    gold_created_at TIMESTAMP
-)
-USING iceberg
-PARTITIONED BY (
-    days(gold_timestamp)
-)
-"""
-
 
 CREATE_GOLD_DIM_TIME_SQL = f"""
 CREATE TABLE IF NOT EXISTS {GOLD_NAMESPACE}.gold_dim_time (
@@ -250,14 +166,6 @@ CREATE_TABLE_STATEMENTS = (
         CREATE_GOLD_FACT_INSTALLED_CAPACITY_MONTHLY_SQL,
     ),
     (
-        "gold_fact_country_15min",
-        CREATE_GOLD_FACT_COUNTRY_15MIN_SQL,
-    ),
-    (
-        "gold_fact_country_5min",
-        CREATE_GOLD_FACT_COUNTRY_5MIN_SQL,
-    ),
-    (
         "gold_dim_time",
         CREATE_GOLD_DIM_TIME_SQL,
     ),
@@ -289,7 +197,7 @@ def create_gold_tables(
     spark: SparkSession,
 ) -> None:
     """
-    Create the six approved Gold Iceberg tables.
+    Create the four approved Gold Iceberg tables.
 
     CREATE TABLE IF NOT EXISTS is deliberately used so an existing Gold
     table is not dropped, overwritten, or unnecessarily recreated.
@@ -313,7 +221,7 @@ def validate_gold_tables_exist(
     spark: SparkSession,
 ) -> None:
     """
-    Validate that exactly the six approved physical Gold tables exist.
+    Validate that exactly the four approved physical Gold tables exist.
     """
     rows = (
         spark.sql(

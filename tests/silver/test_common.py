@@ -4,10 +4,8 @@ import pytest
 from pyspark.sql import SparkSession
 
 from silver.common import (
-    count_null_keys,
     decimal_comma_to_double,
     deduplicate,
-    empty_string_to_null,
     get_bronze_dataset_path,
     get_required_env,
 )
@@ -86,28 +84,6 @@ def test_decimal_comma_to_double(spark):
     assert result[3]["value"] is None
 
 
-def test_empty_string_to_null(spark):
-    df = spark.createDataFrame(
-        [
-            ("abc",),
-            ("   ",),
-            (" xyz ",),
-        ],
-        ["raw_value"],
-    )
-
-    result = (
-        df.select(
-            empty_string_to_null(
-                "raw_value"
-            ).alias("value")
-        )
-        .collect()
-    )
-
-    assert result[0]["value"] == "abc"
-    assert result[1]["value"] is None
-    assert result[2]["value"] == "xyz"
 
 
 def test_deduplicate_by_natural_key(spark):
@@ -141,28 +117,3 @@ def test_deduplicate_fails_with_missing_key(spark):
             df,
             ["missing_key"],
         )
-
-
-def test_count_null_keys(spark):
-    df = spark.createDataFrame(
-        [
-            ("A", "2026-08-18"),
-            (None, "2026-08-18"),
-            ("B", None),
-            (None, None),
-        ],
-        [
-            "station_id",
-            "observation_date",
-        ],
-    )
-
-    result = count_null_keys(
-        df,
-        [
-            "station_id",
-            "observation_date",
-        ],
-    )
-
-    assert result == 3

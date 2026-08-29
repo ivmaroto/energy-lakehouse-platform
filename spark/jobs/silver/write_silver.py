@@ -18,16 +18,13 @@ from silver.geography import (
 
 from silver.create_tables import (
     TABLE_AEMET_CURRENT,
-    TABLE_AEMET_DAILY,
     TABLE_AEMET_STATIONS,
     TABLE_CNIG_AUTONOMOUS_COMMUNITIES,
     TABLE_CNIG_MUNICIPALITIES,
     TABLE_CNIG_PROVINCES,
     TABLE_ESIOS_ENERGY_HOURLY,
     TABLE_ESIOS_INSTALLED_CAPACITY,
-    TABLE_ESIOS_POWER_5MIN,
     TABLE_OPEN_METEO_15MIN,
-    TABLE_OPEN_METEO_HISTORICAL,
     TABLE_OPEN_METEO_HOURLY,
 )
 
@@ -53,11 +50,6 @@ VALID_MODES = {
 
 KEY_AEMET_STATIONS = [
     "station_id",
-]
-
-KEY_AEMET_DAILY = [
-    "station_id",
-    "observation_date",
 ]
 
 KEY_AEMET_CURRENT = [
@@ -292,20 +284,9 @@ def main() -> None:
     )
 
     print("=" * 80)
-    print(
-        "WRITE SILVER DATA TO ICEBERG"
-    )
-    print(
-        f"MODE = {mode}"
-    )
+    print("WRITE SILVER DATA TO ICEBERG")
+    print(f"MODE = {mode}")
     print("=" * 80)
-
-    # ------------------------------------------------------------------------
-    # Build CNIG
-    #
-    # Required in every mode because CNIG is the canonical geographical
-    # master used by the Silver geography normalization.
-    # ------------------------------------------------------------------------
 
     (
         cnig_provinces,
@@ -315,77 +296,37 @@ def main() -> None:
         spark
     )
 
-    # ========================================================================
-    # ESIOS geography-fix mode
-    #
-    # Persist ONLY the ESIOS tables affected by canonical geographical
-    # normalization:
-    #
-    #   - silver_esios_energy_hourly
-    #       -> canonical CNIG province
-    #
-    #   - silver_esios_installed_capacity_monthly
-    #       -> canonical CNIG autonomous community
-    #
-    # silver_esios_power_5min remains deliberately excluded because this
-    # correction does not change its geographical model.
-    # ========================================================================
-
     if mode == MODE_ESIOS_GEOGRAPHY_FIX:
         (
             esios_energy_hourly,
-            _esios_power_5min,
             esios_installed_capacity,
         ) = build_esios_silver(
             spark
         )
 
-        # --------------------------------------------------------------------
-        # ESIOS hourly energy -> canonical CNIG province
-        # --------------------------------------------------------------------
-
-        esios_energy_hourly = (
-            enrich_with_cnig_province(
-                esios_energy_hourly,
-                cnig_provinces,
-                source_province_column="esios_geo_name",
-            )
+        esios_energy_hourly = enrich_with_cnig_province(
+            esios_energy_hourly,
+            cnig_provinces,
+            source_province_column="esios_geo_name",
         )
 
         validate_all_provinces_matched(
             esios_energy_hourly,
-            dataset_name=(
-                "silver_esios_energy_hourly"
-            ),
+            dataset_name="silver_esios_energy_hourly",
         )
-
-        # --------------------------------------------------------------------
-        # ESIOS monthly installed capacity
-        # -> canonical CNIG autonomous community
-        # --------------------------------------------------------------------
 
         esios_installed_capacity = (
             enrich_with_cnig_autonomous_community(
                 esios_installed_capacity,
                 cnig_autonomous_communities,
-                source_autonomous_community_column=(
-                    "esios_geo_name"
-                ),
+                source_autonomous_community_column="esios_geo_name",
             )
         )
 
         validate_all_autonomous_communities_matched(
             esios_installed_capacity,
-            dataset_name=(
-                "silver_esios_installed_capacity_monthly"
-            ),
+            dataset_name="silver_esios_installed_capacity_monthly",
         )
-
-        print("=" * 80)
-        print(
-            "ESIOS GEOGRAPHY FIX - AFFECTED TABLES ONLY"
-        )
-        print("=" * 80)
 
         merge_into_table(
             spark=spark,
@@ -400,9 +341,7 @@ def main() -> None:
             df=esios_installed_capacity,
             table_name=TABLE_ESIOS_INSTALLED_CAPACITY,
             natural_key=KEY_ESIOS,
-            view_name=(
-                "src_esios_installed_capacity"
-            ),
+            view_name="src_esios_installed_capacity",
         )
 
         print("=" * 80)
@@ -414,127 +353,54 @@ def main() -> None:
         spark.stop()
         return
 
-    # ------------------------------------------------------------------------
-    # Build AEMET
-    # ------------------------------------------------------------------------
-
     (
         aemet_stations,
-        aemet_daily,
         aemet_current,
     ) = build_aemet_silver(
         spark
     )
 
-    # ------------------------------------------------------------------------
-    # Build Open-Meteo
-    # ------------------------------------------------------------------------
-
     (
         open_meteo_hourly,
-        open_meteo_historical,
         open_meteo_15min,
     ) = build_open_meteo_silver(
         spark
     )
 
-    # ------------------------------------------------------------------------
-    # Canonical geographical normalization
-    # ------------------------------------------------------------------------
-
-    aemet_stations = (
-        enrich_with_cnig_province(
-            aemet_stations,
-            cnig_provinces,
-            source_province_column="provincia",
-        )
+    aemet_stations = enrich_with_cnig_province(
+        aemet_stations,
+        cnig_provinces,
+        source_province_column="provincia",
     )
 
-    aemet_daily = (
-        enrich_with_cnig_province(
-            aemet_daily,
-            cnig_provinces,
-            source_province_column="provincia",
-        )
+    open_meteo_hourly = enrich_with_cnig_province(
+        open_meteo_hourly,
+        cnig_provinces,
+        source_province_column="province",
     )
 
-    open_meteo_hourly = (
-        enrich_with_cnig_province(
-            open_meteo_hourly,
-            cnig_provinces,
-            source_province_column="province",
-        )
+    open_meteo_15min = enrich_with_cnig_province(
+        open_meteo_15min,
+        cnig_provinces,
+        source_province_column="province",
     )
-
-    open_meteo_historical = (
-        enrich_with_cnig_province(
-            open_meteo_historical,
-            cnig_provinces,
-            source_province_column="province",
-        )
-    )
-
-    open_meteo_15min = (
-        enrich_with_cnig_province(
-            open_meteo_15min,
-            cnig_provinces,
-            source_province_column="province",
-        )
-    )
-
-    # ------------------------------------------------------------------------
-    # Validate canonical geography before persistence
-    # ------------------------------------------------------------------------
 
     validate_all_provinces_matched(
         aemet_stations,
-        dataset_name=(
-            "silver_aemet_stations"
-        ),
-    )
-
-    validate_all_provinces_matched(
-        aemet_daily,
-        dataset_name=(
-            "silver_aemet_daily_climatology"
-        ),
+        dataset_name="silver_aemet_stations",
     )
 
     validate_all_provinces_matched(
         open_meteo_hourly,
-        dataset_name=(
-            "silver_open_meteo_hourly"
-        ),
-    )
-
-    validate_all_provinces_matched(
-        open_meteo_historical,
-        dataset_name=(
-            "silver_open_meteo_historical_forecast"
-        ),
+        dataset_name="silver_open_meteo_hourly",
     )
 
     validate_all_provinces_matched(
         open_meteo_15min,
-        dataset_name=(
-            "silver_open_meteo_15min"
-        ),
+        dataset_name="silver_open_meteo_15min",
     )
 
-    # ========================================================================
-    # Geography-fix mode
-    #
-    # Persist ONLY the five meteorological tables affected by the previous
-    # canonical province normalization correction.
-    # ========================================================================
-
     if mode == MODE_GEOGRAPHY_FIX:
-        print("=" * 80)
-        print(
-            "GEOGRAPHY FIX - AFFECTED TABLES ONLY"
-        )
-        print("=" * 80)
-
         merge_into_table(
             spark=spark,
             df=aemet_stations,
@@ -545,26 +411,10 @@ def main() -> None:
 
         merge_into_table(
             spark=spark,
-            df=aemet_daily,
-            table_name=TABLE_AEMET_DAILY,
-            natural_key=KEY_AEMET_DAILY,
-            view_name="src_aemet_daily",
-        )
-
-        merge_into_table(
-            spark=spark,
             df=open_meteo_hourly,
             table_name=TABLE_OPEN_METEO_HOURLY,
             natural_key=KEY_OPEN_METEO,
             view_name="src_open_meteo_hourly",
-        )
-
-        merge_into_table(
-            spark=spark,
-            df=open_meteo_historical,
-            table_name=TABLE_OPEN_METEO_HISTORICAL,
-            natural_key=KEY_OPEN_METEO,
-            view_name="src_open_meteo_historical",
         )
 
         merge_into_table(
@@ -584,62 +434,36 @@ def main() -> None:
         spark.stop()
         return
 
-    # ========================================================================
-    # Full Silver mode
-    # ========================================================================
-
     (
         esios_energy_hourly,
-        esios_power_5min,
         esios_installed_capacity,
     ) = build_esios_silver(
         spark
     )
 
-    # ------------------------------------------------------------------------
-    # ESIOS hourly energy -> canonical CNIG province
-    # ------------------------------------------------------------------------
-
-    esios_energy_hourly = (
-        enrich_with_cnig_province(
-            esios_energy_hourly,
-            cnig_provinces,
-            source_province_column="esios_geo_name",
-        )
+    esios_energy_hourly = enrich_with_cnig_province(
+        esios_energy_hourly,
+        cnig_provinces,
+        source_province_column="esios_geo_name",
     )
 
     validate_all_provinces_matched(
         esios_energy_hourly,
-        dataset_name=(
-            "silver_esios_energy_hourly"
-        ),
+        dataset_name="silver_esios_energy_hourly",
     )
-
-    # ------------------------------------------------------------------------
-    # ESIOS monthly installed capacity
-    # -> canonical CNIG autonomous community
-    # ------------------------------------------------------------------------
 
     esios_installed_capacity = (
         enrich_with_cnig_autonomous_community(
             esios_installed_capacity,
             cnig_autonomous_communities,
-            source_autonomous_community_column=(
-                "esios_geo_name"
-            ),
+            source_autonomous_community_column="esios_geo_name",
         )
     )
 
     validate_all_autonomous_communities_matched(
         esios_installed_capacity,
-        dataset_name=(
-            "silver_esios_installed_capacity_monthly"
-        ),
+        dataset_name="silver_esios_installed_capacity_monthly",
     )
-
-    # ------------------------------------------------------------------------
-    # AEMET
-    # ------------------------------------------------------------------------
 
     merge_into_table(
         spark=spark,
@@ -651,23 +475,11 @@ def main() -> None:
 
     merge_into_table(
         spark=spark,
-        df=aemet_daily,
-        table_name=TABLE_AEMET_DAILY,
-        natural_key=KEY_AEMET_DAILY,
-        view_name="src_aemet_daily",
-    )
-
-    merge_into_table(
-        spark=spark,
         df=aemet_current,
         table_name=TABLE_AEMET_CURRENT,
         natural_key=KEY_AEMET_CURRENT,
         view_name="src_aemet_current",
     )
-
-    # ------------------------------------------------------------------------
-    # Open-Meteo
-    # ------------------------------------------------------------------------
 
     merge_into_table(
         spark=spark,
@@ -679,23 +491,11 @@ def main() -> None:
 
     merge_into_table(
         spark=spark,
-        df=open_meteo_historical,
-        table_name=TABLE_OPEN_METEO_HISTORICAL,
-        natural_key=KEY_OPEN_METEO,
-        view_name="src_open_meteo_historical",
-    )
-
-    merge_into_table(
-        spark=spark,
         df=open_meteo_15min,
         table_name=TABLE_OPEN_METEO_15MIN,
         natural_key=KEY_OPEN_METEO,
         view_name="src_open_meteo_15min",
     )
-
-    # ------------------------------------------------------------------------
-    # CNIG
-    # ------------------------------------------------------------------------
 
     merge_into_table(
         spark=spark,
@@ -710,9 +510,7 @@ def main() -> None:
         df=cnig_autonomous_communities,
         table_name=TABLE_CNIG_AUTONOMOUS_COMMUNITIES,
         natural_key=KEY_CNIG_AUTONOMOUS_COMMUNITIES,
-        view_name=(
-            "src_cnig_autonomous_communities"
-        ),
+        view_name="src_cnig_autonomous_communities",
     )
 
     merge_into_table(
@@ -722,10 +520,6 @@ def main() -> None:
         natural_key=KEY_CNIG_MUNICIPALITIES,
         view_name="src_cnig_municipalities",
     )
-
-    # ------------------------------------------------------------------------
-    # ESIOS
-    # ------------------------------------------------------------------------
 
     merge_into_table(
         spark=spark,
@@ -737,20 +531,10 @@ def main() -> None:
 
     merge_into_table(
         spark=spark,
-        df=esios_power_5min,
-        table_name=TABLE_ESIOS_POWER_5MIN,
-        natural_key=KEY_ESIOS,
-        view_name="src_esios_power_5min",
-    )
-
-    merge_into_table(
-        spark=spark,
         df=esios_installed_capacity,
         table_name=TABLE_ESIOS_INSTALLED_CAPACITY,
         natural_key=KEY_ESIOS,
-        view_name=(
-            "src_esios_installed_capacity"
-        ),
+        view_name="src_esios_installed_capacity",
     )
 
     print("=" * 80)
@@ -760,6 +544,7 @@ def main() -> None:
     print("=" * 80)
 
     spark.stop()
+
 
 
 if __name__ == "__main__":

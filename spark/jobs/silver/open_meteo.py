@@ -12,7 +12,6 @@ from silver.common import (
 SOURCE = "open_meteo"
 
 WEATHER_HOURLY_DATASET = "weather_hourly"
-WEATHER_HISTORICAL_FORECAST_DATASET = "weather_historical_forecast"
 WEATHER_15MIN_DATASET = "weather_15min"
 
 
@@ -39,12 +38,6 @@ HOURLY_METEOROLOGICAL_COLUMNS = [
 ]
 
 
-HISTORICAL_FORECAST_COLUMNS = [
-    "wind_speed_80m",
-    "wind_direction_80m",
-    "wind_speed_120m",
-    "wind_direction_120m",
-]
 
 
 MINUTELY_15_METEOROLOGICAL_COLUMNS = [
@@ -139,15 +132,6 @@ def read_weather_hourly_bronze(
     )
 
 
-def read_weather_historical_forecast_bronze(
-    spark: SparkSession,
-) -> DataFrame:
-    return read_bronze_json(
-        spark=spark,
-        source=SOURCE,
-        dataset=WEATHER_HISTORICAL_FORECAST_DATASET,
-        multiline=True,
-    )
 
 
 def read_weather_15min_bronze(
@@ -397,41 +381,8 @@ def transform_weather_hourly(
 
 
 # ============================================================================
-# weather_historical_forecast
-# -> silver_open_meteo_historical_forecast
 # ============================================================================
 
-def transform_weather_historical_forecast(
-    bronze_df: DataFrame,
-) -> DataFrame:
-    """
-    Bronze:
-        weather_historical_forecast
-
-    Silver:
-        silver_open_meteo_historical_forecast
-
-    Granularity:
-        1 hour
-
-    Natural key:
-        station_id + observation_timestamp
-    """
-
-    silver = _explode_observations(
-        bronze_df,
-        temporal_struct="hourly",
-        meteorological_columns=HISTORICAL_FORECAST_COLUMNS,
-        station_id_metadata_field="station_id",
-    )
-
-    return deduplicate(
-        silver,
-        [
-            "station_id",
-            "observation_timestamp",
-        ],
-    )
 
 
 # ============================================================================
@@ -486,55 +437,30 @@ def build_open_meteo_silver(
 ) -> tuple[
     DataFrame,
     DataFrame,
-    DataFrame,
 ]:
     """
-    Build the three approved Open-Meteo Silver DataFrames.
+    Build the two active Open-Meteo Silver DataFrames.
 
     Bronze -> Silver transformation only.
-
-    Iceberg persistence is handled in the subsequent physical persistence
-    step of the Silver implementation.
     """
 
-    hourly_bronze = (
-        read_weather_hourly_bronze(
-            spark
-        )
+    hourly_bronze = read_weather_hourly_bronze(
+        spark
     )
 
-    historical_forecast_bronze = (
-        read_weather_historical_forecast_bronze(
-            spark
-        )
+    weather_15min_bronze = read_weather_15min_bronze(
+        spark
     )
 
-    weather_15min_bronze = (
-        read_weather_15min_bronze(
-            spark
-        )
+    hourly_silver = transform_weather_hourly(
+        hourly_bronze
     )
 
-    hourly_silver = (
-        transform_weather_hourly(
-            hourly_bronze
-        )
-    )
-
-    historical_forecast_silver = (
-        transform_weather_historical_forecast(
-            historical_forecast_bronze
-        )
-    )
-
-    weather_15min_silver = (
-        transform_weather_15min(
-            weather_15min_bronze
-        )
+    weather_15min_silver = transform_weather_15min(
+        weather_15min_bronze
     )
 
     return (
         hourly_silver,
-        historical_forecast_silver,
         weather_15min_silver,
     )

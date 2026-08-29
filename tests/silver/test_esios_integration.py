@@ -6,22 +6,14 @@ from silver.esios import (
     ESIOS_DATASETS,
     MAGNITUDE_ENERGY_ID,
     MAGNITUDE_POWER_ID,
-    TIME_FIVE_MINUTES_ID,
     TIME_HOUR_ID,
     TIME_MONTH_ID,
     build_all_esios_observations,
     build_esios_energy_hourly,
     build_esios_installed_capacity_monthly,
-    build_esios_power_5min,
-    read_esios_dataset_bronze,
-    transform_esios_dataset,
 )
 
 
-EMPTY_VALUE_DATASETS = [
-    "demanda_en_consumo",
-    "demanda_medida_discriminacion_horaria_total",
-]
 
 
 def validate_family(
@@ -271,28 +263,6 @@ def validate_family(
         )
 
 
-def validate_empty_source_datasets(
-    spark,
-):
-    print("=" * 80)
-    print("EMPTY VALUES DATASETS")
-    print("=" * 80)
-
-    for dataset in EMPTY_VALUE_DATASETS:
-        bronze = read_esios_dataset_bronze(
-            spark,
-            dataset,
-        )
-
-        transformed = transform_esios_dataset(
-            bronze,
-            dataset,
-        )
-
-        print(
-            f"EMPTY_DATASET_ROWS {dataset} =",
-            transformed.count(),
-        )
 
 
 def main() -> None:
@@ -325,12 +295,6 @@ def main() -> None:
         )
     )
 
-    power_5min = (
-        build_esios_power_5min(
-            observations
-        )
-    )
-
     installed_capacity_monthly = (
         build_esios_installed_capacity_monthly(
             observations
@@ -343,14 +307,6 @@ def main() -> None:
         expected_magnitude_id=MAGNITUDE_ENERGY_ID,
         expected_time_id=TIME_HOUR_ID,
         expected_minutes=60,
-    )
-
-    validate_family(
-        name="silver_esios_power_5min",
-        df=power_5min,
-        expected_magnitude_id=MAGNITUDE_POWER_ID,
-        expected_time_id=TIME_FIVE_MINUTES_ID,
-        expected_minutes=5,
     )
 
     validate_family(
@@ -389,22 +345,6 @@ def main() -> None:
     )
 
     print(
-        "POWER_5MIN_DATASETS =",
-        classified_datasets
-        .filter(
-            (F.col("magnitude_id") == MAGNITUDE_POWER_ID)
-            &
-            (
-                F.col("time_id")
-                == TIME_FIVE_MINUTES_ID
-            )
-        )
-        .select("dataset")
-        .distinct()
-        .count(),
-    )
-
-    print(
         "INSTALLED_CAPACITY_MONTHLY_DATASETS =",
         classified_datasets
         .filter(
@@ -417,11 +357,14 @@ def main() -> None:
         .count(),
     )
 
-    validate_empty_source_datasets(
-        spark
+    print("=" * 80)
+    print(
+        "ESIOS ACTIVE SILVER FAMILIES VALIDATED"
     )
+    print("=" * 80)
 
     spark.stop()
+
 
 
 if __name__ == "__main__":

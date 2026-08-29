@@ -7,26 +7,13 @@ import pytest
 from pyspark.sql import SparkSession
 
 from gold.metrics import (
-    COUNTRY_15MIN_WEATHER_METRICS,
-    HIGH_FREQUENCY_ENERGY_15MIN_METRICS,
-    HIGH_FREQUENCY_ENERGY_5MIN_METRICS,
-    HIGH_FREQUENCY_EXCLUDED_INDICATORS,
-    HIGH_FREQUENCY_POWER_METRICS,
     HOURLY_ENERGY_EXCLUDED_INDICATORS,
     HOURLY_ENERGY_METRICS,
     INSTALLED_CAPACITY_METRICS,
-    PENINSULA_HIGH_FREQUENCY_INDICATORS,
     PROVINCE_HOURLY_WEATHER_METRICS,
-    SPAIN_HIGH_FREQUENCY_INDICATORS,
-    add_energy_mwh_5min,
-    country_15min_energy_metric_names,
-    country_5min_energy_metric_names,
-    country_5min_power_metric_names,
     hourly_energy_metric_names,
     installed_capacity_metric_names,
     pivot_indicator_metrics,
-    prepare_country_15min_energy_metrics,
-    prepare_country_5min_metrics,
     prepare_hourly_energy_metrics,
     prepare_installed_capacity_metrics,
     select_approved_indicators,
@@ -119,101 +106,24 @@ def test_installed_capacity_metric_mapping_is_exact():
     ) == 9
 
 
-def test_high_frequency_power_metric_mapping_is_exact():
-    assert HIGH_FREQUENCY_POWER_METRICS == {
-        1293: "real_demand_mw",
-        2038: "wind_generation_power_mw",
-        2039: "nuclear_generation_power_mw",
-        2040: "coal_generation_power_mw",
-        2041: "combined_cycle_generation_power_mw",
-        2042: "hydraulic_generation_power_mw",
-        2044: "solar_photovoltaic_generation_power_mw",
-        2045: "solar_thermal_generation_power_mw",
-        2046: "renewable_thermal_generation_power_mw",
-        2051: "cogeneration_waste_generation_power_mw",
-        2065: "pumping_consumption_power_mw",
-    }
-
-    assert len(
-        HIGH_FREQUENCY_POWER_METRICS
-    ) == 11
 
 
-def test_high_frequency_5min_energy_mapping_has_same_indicators_as_power():
-    assert set(
-        HIGH_FREQUENCY_ENERGY_5MIN_METRICS
-    ) == set(
-        HIGH_FREQUENCY_POWER_METRICS
-    )
-
-    assert len(
-        HIGH_FREQUENCY_ENERGY_5MIN_METRICS
-    ) == 11
 
 
-def test_high_frequency_15min_energy_mapping_has_same_indicators_as_power():
-    assert set(
-        HIGH_FREQUENCY_ENERGY_15MIN_METRICS
-    ) == set(
-        HIGH_FREQUENCY_POWER_METRICS
-    )
-
-    assert len(
-        HIGH_FREQUENCY_ENERGY_15MIN_METRICS
-    ) == 11
 
 
-def test_high_frequency_exclusion_is_exact():
-    assert HIGH_FREQUENCY_EXCLUDED_INDICATORS == {
-        10004,
-    }
 
 
 # ============================================================================
 # High-frequency geographical scope
 # ============================================================================
 
-def test_peninsula_high_frequency_scope_is_demand_only():
-    assert PENINSULA_HIGH_FREQUENCY_INDICATORS == {
-        1293,
-    }
 
 
-def test_spain_high_frequency_scope_is_exact():
-    assert SPAIN_HIGH_FREQUENCY_INDICATORS == {
-        2038,
-        2039,
-        2040,
-        2041,
-        2042,
-        2044,
-        2045,
-        2046,
-        2051,
-        2065,
-    }
 
 
-def test_spain_and_peninsula_high_frequency_scopes_do_not_overlap():
-    assert (
-        PENINSULA_HIGH_FREQUENCY_INDICATORS
-        .intersection(
-            SPAIN_HIGH_FREQUENCY_INDICATORS
-        )
-        == set()
-    )
 
 
-def test_all_high_frequency_indicators_have_an_approved_scope():
-    scoped_indicators = (
-        PENINSULA_HIGH_FREQUENCY_INDICATORS
-        |
-        SPAIN_HIGH_FREQUENCY_INDICATORS
-    )
-
-    assert scoped_indicators == set(
-        HIGH_FREQUENCY_POWER_METRICS
-    )
 
 
 # ============================================================================
@@ -234,18 +144,6 @@ def test_province_hourly_weather_metrics_are_exact():
     )
 
 
-def test_country_15min_weather_metrics_are_exact():
-    assert COUNTRY_15MIN_WEATHER_METRICS == (
-        "temperature",
-        "humidity",
-        "precipitation",
-        "wind_speed_80m",
-        "wind_direction_80m",
-        "wind_speed_120m",
-        "wind_direction_120m",
-        "solar_radiation",
-        "direct_normal_irradiance",
-    )
 
 
 # ============================================================================
@@ -596,27 +494,27 @@ def test_prepare_hourly_energy_metrics_uses_value_directly_as_mwh(
         [
             (
                 "01",
-                "Araba/Álava",
+                "Araba/Ãlava",
                 "16",
-                "País Vasco/Euskadi",
+                "PaÃ­s Vasco/Euskadi",
                 "2026-08-23 10:00:00",
                 1159,
                 64.562,
             ),
             (
                 "01",
-                "Araba/Álava",
+                "Araba/Ãlava",
                 "16",
-                "País Vasco/Euskadi",
+                "PaÃ­s Vasco/Euskadi",
                 "2026-08-23 10:00:00",
                 10043,
                 2386.667,
             ),
             (
                 "01",
-                "Araba/Álava",
+                "Araba/Ãlava",
                 "16",
-                "País Vasco/Euskadi",
+                "PaÃ­s Vasco/Euskadi",
                 "2026-08-23 10:00:00",
                 10195,
                 9999.0,
@@ -737,7 +635,7 @@ def test_prepare_installed_capacity_metrics_keeps_mw_directly(
                 "2026-08-01 00:00:00",
                 "2026-08-01 00:00:00",
                 "16",
-                "País Vasco/Euskadi",
+                "PaÃ­s Vasco/Euskadi",
                 1001,
                 1485,
                 1234.5,
@@ -747,7 +645,7 @@ def test_prepare_installed_capacity_metrics_keeps_mw_directly(
                 "2026-08-01 00:00:00",
                 "2026-08-01 00:00:00",
                 "16",
-                "País Vasco/Euskadi",
+                "PaÃ­s Vasco/Euskadi",
                 1001,
                 10302,
                 2500.0,
@@ -792,7 +690,7 @@ def test_renewable_total_installed_capacity_is_not_reconstructed(
                 "2026-08-01 00:00:00",
                 "2026-08-01 00:00:00",
                 "01",
-                "Andalucía",
+                "AndalucÃ­a",
                 1001,
                 1485,
                 100.0,
@@ -802,7 +700,7 @@ def test_renewable_total_installed_capacity_is_not_reconstructed(
                 "2026-08-01 00:00:00",
                 "2026-08-01 00:00:00",
                 "01",
-                "Andalucía",
+                "AndalucÃ­a",
                 1001,
                 1486,
                 200.0,
@@ -812,7 +710,7 @@ def test_renewable_total_installed_capacity_is_not_reconstructed(
                 "2026-08-01 00:00:00",
                 "2026-08-01 00:00:00",
                 "01",
-                "Andalucía",
+                "AndalucÃ­a",
                 1001,
                 10302,
                 500.0,
@@ -855,285 +753,23 @@ def test_renewable_total_installed_capacity_is_not_reconstructed(
 
 
 # ============================================================================
-# Five-minute MW -> interval MWh
 # ============================================================================
 
-@pytest.mark.parametrize(
-    (
-        "power_mw",
-        "expected_energy_mwh",
-    ),
-    [
-        (
-            120.0,
-            10.0,
-        ),
-        (
-            0.0,
-            0.0,
-        ),
-        (
-            -120.0,
-            -10.0,
-        ),
-        (
-            64.562,
-            64.562 / 12.0,
-        ),
-    ],
-)
-def test_add_energy_mwh_5min_uses_power_times_five_over_sixty(
-    spark,
-    power_mw,
-    expected_energy_mwh,
-):
-    df = spark.createDataFrame(
-        [
-            (
-                power_mw,
-            ),
-        ],
-        [
-            "value",
-        ],
-    )
-
-    result = add_energy_mwh_5min(
-        df
-    )
-
-    row = result.first()
-
-    assert row[
-        "energy_mwh_5min"
-    ] == pytest.approx(
-        expected_energy_mwh
-    )
 
 
 # ============================================================================
 # Complete country 5-minute preparation
 # ============================================================================
 
-def test_prepare_country_5min_metrics_preserves_power_and_derives_energy(
-    spark,
-):
-    df = spark.createDataFrame(
-        [
-            (
-                "2026-08-23 10:00:00",
-                "peninsula",
-                "peninsula",
-                "Península",
-                8741,
-                1293,
-                120.0,
-            ),
-            (
-                "2026-08-23 10:00:00",
-                "spain",
-                "country",
-                "España",
-                3,
-                2038,
-                -60.0,
-            ),
-        ],
-        [
-            "gold_timestamp",
-            "geography_key",
-            "geography_level",
-            "geography_name",
-            "esios_geo_id",
-            "indicator_id",
-            "value",
-        ],
-    )
-
-    result = prepare_country_5min_metrics(
-        df
-    )
-
-    rows = {
-        row["geography_key"]: row
-        for row in result.collect()
-    }
-
-    peninsula = rows[
-        "peninsula"
-    ]
-
-    assert peninsula[
-        "real_demand_mw"
-    ] == pytest.approx(
-        120.0
-    )
-
-    assert peninsula[
-        "real_demand_energy_mwh_5min"
-    ] == pytest.approx(
-        10.0
-    )
-
-    spain = rows[
-        "spain"
-    ]
-
-    assert spain[
-        "wind_generation_power_mw"
-    ] == pytest.approx(
-        -60.0
-    )
-
-    assert spain[
-        "wind_generation_energy_mwh_5min"
-    ] == pytest.approx(
-        -5.0
-    )
 
 
-def test_prepare_country_5min_metrics_excludes_indicator_10004(
-    spark,
-):
-    df = spark.createDataFrame(
-        [
-            (
-                "2026-08-23 10:00:00",
-                "spain",
-                "country",
-                "España",
-                3,
-                2038,
-                100.0,
-            ),
-            (
-                "2026-08-23 10:00:00",
-                "spain",
-                "country",
-                "España",
-                3,
-                10004,
-                9999.0,
-            ),
-        ],
-        [
-            "gold_timestamp",
-            "geography_key",
-            "geography_level",
-            "geography_name",
-            "esios_geo_id",
-            "indicator_id",
-            "value",
-        ],
-    )
-
-    result = prepare_country_5min_metrics(
-        df
-    )
-
-    assert result.count() == 1
-
-    assert "10004" not in result.columns
 
 
 # ============================================================================
-# Fifteen-minute energy
 # ============================================================================
 
-def test_prepare_country_15min_energy_metrics_uses_precalculated_energy(
-    spark,
-):
-    df = spark.createDataFrame(
-        [
-            (
-                "2026-08-23 10:00:00",
-                "spain",
-                "country",
-                "España",
-                2038,
-                15.0,
-            ),
-            (
-                "2026-08-23 10:00:00",
-                "spain",
-                "country",
-                "España",
-                2041,
-                30.0,
-            ),
-        ],
-        [
-            "gold_timestamp",
-            "geography_key",
-            "geography_level",
-            "geography_name",
-            "indicator_id",
-            "energy_mwh_15min",
-        ],
-    )
-
-    row = (
-        prepare_country_15min_energy_metrics(
-            df
-        )
-        .first()
-    )
-
-    assert row[
-        "wind_generation_energy_mwh_15min"
-    ] == pytest.approx(
-        15.0
-    )
-
-    assert row[
-        "combined_cycle_generation_energy_mwh_15min"
-    ] == pytest.approx(
-        30.0
-    )
 
 
-def test_prepare_country_15min_energy_metrics_does_not_require_power_column(
-    spark,
-):
-    """
-    metrics.py must pivot an already-computed 15-minute energy.
-
-    The 5 -> 15 minute aggregation belongs to temporal.py.
-    This transformation must therefore not depend on a power_mw column
-    or attempt SUM(power_mw).
-    """
-    df = spark.createDataFrame(
-        [
-            (
-                "2026-08-23 10:00:00",
-                "spain",
-                "country",
-                "España",
-                2038,
-                25.0,
-            ),
-        ],
-        [
-            "gold_timestamp",
-            "geography_key",
-            "geography_level",
-            "geography_name",
-            "indicator_id",
-            "energy_mwh_15min",
-        ],
-    )
-
-    result = prepare_country_15min_energy_metrics(
-        df
-    )
-
-    row = result.first()
-
-    assert row[
-        "wind_generation_energy_mwh_15min"
-    ] == pytest.approx(
-        25.0
-    )
 
 
 # ============================================================================
@@ -1149,22 +785,4 @@ def test_hourly_energy_metric_names_match_mapping():
 def test_installed_capacity_metric_names_match_mapping():
     assert installed_capacity_metric_names() == tuple(
         INSTALLED_CAPACITY_METRICS.values()
-    )
-
-
-def test_country_5min_power_metric_names_match_mapping():
-    assert country_5min_power_metric_names() == tuple(
-        HIGH_FREQUENCY_POWER_METRICS.values()
-    )
-
-
-def test_country_5min_energy_metric_names_match_mapping():
-    assert country_5min_energy_metric_names() == tuple(
-        HIGH_FREQUENCY_ENERGY_5MIN_METRICS.values()
-    )
-
-
-def test_country_15min_energy_metric_names_match_mapping():
-    assert country_15min_energy_metric_names() == tuple(
-        HIGH_FREQUENCY_ENERGY_15MIN_METRICS.values()
     )

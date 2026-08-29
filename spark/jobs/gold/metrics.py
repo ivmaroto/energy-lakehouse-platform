@@ -18,7 +18,7 @@ from pyspark.sql import functions as F
 
 
 # ============================================================================
-# Province × hour
+# Province Ã— hour
 #
 # Silver source:
 #     silver_esios_energy_hourly
@@ -58,7 +58,7 @@ HOURLY_ENERGY_EXCLUDED_INDICATORS: frozenset[int] = frozenset(
 
 
 # ============================================================================
-# Autonomous Community × month
+# Autonomous Community Ã— month
 #
 # Silver source:
 #     silver_esios_installed_capacity_monthly
@@ -88,121 +88,6 @@ INSTALLED_CAPACITY_METRICS: dict[int, str] = {
 
 
 # ============================================================================
-# Spain / Peninsula × 5 minutes
-#
-# Silver source:
-#     silver_esios_power_5min
-#
-# Original measure:
-#     power_mw = value
-#
-# Derived interval energy:
-#     energy_mwh_5min = power_mw * (5 / 60)
-#
-# Original signs are preserved.
-# ============================================================================
-
-HIGH_FREQUENCY_POWER_METRICS: dict[int, str] = {
-    1293: "real_demand_mw",
-    2038: "wind_generation_power_mw",
-    2039: "nuclear_generation_power_mw",
-    2040: "coal_generation_power_mw",
-    2041: "combined_cycle_generation_power_mw",
-    2042: "hydraulic_generation_power_mw",
-    2044: "solar_photovoltaic_generation_power_mw",
-    2045: "solar_thermal_generation_power_mw",
-    2046: "renewable_thermal_generation_power_mw",
-    2051: "cogeneration_waste_generation_power_mw",
-    2065: "pumping_consumption_power_mw",
-}
-
-HIGH_FREQUENCY_ENERGY_5MIN_METRICS: dict[int, str] = {
-    1293: "real_demand_energy_mwh_5min",
-    2038: "wind_generation_energy_mwh_5min",
-    2039: "nuclear_generation_energy_mwh_5min",
-    2040: "coal_generation_energy_mwh_5min",
-    2041: "combined_cycle_generation_energy_mwh_5min",
-    2042: "hydraulic_generation_energy_mwh_5min",
-    2044: "solar_photovoltaic_generation_energy_mwh_5min",
-    2045: "solar_thermal_generation_energy_mwh_5min",
-    2046: "renewable_thermal_generation_energy_mwh_5min",
-    2051: "cogeneration_waste_generation_energy_mwh_5min",
-    2065: "pumping_consumption_energy_mwh_5min",
-}
-
-
-# ============================================================================
-# Spain / Peninsula × 15 minutes
-#
-# Energy is constructed in temporal.py from three real 5-minute interval
-# energies.
-#
-# Never:
-#     SUM(power_mw)
-#
-# Correct rule:
-#     energy_mwh_5min = power_mw * 5 / 60
-#     energy_mwh_15min = SUM(three energy_mwh_5min intervals)
-# ============================================================================
-
-HIGH_FREQUENCY_ENERGY_15MIN_METRICS: dict[int, str] = {
-    1293: "real_demand_energy_mwh_15min",
-    2038: "wind_generation_energy_mwh_15min",
-    2039: "nuclear_generation_energy_mwh_15min",
-    2040: "coal_generation_energy_mwh_15min",
-    2041: "combined_cycle_generation_energy_mwh_15min",
-    2042: "hydraulic_generation_energy_mwh_15min",
-    2044: "solar_photovoltaic_generation_energy_mwh_15min",
-    2045: "solar_thermal_generation_energy_mwh_15min",
-    2046: "renewable_thermal_generation_energy_mwh_15min",
-    2051: "cogeneration_waste_generation_energy_mwh_15min",
-    2065: "pumping_consumption_energy_mwh_15min",
-}
-
-HIGH_FREQUENCY_EXCLUDED_INDICATORS: frozenset[int] = frozenset(
-    {
-        10004,
-    }
-)
-
-
-# ============================================================================
-# Approved high-frequency geographical scopes
-#
-# Validated Gold rule:
-#
-#     1293
-#         -> Peninsula
-#
-#     selected 2038..2065 indicators
-#         -> Spain
-#
-# Spain and Peninsula must remain distinct.
-# ============================================================================
-
-PENINSULA_HIGH_FREQUENCY_INDICATORS: frozenset[int] = frozenset(
-    {
-        1293,
-    }
-)
-
-SPAIN_HIGH_FREQUENCY_INDICATORS: frozenset[int] = frozenset(
-    {
-        2038,
-        2039,
-        2040,
-        2041,
-        2042,
-        2044,
-        2045,
-        2046,
-        2051,
-        2065,
-    }
-)
-
-
-# ============================================================================
 # Approved meteorological metric names
 #
 # Selection only.
@@ -223,17 +108,6 @@ PROVINCE_HOURLY_WEATHER_METRICS: tuple[str, ...] = (
     "direct_normal_irradiance",
 )
 
-COUNTRY_15MIN_WEATHER_METRICS: tuple[str, ...] = (
-    "temperature",
-    "humidity",
-    "precipitation",
-    "wind_speed_80m",
-    "wind_direction_80m",
-    "wind_speed_120m",
-    "wind_direction_120m",
-    "solar_radiation",
-    "direct_normal_irradiance",
-)
 
 
 # ============================================================================
@@ -469,7 +343,7 @@ def prepare_hourly_energy_metrics(
     df: DataFrame,
 ) -> DataFrame:
     """
-    Prepare the approved ESIOS hourly energy metrics at Province × hour.
+    Prepare the approved ESIOS hourly energy metrics at Province Ã— hour.
 
     Expected input:
         already geographically normalized;
@@ -509,7 +383,7 @@ def prepare_installed_capacity_metrics(
     df: DataFrame,
 ) -> DataFrame:
     """
-    Prepare the nine approved installed-capacity metrics at CCAA × month.
+    Prepare the nine approved installed-capacity metrics at CCAA Ã— month.
 
     Expected input:
         canonical autonomous-community geography from Silver;
@@ -546,239 +420,6 @@ def prepare_installed_capacity_metrics(
 
 
 # ============================================================================
-# Five-minute high-frequency metrics
-# ============================================================================
-
-def add_energy_mwh_5min(
-    df: DataFrame,
-    *,
-    power_column: str = "value",
-    output_column: str = "energy_mwh_5min",
-) -> DataFrame:
-    """
-    Convert a real 5-minute ESIOS power observation to interval energy.
-
-    Approved rule:
-        energy_mwh_5min = power_mw * (5 / 60)
-
-    Equivalent:
-        energy_mwh_5min = power_mw / 12
-
-    Original signs are preserved.
-    NULL remains NULL.
-    """
-    validate_required_columns(
-        df,
-        {
-            power_column,
-        },
-        "ESIOS 5-minute energy conversion",
-    )
-
-    return df.withColumn(
-        output_column,
-        (
-            F.col(
-                power_column
-            ).cast("double")
-            * F.lit(5.0 / 60.0)
-        ),
-    )
-
-
-def prepare_country_5min_metrics(
-    df: DataFrame,
-) -> DataFrame:
-    """
-    Prepare approved high-frequency ESIOS metrics at their real 5-minute
-    geography × timestamp grain.
-
-    Expected input:
-        gold_timestamp already aligned;
-        geography_key / geography_level / geography_name already resolved;
-        Spain and Peninsula already kept distinct.
-
-    Output contains:
-        11 original power metrics in MW;
-        11 derived interval-energy metrics in MWh.
-    """
-    grain_columns = [
-        "gold_timestamp",
-        "geography_key",
-        "geography_level",
-        "geography_name",
-        "esios_geo_id",
-    ]
-
-    validate_required_columns(
-        df,
-        [
-            *grain_columns,
-            "indicator_id",
-            "value",
-        ],
-        "gold_fact_country_5min ESIOS source",
-    )
-
-    selected = select_approved_indicators(
-        df,
-        HIGH_FREQUENCY_POWER_METRICS,
-        indicator_column="indicator_id",
-        dataset_name=(
-            "gold_fact_country_5min ESIOS source"
-        ),
-    )
-
-    selected = add_energy_mwh_5min(
-        selected,
-        power_column="value",
-        output_column="_energy_mwh_5min",
-    )
-
-    validate_unique_indicator_observations(
-        selected,
-        grain_columns=grain_columns,
-        indicator_column="indicator_id",
-        dataset_name=(
-            "gold_fact_country_5min ESIOS source"
-        ),
-    )
-
-    approved_ids = list(
-        selected_indicator_ids(
-            HIGH_FREQUENCY_POWER_METRICS
-        )
-    )
-
-    power_pivot = (
-        selected
-        .groupBy(
-            *grain_columns
-        )
-        .pivot(
-            "indicator_id",
-            approved_ids,
-        )
-        .agg(
-            F.first(
-                F.col("value"),
-                ignorenulls=False,
-            )
-        )
-    )
-
-    power_expressions = [
-        F.col(
-            f"`{indicator_id}`"
-        ).cast(
-            "double"
-        ).alias(
-            metric_name
-        )
-        for indicator_id, metric_name
-        in HIGH_FREQUENCY_POWER_METRICS.items()
-    ]
-
-    power_pivot = power_pivot.select(
-        *[
-            F.col(column)
-            for column in grain_columns
-        ],
-        *power_expressions,
-    )
-
-    energy_pivot = (
-        selected
-        .groupBy(
-            *grain_columns
-        )
-        .pivot(
-            "indicator_id",
-            approved_ids,
-        )
-        .agg(
-            F.first(
-                F.col("_energy_mwh_5min"),
-                ignorenulls=False,
-            )
-        )
-    )
-
-    energy_expressions = [
-        F.col(
-            f"`{indicator_id}`"
-        ).cast(
-            "double"
-        ).alias(
-            HIGH_FREQUENCY_ENERGY_5MIN_METRICS[
-                indicator_id
-            ]
-        )
-        for indicator_id
-        in approved_ids
-    ]
-
-    energy_pivot = energy_pivot.select(
-        *[
-            F.col(column)
-            for column in grain_columns
-        ],
-        *energy_expressions,
-    )
-
-    return power_pivot.join(
-        energy_pivot,
-        on=grain_columns,
-        how="inner",
-    )
-
-
-# ============================================================================
-# Fifteen-minute high-frequency energy metric pivot
-# ============================================================================
-
-def prepare_country_15min_energy_metrics(
-    df: DataFrame,
-) -> DataFrame:
-    """
-    Pivot already aggregated 15-minute interval energies.
-
-    IMPORTANT:
-        This function does NOT construct the 15-minute interval.
-
-        temporal.py must previously apply the approved transformation:
-
-            power_mw
-                -> energy_mwh_5min
-                -> SUM of three real 5-minute interval energies
-                -> energy_mwh_15min
-
-        SUM(power_mw) is prohibited.
-
-    Expected long-format value column:
-        energy_mwh_15min
-    """
-    grain_columns = [
-        "gold_timestamp",
-        "geography_key",
-        "geography_level",
-        "geography_name",
-    ]
-
-    return pivot_indicator_metrics(
-        df,
-        grain_columns=grain_columns,
-        metric_mapping=HIGH_FREQUENCY_ENERGY_15MIN_METRICS,
-        value_column="energy_mwh_15min",
-        indicator_column="indicator_id",
-        dataset_name=(
-            "gold_fact_country_15min "
-            "ESIOS energy source"
-        ),
-    )
-
-
-# ============================================================================
 # Explicit metric-selection helpers
 # ============================================================================
 
@@ -791,22 +432,4 @@ def hourly_energy_metric_names() -> tuple[str, ...]:
 def installed_capacity_metric_names() -> tuple[str, ...]:
     return tuple(
         INSTALLED_CAPACITY_METRICS.values()
-    )
-
-
-def country_5min_power_metric_names() -> tuple[str, ...]:
-    return tuple(
-        HIGH_FREQUENCY_POWER_METRICS.values()
-    )
-
-
-def country_5min_energy_metric_names() -> tuple[str, ...]:
-    return tuple(
-        HIGH_FREQUENCY_ENERGY_5MIN_METRICS.values()
-    )
-
-
-def country_15min_energy_metric_names() -> tuple[str, ...]:
-    return tuple(
-        HIGH_FREQUENCY_ENERGY_15MIN_METRICS.values()
     )

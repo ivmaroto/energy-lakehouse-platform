@@ -8,10 +8,7 @@ from pathlib import Path
 from ingestion.common.config import OPEN_METEO_HISTORICAL_CHUNK_DAYS
 from ingestion.common.date_utils import split_date_range
 from ingestion.common.logger import get_logger
-from ingestion.common.storage import (
-    LocalBronzeStorage,
-    MinIOBronzeStorage,
-)
+from ingestion.common.storage import MinIOBronzeStorage
 from ingestion.open_meteo.client import OpenMeteoClient
 
 
@@ -36,12 +33,6 @@ DEFAULT_HOURLY_VARIABLES = [
     "sunshine_duration",
 ]
 
-DEFAULT_HISTORICAL_FORECAST_VARIABLES = [
-    "wind_speed_80m",
-    "wind_direction_80m",
-    "wind_speed_120m",
-    "wind_direction_120m",
-]
 
 DEFAULT_MINUTELY_15_VARIABLES = [
     "temperature_2m",
@@ -74,14 +65,12 @@ class OpenMeteoIngestion:
     SOURCE = "open_meteo"
 
     DATASET_HOURLY = "weather_hourly"
-    DATASET_HISTORICAL_FORECAST = "weather_historical_forecast"
     DATASET_MINUTELY_15 = "weather_15min"
-    DATASET_CURRENT = "weather_current"
 
     def __init__(
         self,
         client: OpenMeteoClient | None = None,
-        storage: LocalBronzeStorage | MinIOBronzeStorage | None = None,
+        storage: MinIOBronzeStorage | None = None,
     ) -> None:
         self.client = client or OpenMeteoClient()
         self.storage = storage or MinIOBronzeStorage()
@@ -168,92 +157,6 @@ class OpenMeteoIngestion:
 
         return output_paths
 
-    def ingest_historical_forecast(
-        self,
-        *,
-        latitude: float,
-        longitude: float,
-        start_date: date,
-        end_date: date,
-        hourly_variables: list[str] | None = None,
-        timezone: str = "UTC",
-        station_id: str | None = None,
-        station_name: str | None = None,
-        province: str | None = None,
-    ) -> list[Path | str]:
-        """
-        Retrieve historical forecast data for validated wind variables
-        at 80 m and 120 m.
-        """
-
-        variables = (
-            hourly_variables
-            or DEFAULT_HISTORICAL_FORECAST_VARIABLES
-        )
-
-        chunks = split_date_range(
-            start_date=start_date,
-            end_date=end_date,
-            chunk_days=OPEN_METEO_HISTORICAL_CHUNK_DAYS,
-        )
-
-        logger.info(
-            "Starting Open-Meteo historical forecast ingestion: %s -> %s "
-            "(%s chunks)",
-            start_date,
-            end_date,
-            len(chunks),
-        )
-
-        output_paths: list[Path | str] = []
-
-        for chunk_number, (chunk_start, chunk_end) in enumerate(
-            chunks,
-            start=1,
-        ):
-            logger.info(
-                "Processing Open-Meteo historical forecast chunk "
-                "%s/%s: %s -> %s",
-                chunk_number,
-                len(chunks),
-                chunk_start,
-                chunk_end,
-            )
-
-            data = self.client.get_historical_forecast(
-                latitude=latitude,
-                longitude=longitude,
-                start_date=chunk_start,
-                end_date=chunk_end,
-                hourly_variables=variables,
-                timezone=timezone,
-            )
-
-            output_path = self.storage.save_json(
-                data,
-                source=self.SOURCE,
-                dataset=self.DATASET_HISTORICAL_FORECAST,
-                ingestion_mode="historical",
-                requested_start_date=chunk_start.isoformat(),
-                requested_end_date=chunk_end.isoformat(),
-                extra_metadata={
-                    "station_id": station_id,
-                    "station_name": station_name,
-                    "province": province,
-                    "latitude": latitude,
-                    "longitude": longitude,
-                },
-            )
-
-            output_paths.append(output_path)
-
-        logger.info(
-            "Open-Meteo historical forecast ingestion completed. "
-            "%s Bronze files generated.",
-            len(output_paths),
-        )
-
-        return output_paths
 
 
     def ingest_minutely_15(
@@ -312,46 +215,6 @@ class OpenMeteoIngestion:
 
         logger.info(
             "Open-Meteo 15-minutely ingestion completed: %s",
-            output_path,
-        )
-
-        return output_path
-
-
-    def ingest_current(
-        self,
-        *,
-        latitude: float,
-        longitude: float,
-        current_variables: list[str] | None = None,
-        timezone: str = "UTC",
-    ) -> Path | str:
-        """
-        Retrieve current Open-Meteo data and persist it in Bronze.
-        """
-
-        variables = current_variables or DEFAULT_HOURLY_VARIABLES
-
-        logger.info(
-            "Starting Open-Meteo current ingestion."
-        )
-
-        data = self.client.get_current_weather(
-            latitude=latitude,
-            longitude=longitude,
-            current_variables=variables,
-            timezone=timezone,
-        )
-
-        output_path = self.storage.save_json(
-            data,
-            source=self.SOURCE,
-            dataset=self.DATASET_CURRENT,
-            ingestion_mode="incremental",
-        )
-
-        logger.info(
-            "Open-Meteo current ingestion completed: %s",
             output_path,
         )
 

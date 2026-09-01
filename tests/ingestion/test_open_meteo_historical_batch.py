@@ -1,8 +1,13 @@
 ﻿from datetime import date, datetime, timedelta
 
+from ingestion.common.storage import MinIOBronzeStorage
+
 import pytest
 
-from ingestion.common.config import OPEN_METEO_ARCHIVE_URL
+from ingestion.common.config import (
+    OPEN_METEO_ARCHIVE_URL,
+    OPEN_METEO_HISTORICAL_FORECAST_URL,
+)
 from ingestion.open_meteo.batch import OpenMeteoBatchIngestion
 
 
@@ -147,6 +152,44 @@ class FakeStorage:
             f"{len(self.calls)}.json"
         )
 
+class FakeMinIOStorage(MinIOBronzeStorage):
+    def __init__(self, existing=None):
+        self.existing = existing or {}
+        self.calls = []
+
+    def object_exists(
+        self,
+        object_name,
+    ):
+        return (
+            object_name
+            in self.existing
+        )
+
+    def read_json(
+        self,
+        object_name,
+    ):
+        return self.existing[
+            object_name
+        ]
+
+    def save_json(
+        self,
+        data,
+        **kwargs,
+    ):
+        self.calls.append(
+            {
+                "data": data,
+                **kwargs,
+            }
+        )
+
+        return kwargs[
+            "object_name"
+        ]
+
 
 LOCATIONS = [
     {
@@ -173,6 +216,81 @@ LOCATIONS = [
 ]
 
 
+def build_15min_axis(
+    day: str,
+) -> list[str]:
+    current = datetime.fromisoformat(
+        f"{day}T00:00"
+    )
+
+    end = datetime.fromisoformat(
+        f"{day}T23:45"
+    )
+
+    axis = []
+
+    while current <= end:
+        axis.append(
+            current.strftime(
+                "%Y-%m-%dT%H:%M"
+            )
+        )
+
+        current += timedelta(
+            minutes=15
+        )
+
+    return axis
+
+
+class Fake15MinHTTPClient:
+    def __init__(self):
+        self.calls = []
+
+    def get_json(
+        self,
+        url,
+        params=None,
+    ):
+        self.calls.append(
+            {
+                "url": url,
+                "params": params,
+            }
+        )
+
+        latitudes = (
+            params["latitude"]
+            .split(",")
+        )
+
+        requested_day = (
+            params[
+                "start_minutely_15"
+            ][:10]
+        )
+
+        axis = build_15min_axis(
+            requested_day
+        )
+
+        return [
+            {
+                "latitude": float(
+                    latitude
+                ),
+                "minutely_15": {
+                    "time": axis,
+                    "temperature_2m": [
+                        20.0
+                        for _ in axis
+                    ],
+                },
+            }
+            for latitude in latitudes
+        ]
+
+
 def test_ingest_hourly_range_locations_batches_and_persists():
     http_client = FakeHTTPClient()
     storage = FakeStorage()
@@ -184,66 +302,148 @@ def test_ingest_hourly_range_locations_batches_and_persists():
         batch_delay_seconds=0,
     )
 
+    start_date = date(
+        2026,
+        8,
+        24,
+    )
+
+    end_date = date(
+        2026,
+        8,
+        29,
+    )
+
     paths = (
         ingestion
         .ingest_hourly_range_locations(
             locations=LOCATIONS,
-            start_date=date(
-                2026,
-                8,
-                24,
-            ),
-            end_date=date(
-                2026,
-                8,
-                29,
-            ),
+            start_date=start_date,
+            end_date=end_date,
         )
     )
 
-    assert len(paths) == 3
+    expected_days = [
+        start_date
+        + timedelta(days=offset)
+        for offset in range(6)
+    ]
 
-    # 3 locations with batch_size=2
-    # -> 2 HTTP requests.
+    # 6 days × 3 stations.
+    assert len(paths) == 18
+
+    # 3 locations with batch_size=2:
+    # 2 HTTP requests per day × 6 days.
     assert len(
         http_client.calls
-    ) == 2
+    ) == 12
 
-    assert all(
-        call["url"]
-        == OPEN_METEO_ARCHIVE_URL
-        for call in http_client.calls
-    )
-
-    for call in http_client.calls:
-        params = call["params"]
-
-        assert (
-            params["start_date"]
-            == "2026-08-24"
+    for day_index, expected_day in enumerate(
+        expected_days
+    ):
+        day_text = (
+            expected_day.isoformat()
         )
 
-        assert (
-            params["end_date"]
-            == "2026-08-29"
+        day_calls = (
+            http_client.calls[
+                day_index * 2:
+                (day_index + 1) * 2
+            ]
         )
 
-        assert (
-            params["timezone"]
-            == "UTC"
-        )
+        assert len(
+            day_calls
+        ) == 2
 
-        assert "hourly" in params
+        for call in day_calls:
+            assert (
+                call["url"]
+                == OPEN_METEO_ARCHIVE_URL
+            )
+
+            params = (
+                call["params"]
+            )
+
+            assert (
+                params["start_date"]
+                == day_text
+            )
+
+            assert (
+                params["end_date"]
+                == day_text
+            )
+
+            assert (
+                params["timezone"]
+                == "UTC"
+            )
+
+            assert "hourly" in params
 
     assert len(
         storage.calls
-    ) == 3
+    ) == 18
 
-    for storage_call, location in zip(
+    expected_storage_items = [
+        (
+            expected_day,
+            location,
+        )
+        for expected_day in expected_days
+        for location in LOCATIONS
+    ]
+
+    for (
+        storage_call,
+        (
+            expected_day,
+            location,
+        ),
+    ) in zip(
         storage.calls,
-        LOCATIONS,
+        expected_storage_items,
         strict=True,
     ):
+        day_text = (
+            expected_day.isoformat()
+        )
+
+        year = (
+            expected_day.strftime(
+                "%Y"
+            )
+        )
+
+        month = (
+            expected_day.strftime(
+                "%m"
+            )
+        )
+
+        day = (
+            expected_day.strftime(
+                "%d"
+            )
+        )
+
+        station_id = str(
+            location[
+                "station_id"
+            ]
+        )
+
+        expected_object_name = (
+            "bronze/open_meteo/"
+            "weather_hourly/"
+            f"year={year}/"
+            f"month={month}/"
+            f"day={day}/"
+            f"station_id={station_id}.json"
+        )
+
         assert (
             storage_call["source"]
             == "open_meteo"
@@ -252,6 +452,13 @@ def test_ingest_hourly_range_locations_batches_and_persists():
         assert (
             storage_call["dataset"]
             == "weather_hourly"
+        )
+
+        assert (
+            storage_call[
+                "object_name"
+            ]
+            == expected_object_name
         )
 
         assert (
@@ -265,44 +472,56 @@ def test_ingest_hourly_range_locations_batches_and_persists():
             storage_call[
                 "requested_start_date"
             ]
-            == "2026-08-24"
+            == day_text
         )
 
         assert (
             storage_call[
                 "requested_end_date"
             ]
-            == "2026-08-29"
+            == day_text
         )
 
         assert (
             storage_call[
                 "extra_metadata"
-            ]["station_id"]
+            ][
+                "station_id"
+            ]
             == location[
                 "station_id"
             ]
         )
 
+        assert (
+            storage_call[
+                "extra_metadata"
+            ][
+                "observation_date"
+            ]
+            == day_text
+        )
+
         hourly = (
-            storage_call["data"][
+            storage_call[
+                "data"
+            ][
                 "hourly"
             ]
         )
 
-        # 6 complete days x 24 hours.
         assert len(
             hourly["time"]
-        ) == 144
+        ) == 24
 
         assert (
             hourly["time"][0]
-            == "2026-08-24T00:00"
+            == f"{day_text}T00:00"
         )
 
         assert (
             hourly["time"][-1]
-            == "2026-08-29T23:00"
+            == f"{day_text}T23:00"
         )
 
 
@@ -415,3 +634,314 @@ def test_ingest_hourly_range_locations_rejects_invalid_range():
                 ),
             )
         )
+
+
+def test_ingest_15min_locations_persists_daily_canonical_objects():
+    http_client = Fake15MinHTTPClient()
+    storage = FakeStorage()
+
+    ingestion = OpenMeteoBatchIngestion(
+        http_client=http_client,
+        storage=storage,
+        batch_size=2,
+        batch_delay_seconds=0,
+    )
+
+    start_datetime = datetime(
+        2026,
+        8,
+        24,
+        0,
+        0,
+    )
+
+    end_datetime = datetime(
+        2026,
+        8,
+        25,
+        23,
+        59,
+    )
+
+    paths = (
+        ingestion
+        .ingest_15min_locations(
+            locations=LOCATIONS,
+            start_datetime=start_datetime,
+            end_datetime=end_datetime,
+            ingestion_mode="historical",
+        )
+    )
+
+    # 2 days × 3 stations.
+    assert len(paths) == 6
+    assert len(storage.calls) == 6
+
+    # batch_size=2:
+    # 2 requests/day × 2 days.
+    assert len(
+        http_client.calls
+    ) == 4
+
+    expected_days = [
+        "2026-08-24",
+        "2026-08-25",
+    ]
+
+    for day_index, day_text in enumerate(
+        expected_days
+    ):
+        day_calls = (
+            http_client.calls[
+                day_index * 2:
+                (day_index + 1) * 2
+            ]
+        )
+
+        assert len(day_calls) == 2
+
+        for call in day_calls:
+            assert (
+                call["url"]
+                == OPEN_METEO_HISTORICAL_FORECAST_URL
+            )
+
+            params = call["params"]
+
+            assert (
+                params["start_minutely_15"]
+                == f"{day_text}T00:00"
+            )
+
+            assert (
+                params["end_minutely_15"]
+                == f"{day_text}T23:59"
+            )
+
+            assert (
+                params["timezone"]
+                == "UTC"
+            )
+
+    expected_items = [
+        (day_text, location)
+        for day_text in expected_days
+        for location in LOCATIONS
+    ]
+
+    for (
+        storage_call,
+        (
+            day_text,
+            location,
+        ),
+    ) in zip(
+        storage.calls,
+        expected_items,
+        strict=True,
+    ):
+        year, month, day = (
+            day_text.split("-")
+        )
+
+        station_id = str(
+            location["station_id"]
+        )
+
+        expected_object_name = (
+            "bronze/open_meteo/"
+            "weather_15min/"
+            f"year={year}/"
+            f"month={month}/"
+            f"day={day}/"
+            f"station_id={station_id}.json"
+        )
+
+        assert (
+            storage_call["object_name"]
+            == expected_object_name
+        )
+
+        assert (
+            storage_call["dataset"]
+            == "weather_15min"
+        )
+
+        assert (
+            storage_call[
+                "ingestion_mode"
+            ]
+            == "historical"
+        )
+
+        assert (
+            storage_call[
+                "requested_start_date"
+            ]
+            == day_text
+        )
+
+        assert (
+            storage_call[
+                "requested_end_date"
+            ]
+            == day_text
+        )
+
+        assert (
+            storage_call[
+                "extra_metadata"
+            ]["station_id"]
+            == location["station_id"]
+        )
+
+        assert (
+            storage_call[
+                "extra_metadata"
+            ]["observation_date"]
+            == day_text
+        )
+
+        axis = (
+            storage_call[
+                "data"
+            ][
+                "minutely_15"
+            ][
+                "time"
+            ]
+        )
+
+        assert len(axis) == 96
+
+        assert (
+            axis[0]
+            == f"{day_text}T00:00"
+        )
+
+        assert (
+            axis[-1]
+            == f"{day_text}T23:45"
+        )
+
+
+def test_ingest_15min_locations_resume_downloads_only_missing_day():
+    location = LOCATIONS[0]
+
+    existing_day = "2026-08-24"
+
+    existing_object = (
+        "bronze/open_meteo/"
+        "weather_15min/"
+        "year=2026/month=08/day=24/"
+        "station_id=A.json"
+    )
+
+    existing_payload = {
+        "metadata": {
+            "source": "open_meteo",
+            "dataset": "weather_15min",
+            "station_id": "A",
+        },
+        "data": {
+            "minutely_15": {
+                "time": build_15min_axis(
+                    existing_day
+                ),
+                "temperature_2m": [
+                    20.0
+                    for _ in range(96)
+                ],
+            }
+        },
+    }
+
+    storage = FakeMinIOStorage(
+        existing={
+            existing_object: (
+                existing_payload
+            )
+        }
+    )
+
+    http_client = (
+        Fake15MinHTTPClient()
+    )
+
+    ingestion = OpenMeteoBatchIngestion(
+        http_client=http_client,
+        storage=storage,
+        batch_size=100,
+        batch_delay_seconds=0,
+    )
+
+    paths = (
+        ingestion
+        .ingest_15min_locations(
+            locations=[
+                location
+            ],
+            start_datetime=datetime(
+                2026,
+                8,
+                24,
+                0,
+                0,
+            ),
+            end_datetime=datetime(
+                2026,
+                8,
+                25,
+                23,
+                59,
+            ),
+            resume=True,
+            ingestion_mode="historical",
+        )
+    )
+
+    assert len(
+        http_client.calls
+    ) == 1
+
+    params = (
+        http_client.calls[0][
+            "params"
+        ]
+    )
+
+    assert (
+        params[
+            "start_minutely_15"
+        ]
+        == "2026-08-25T00:00"
+    )
+
+    assert (
+        params[
+            "end_minutely_15"
+        ]
+        == "2026-08-25T23:59"
+    )
+
+    assert len(
+        storage.calls
+    ) == 1
+
+    expected_new_object = (
+        "bronze/open_meteo/"
+        "weather_15min/"
+        "year=2026/month=08/day=25/"
+        "station_id=A.json"
+    )
+
+    assert (
+        storage.calls[0][
+            "object_name"
+        ]
+        == expected_new_object
+    )
+
+    assert paths == [
+        expected_new_object
+    ]

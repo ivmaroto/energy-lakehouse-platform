@@ -98,7 +98,7 @@ radiation ingestion
 The AEMET station dataset acts as the official meteorological point catalogue
 for the project.
 
-The currently validated catalogue contains:
+The validated catalogue used by historical Open-Meteo acquisition contains:
 
 ```text
 926 stations
@@ -118,8 +118,11 @@ AEMET current observations provide recent official meteorological measurements.
 The source is suitable for current or recent information but is not treated as
 a mechanism for reconstructing arbitrary historical observation periods.
 
-Historical meteorological coverage required by the analytical model is
-therefore obtained primarily through Open-Meteo.
+The final `historical_reload` workflow therefore excludes AEMET current
+observations from arbitrary historical reconstruction.
+
+Historical meteorological coverage required by the analytical model is supplied
+by Open-Meteo.
 
 ---
 
@@ -147,12 +150,15 @@ This source-selection logic is performed in Gold rather than during ingestion.
 
 ### 3.1 Description
 
-Open-Meteo provides meteorological information through public HTTP APIs.
+Open-Meteo provides meteorological information through HTTP APIs.
 
 It supplies the historical and higher-frequency meteorological coverage used by
 the principal analytical flow.
 
-No API key is required for the access pattern used by the project.
+The project uses a configured Open-Meteo service plan.
+
+Any runtime source-access configuration or credential required by that plan is
+externalized from source code and must not be committed to Git.
 
 ---
 
@@ -165,8 +171,15 @@ weather_hourly
 weather_15min
 ```
 
-The same set of 926 AEMET station locations is used as the geographical point
-catalogue for both datasets.
+The same validated set of:
+
+```text
+926 AEMET station locations
+```
+
+is used as the geographical point catalogue for both datasets.
+
+Historical acquisition persists canonical daily Bronze objects per station.
 
 ---
 
@@ -178,7 +191,7 @@ dataset.
 ### 4.1 Current / incremental API
 
 ```text
-https://api.open-meteo.com/v1/forecast
+Forecast API
 ```
 
 Used for current or incremental access where appropriate.
@@ -188,7 +201,7 @@ Used for current or incremental access where appropriate.
 ### 4.2 Historical hourly API
 
 ```text
-https://archive-api.open-meteo.com/v1/archive
+Archive API
 ```
 
 Used to retrieve historical hourly meteorological information.
@@ -198,7 +211,7 @@ Used to retrieve historical hourly meteorological information.
 ### 4.3 Historical 15-minute API
 
 ```text
-https://historical-forecast-api.open-meteo.com/v1/forecast
+Historical Forecast API
 ```
 
 Used for historical 15-minute meteorological acquisition.
@@ -207,7 +220,7 @@ The standard Forecast API is not used as a generic replacement for arbitrary
 historical 15-minute periods.
 
 This distinction was validated during implementation against the real
-Open-Meteo API.
+Open-Meteo service behaviour.
 
 ---
 
@@ -244,13 +257,34 @@ Not every raw source field must necessarily be exposed in the final Gold model.
 
 ## 6. Open-Meteo Historical Coverage
 
-Historical acquisition is performed over:
+Historical acquisition is performed over the validated:
 
 ```text
 926 locations
 ```
 
-For the validated historical interval:
+The final implementation validates completeness at canonical daily-object
+level.
+
+For each complete UTC day:
+
+### Hourly
+
+```text
+24 timestamps
+```
+
+### 15-minute
+
+```text
+96 timestamps
+```
+
+Object existence alone is not considered sufficient evidence of completeness.
+
+A partial daily object is incomplete and must be reloaded or completed.
+
+For the earlier independent historical validation interval:
 
 ```text
 2026-01-10 → 2026-01-15
@@ -258,28 +292,24 @@ For the validated historical interval:
 
 the expected temporal coverage per location was:
 
-### Hourly
-
 ```text
-6 days × 24 hours
-= 144 observations
+6 × 24 = 144 hourly observations
 ```
 
-### 15-minute
+and:
 
 ```text
-6 days × 24 hours × 4
-= 576 observations
+6 × 24 × 4 = 576 fifteen-minute observations
 ```
 
-The completed acquisition produced:
+That execution produced:
 
 ```text
 926 / 926 hourly locations
 926 / 926 15-minute locations
 ```
 
-The resulting Silver counts were:
+with resulting Silver counts:
 
 ```text
 silver_open_meteo_hourly = 133344
@@ -295,7 +325,8 @@ silver_open_meteo_15min = 533376
 926 × 576 = 533376
 ```
 
-This confirms complete temporal coverage for that validated interval.
+These values remain valid evidence for that historical execution, while the
+current completeness rule is evaluated per canonical daily object.
 
 ---
 
@@ -457,32 +488,38 @@ The units remain conceptually distinct throughout the analytical model.
 Successful HTTP transport does not necessarily imply that an ESIOS indicator
 contains observations for a requested period.
 
-The ingestion implementation validates:
+The final ingestion implementation distinguishes:
 
 ```text
-indicator.values
+valid response with values
+→ process the available observations
 ```
 
-before treating an indicator acquisition as successful.
-
-An empty:
+from:
 
 ```text
-values = []
+valid response with values = []
+→ NO_DATA
 ```
 
-is therefore not persisted as a successful data acquisition by the current
-implementation.
+A structurally valid empty response is not treated as an ingestion failure.
+
+It also does not create:
+
+```text
+synthetic zero values
+synthetic timestamps
+synthetic source observations
+```
 
 Real API validation confirmed that all configured hourly and monthly indicators
-returned observations for the historical validation interval:
+returned observations for the independent historical validation interval:
 
 ```text
 2026-01-10 → 2026-01-15
 ```
 
-The same availability must not automatically be assumed for every recent
-interval.
+The same availability must not automatically be assumed for every interval.
 
 ---
 
@@ -604,6 +641,10 @@ information.
 
 Spain-wide values must not be relabelled as Peninsular values.
 
+The reusable `gold_dim_geography` dimension retains distinct COUNTRY and
+PENINSULA members, while no dedicated Peninsula fact is part of the final
+physical model.
+
 ---
 
 ## 15. Temporal Scope
@@ -643,7 +684,7 @@ transformation explicitly aggregates it.
 
 ## 16. Historical Acquisition
 
-Historical acquisition uses an explicit interval:
+Historical acquisition uses an explicit source interval:
 
 ```text
 start_date
@@ -651,6 +692,13 @@ end_date
 ```
 
 where supported by the source.
+
+The final Airflow historical interface exposes the runtime interval as:
+
+```text
+fecha_inicio
+fecha_fin
+```
 
 The principal historical observation datasets are:
 
@@ -664,15 +712,33 @@ ESIOS monthly
 AEMET station and CNIG datasets are reference masters and are not tied to the
 same historical observation window.
 
-AEMET current observations remain current/recent observations even when
-included in a wider historical processing execution.
+AEMET current observations are deliberately excluded from arbitrary historical
+reconstruction in the final:
+
+```text
+historical_reload
+```
+
+workflow.
+
+Historical reloads use ensure-style master handling:
+
+```text
+master exists
+→ preserve it
+
+master missing
+→ ingest it
+```
+
+Therefore PRESERVE and RANGE OVERWRITE preserve existing masters, while FULL
+DELETE rebuilds them after the active Bronze layer is removed.
 
 ---
 
 ## 17. Incremental / Recent Acquisition
 
-The platform is designed to support recurrent acquisition of newly available
-source data.
+The platform supports recurrent acquisition of newly available source data.
 
 The exact latest available timestamp may differ between providers.
 
@@ -688,21 +754,38 @@ must not automatically be interpreted as:
 guaranteed data availability from every source
 ```
 
-Source publication latency and API availability must be respected.
+Source publication latency and API availability are preserved rather than
+filled with synthetic observations.
 
-The orchestration layer is responsible for coordinating these source-specific
-execution characteristics.
+The current Airflow runtime includes:
+
+```text
+hourly_ingestion
+→ recurrent hourly Bronze ingestion
+
+monthly_ingestion
+→ recurrent monthly Bronze ingestion
+
+open_meteo_15min
+→ manual historical Open-Meteo 15-minute Bronze utility
+```
+
+The hourly and monthly DAGs are Bronze-only ingestion workflows.
+
+They do not independently execute Silver or Gold promotion.
 
 ---
 
 ## 18. Source Comparison
 
-| Source | Domain | Authentication | Historical observations | Current / recent data | Main role |
+| Source | Domain | Authentication / access configuration | Historical observations | Current / recent data | Main role |
 |---|---|---|---|---|---|
-| AEMET | Meteorology | API key | Not used for arbitrary historical reconstruction | Yes | Official stations and recent observations |
-| Open-Meteo | Meteorology | Not required | Yes | Yes | Historical and high-frequency weather |
-| REE / ESIOS | Electricity system | API credential | Yes | Source-dependent | Generation and installed capacity |
-| CNIG / IGN | Geography | Not required for current master acquisition | Reference data | Reference data | Canonical territorial master |
+| AEMET | Meteorology | `AEMET_API_KEY` | Not used for arbitrary historical reconstruction | Yes | Official stations and recent observations |
+| Open-Meteo | Meteorology | Runtime access configuration externalized for the configured service plan | Yes | Yes | Historical and high-frequency weather |
+| REE / ESIOS | Electricity system | `ESIOS_API_KEY` | Yes | Source-dependent | Generation and installed capacity |
+| CNIG / IGN | Geography | Current master acquisition does not rely on a project API credential | Reference data | Reference data | Canonical territorial master |
+
+No real credential or secret value belongs in this document.
 
 ---
 
@@ -736,7 +819,7 @@ This design limits coupling between external providers.
 
 ## 20. Source Preservation
 
-The ingestion layer preserves the source information before business
+The ingestion layer preserves source information before business
 transformation.
 
 Bronze therefore does not perform:
@@ -748,7 +831,10 @@ Bronze therefore does not perform:
 - KPI calculation;
 - artificial null filling.
 
-These responsibilities belong downstream.
+For analytical time-series datasets, Bronze storage is governed by source
+observation time rather than ingestion time.
+
+`ingestion_timestamp` remains audit metadata.
 
 The processing path is:
 
@@ -764,6 +850,8 @@ Silver
   ▼
 Gold
 ```
+
+Source absence remains distinct from a published numerical zero.
 
 ---
 
@@ -797,3 +885,20 @@ This scope is the source basis for the current:
 ```
 
 used by the Energy Lakehouse Platform.
+
+The final historical Airflow workflow using these sources has been validated
+through:
+
+```text
+PRESERVE
+RANGE OVERWRITE
+FULL DELETE
+```
+
+with the complete historical:
+
+```text
+Bronze → Silver → Gold
+```
+
+path executed successfully under Airflow control.

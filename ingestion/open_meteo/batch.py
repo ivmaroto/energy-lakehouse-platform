@@ -6,11 +6,14 @@ from __future__ import annotations
 
 import time
 
+from copy import deepcopy
+
 from datetime import (
     datetime,
     timedelta,
+    timezone as dt_timezone,
 )
-from datetime import timezone as dt_timezone
+
 from typing import Any
 
 from ingestion.common.config import (
@@ -19,7 +22,9 @@ from ingestion.common.config import (
     OPEN_METEO_BATCH_DELAY_SECONDS,
     OPEN_METEO_HISTORICAL_FORECAST_URL,
     OPEN_METEO_MAX_RETRIES,
+    OPEN_METEO_API_PARAMS,
 )
+
 from ingestion.common.http_client import HTTPClient
 from ingestion.common.logger import get_logger
 from ingestion.common.storage import (
@@ -424,22 +429,29 @@ class OpenMeteoBatchIngestion:
             )
 
     def ingest_hourly_locations(
-        self,
-        *,
-        locations,
-        target_hour: datetime,
-        resume: bool = False,
+            self,
+            *,
+            locations,
+            target_hour: datetime,
+            resume: bool = False,
     ):
+        """
+        Ingest one Open-Meteo hourly observation for all locations.
+
+        Data is persisted in one canonical Bronze object per
+        station and UTC observation day.
+
+        Existing daily observations are preserved and merged
+        by hourly.time.
+        """
+
         if not locations:
             raise ValueError(
-                "No Open-Meteo locations "
-                "provided."
+                "No Open-Meteo locations provided."
             )
 
         target_hour = (
-            _to_utc(
-                target_hour
-            )
+            _to_utc(target_hour)
             .replace(
                 minute=0,
                 second=0,
@@ -447,14 +459,26 @@ class OpenMeteoBatchIngestion:
             )
         )
 
-        timestamp = (
-            target_hour.strftime(
-                "%Y-%m-%dT%H:%M"
-            )
+        timestamp = target_hour.strftime(
+            "%Y-%m-%dT%H:%M"
         )
 
         requested = (
             target_hour.isoformat()
+        )
+
+        observation_date = (
+            target_hour.date()
+        )
+
+        year = observation_date.strftime(
+            "%Y"
+        )
+        month = observation_date.strftime(
+            "%m"
+        )
+        day = observation_date.strftime(
+            "%d"
         )
 
         expected_ids = (
@@ -463,42 +487,127 @@ class OpenMeteoBatchIngestion:
             )
         )
 
-        completed_ids = (
-            self._existing_location_ids(
-                dataset=(
-                    self.DATASET_HOURLY
-                ),
-                requested_start_date=(
-                    requested
-                ),
-                requested_end_date=(
-                    requested
-                ),
-                ingestion_mode=(
-                    "incremental"
-                ),
-                id_fields=(
-                    "station_id",
-                ),
-                resume=resume,
-            )
-        )
+        completed_ids: set[str] = set()
 
-        completed_ids &= expected_ids
+        existing_data_by_station = {}
+
+        # ------------------------------------------------------------
+        # Inspect canonical daily objects.
+        #
+        # Even when resume=False we read existing data because the
+        # new hour must be merged without deleting previous hours.
+        # ------------------------------------------------------------
+
+        if isinstance(
+                self.storage,
+                MinIOBronzeStorage,
+        ):
+            for location in locations:
+                station_id = str(
+                    location["station_id"]
+                )
+
+                object_name = (
+                    "bronze/open_meteo/"
+                    f"{self.DATASET_HOURLY}/"
+                    f"year={year}/"
+                    f"month={month}/"
+                    f"day={day}/"
+                    f"station_id={station_id}.json"
+                )
+
+                if not self.storage.object_exists(
+                        object_name
+                ):
+                    continue
+
+                payload = self.storage.read_json(
+                    object_name
+                )
+
+                if not isinstance(
+                        payload,
+                        dict,
+                ):
+                    raise RuntimeError(
+                        "Invalid existing Open-Meteo "
+                        "Bronze wrapper: "
+                        f"{object_name}"
+                    )
+
+                existing_data = payload.get(
+                    "data"
+                )
+
+                if not isinstance(
+                        existing_data,
+                        dict,
+                ):
+                    raise RuntimeError(
+                        "Invalid existing Open-Meteo "
+                        "Bronze data: "
+                        f"{object_name}"
+                    )
+
+                hourly = existing_data.get(
+                    "hourly"
+                )
+
+                if not isinstance(
+                        hourly,
+                        dict,
+                ):
+                    raise RuntimeError(
+                        "Invalid existing Open-Meteo "
+                        "hourly section: "
+                        f"{object_name}"
+                    )
+
+                existing_axis = hourly.get(
+                    "time"
+                )
+
+                if not isinstance(
+                        existing_axis,
+                        list,
+                ):
+                    raise RuntimeError(
+                        "Invalid existing Open-Meteo "
+                        "hourly time axis: "
+                        f"{object_name}"
+                    )
+
+                existing_data_by_station[
+                    station_id
+                ] = existing_data
+
+                if (
+                        resume
+                        and timestamp in existing_axis
+                ):
+                    completed_ids.add(
+                        station_id
+                    )
+
+        elif resume:
+            logger.info(
+                "Open-Meteo resumability "
+                "disabled for injected "
+                "non-MinIO storage."
+            )
 
         pending = (
             self._pending_locations(
                 locations=locations,
-                completed_ids=(
-                    completed_ids
-                ),
+                completed_ids=completed_ids,
             )
         )
 
         logger.info(
             "Open-Meteo hourly: "
-            "expected=%d existing=%d "
-            "pending=%d",
+            "timestamp=%s expected=%d "
+            "existing=%d pending=%d",
+            timestamp,
             len(expected_ids),
             len(completed_ids),
             len(pending),
@@ -510,10 +619,8 @@ class OpenMeteoBatchIngestion:
 
         paths = []
 
-        for batch in (
-            self._paced_batches(
+        for batch in self._paced_batches(
                 pending
-            )
         ):
             latitude, longitude = (
                 self._coordinates(
@@ -525,21 +632,14 @@ class OpenMeteoBatchIngestion:
                 self.http_client.get_json(
                     OPEN_METEO_BASE_URL,
                     params={
-                        "latitude": (
-                            latitude
-                        ),
-                        "longitude": (
-                            longitude
-                        ),
+                        **OPEN_METEO_API_PARAMS,
+                        "latitude": latitude,
+                        "longitude": longitude,
                         "hourly": ",".join(
                             DEFAULT_HOURLY_VARIABLES
                         ),
-                        "start_hour": (
-                            timestamp
-                        ),
-                        "end_hour": (
-                            timestamp
-                        ),
+                        "start_hour": timestamp,
+                        "end_hour": timestamp,
                         "timezone": "UTC",
                     },
                 )
@@ -553,39 +653,169 @@ class OpenMeteoBatchIngestion:
             )
 
             for location, data in zip(
-                batch,
-                results,
-                strict=True,
+                    batch,
+                    results,
+                    strict=True,
             ):
                 station_id = str(
-                    location[
-                        "station_id"
-                    ]
+                    location["station_id"]
                 )
 
                 self._validate_time_axis(
                     data=data,
-                    section_name=(
-                        "hourly"
-                    ),
-                    expected_axis=(
-                        expected_axis
-                    ),
-                    dataset=(
-                        self.DATASET_HOURLY
-                    ),
-                    station_id=(
-                        station_id
-                    ),
+                    section_name="hourly",
+                    expected_axis=expected_axis,
+                    dataset=self.DATASET_HOURLY,
+                    station_id=station_id,
                 )
+
+                object_name = (
+                    "bronze/open_meteo/"
+                    f"{self.DATASET_HOURLY}/"
+                    f"year={year}/"
+                    f"month={month}/"
+                    f"day={day}/"
+                    f"station_id={station_id}.json"
+                )
+
+                existing_data = (
+                    existing_data_by_station.get(
+                        station_id
+                    )
+                )
+
+                # --------------------------------------------------------
+                # Merge existing + new hourly values by timestamp.
+                # New API values prevail when the timestamp already exists.
+                # --------------------------------------------------------
+
+                if existing_data is None:
+                    merged_data = deepcopy(
+                        data
+                    )
+
+                else:
+                    existing_hourly = (
+                        existing_data["hourly"]
+                    )
+
+                    new_hourly = (
+                        data["hourly"]
+                    )
+
+                    existing_times = (
+                        existing_hourly["time"]
+                    )
+
+                    new_times = (
+                        new_hourly["time"]
+                    )
+
+                    fields = (
+                            set(existing_hourly)
+                            | set(new_hourly)
+                    )
+
+                    fields.discard(
+                        "time"
+                    )
+
+                    rows = {}
+
+                    for source_hourly, times in (
+                            (
+                                    existing_hourly,
+                                    existing_times,
+                            ),
+                            (
+                                    new_hourly,
+                                    new_times,
+                            ),
+                    ):
+                        for field in fields:
+                            values = (
+                                source_hourly.get(
+                                    field
+                                )
+                            )
+
+                            if values is None:
+                                continue
+
+                            if not isinstance(
+                                    values,
+                                    list,
+                            ):
+                                raise RuntimeError(
+                                    "Invalid Open-Meteo "
+                                    "hourly field: "
+                                    f"{field}"
+                                )
+
+                            if len(values) != len(
+                                    times
+                            ):
+                                raise RuntimeError(
+                                    "Open-Meteo hourly "
+                                    "field length mismatch: "
+                                    f"{field}"
+                                )
+
+                        for index, time_value in enumerate(
+                                times
+                        ):
+                            row = rows.setdefault(
+                                time_value,
+                                {}
+                            )
+
+                            for field in fields:
+                                values = (
+                                    source_hourly.get(
+                                        field
+                                    )
+                                )
+
+                                if values is not None:
+                                    row[field] = (
+                                        values[index]
+                                    )
+
+                    merged_times = sorted(
+                        rows
+                    )
+
+                    merged_hourly = {
+                        "time": merged_times,
+                    }
+
+                    for field in sorted(
+                            fields
+                    ):
+                        merged_hourly[field] = [
+                            rows[time_value].get(
+                                field
+                            )
+                            for time_value
+                            in merged_times
+                        ]
+
+                    merged_data = deepcopy(
+                        data
+                    )
+
+                    merged_data[
+                        "hourly"
+                    ] = merged_hourly
 
                 paths.append(
                     self.storage.save_json(
-                        data,
+                        merged_data,
                         source=self.SOURCE,
                         dataset=(
                             self.DATASET_HOURLY
                         ),
+                        object_name=object_name,
                         ingestion_mode=(
                             "incremental"
                         ),
@@ -621,6 +851,10 @@ class OpenMeteoBatchIngestion:
                                     "longitude"
                                 ]
                             ),
+                            "observation_date": (
+                                observation_date
+                                .isoformat()
+                            ),
                         },
                     )
                 )
@@ -632,39 +866,43 @@ class OpenMeteoBatchIngestion:
         self._validate_complete(
             expected_ids=expected_ids,
             completed_ids=completed_ids,
-            dataset=(
-                self.DATASET_HOURLY
-            ),
+            dataset=self.DATASET_HOURLY,
         )
 
         return paths
 
+
     def ingest_hourly_range_locations(
-        self,
-        *,
-        locations,
-        start_date,
-        end_date,
-        resume: bool = False,
+            self,
+            *,
+            locations,
+            start_date,
+            end_date,
+            resume: bool = False,
     ):
+        """
+        Ingest historical Open-Meteo hourly data using
+        canonical station per observation-day Bronze objects.
+
+        Canonical path:
+
+            bronze/open_meteo/weather_hourly/
+            year=YYYY/month=MM/day=DD/
+            station_id=<station_id>.json
+
+        When resume=True, only missing or temporally incomplete
+        station/day objects are downloaded again.
+        """
+
         if not locations:
             raise ValueError(
-                "No Open-Meteo locations "
-                "provided."
+                "No Open-Meteo locations provided."
             )
 
         if start_date > end_date:
             raise ValueError(
-                "start_date is after "
-                "end_date."
+                "start_date is after end_date."
             )
-
-        requested_start = (
-            start_date.isoformat()
-        )
-        requested_end = (
-            end_date.isoformat()
-        )
 
         expected_ids = (
             self._expected_location_ids(
@@ -672,213 +910,368 @@ class OpenMeteoBatchIngestion:
             )
         )
 
-        completed_ids = (
-            self._existing_location_ids(
-                dataset=(
-                    self.DATASET_HOURLY
-                ),
-                requested_start_date=(
-                    requested_start
-                ),
-                requested_end_date=(
-                    requested_end
-                ),
-                ingestion_mode=(
-                    "historical"
-                ),
-                id_fields=(
-                    "station_id",
-                ),
-                resume=resume,
-            )
-        )
-
-        completed_ids &= expected_ids
-
-        pending = (
-            self._pending_locations(
-                locations=locations,
-                completed_ids=(
-                    completed_ids
-                ),
-            )
-        )
-
-        logger.info(
-            "Open-Meteo historical hourly: "
-            "expected=%d existing=%d "
-            "pending=%d",
-            len(expected_ids),
-            len(completed_ids),
-            len(pending),
-        )
-
-        start_datetime = datetime.combine(
-            start_date,
-            datetime.min.time(),
-            tzinfo=dt_timezone.utc,
-        )
-
-        end_datetime = datetime.combine(
-            end_date,
-            datetime.max.time(),
-            tzinfo=dt_timezone.utc,
-        )
-
-        expected_axis = (
-            self._build_time_axis(
-                start=start_datetime,
-                end=end_datetime,
-                step_minutes=60,
-            )
-        )
-
         paths = []
 
-        for batch in (
-            self._paced_batches(
-                pending
+        current_date = start_date
+
+        while current_date <= end_date:
+            requested_date = (
+                current_date.isoformat()
             )
-        ):
-            latitude, longitude = (
-                self._coordinates(
-                    batch
+
+            year = (
+                current_date.strftime("%Y")
+            )
+            month = (
+                current_date.strftime("%m")
+            )
+            day = (
+                current_date.strftime("%d")
+            )
+
+            start_datetime = datetime.combine(
+                current_date,
+                datetime.min.time(),
+                tzinfo=dt_timezone.utc,
+            )
+
+            end_datetime = datetime.combine(
+                current_date,
+                datetime.max.time(),
+                tzinfo=dt_timezone.utc,
+            )
+
+            expected_axis = (
+                self._build_time_axis(
+                    start=start_datetime,
+                    end=end_datetime,
+                    step_minutes=60,
                 )
             )
 
-            response = (
-                self.http_client.get_json(
-                    OPEN_METEO_ARCHIVE_URL,
-                    params={
-                        "latitude": (
-                            latitude
-                        ),
-                        "longitude": (
-                            longitude
-                        ),
-                        "hourly": ",".join(
-                            DEFAULT_HOURLY_VARIABLES
-                        ),
-                        "start_date": (
-                            requested_start
-                        ),
-                        "end_date": (
-                            requested_end
-                        ),
-                        "timezone": "UTC",
-                    },
-                )
-            )
+            completed_ids: set[str] = set()
 
-            results = (
-                self._normalize_response(
-                    response,
-                    len(batch),
-                )
-            )
+            # ------------------------------------------------------------
+            # Canonical daily Bronze state
+            # ------------------------------------------------------------
 
-            for location, data in zip(
-                batch,
-                results,
-                strict=True,
+            if (
+                    resume
+                    and isinstance(
+                self.storage,
+                MinIOBronzeStorage,
+            )
             ):
-                station_id = str(
-                    location[
-                        "station_id"
-                    ]
-                )
+                for location in locations:
+                    station_id = str(
+                        location[
+                            "station_id"
+                        ]
+                    )
 
-                self._validate_time_axis(
-                    data=data,
-                    section_name=(
+                    object_name = (
+                        "bronze/open_meteo/"
+                        f"{self.DATASET_HOURLY}/"
+                        f"year={year}/"
+                        f"month={month}/"
+                        f"day={day}/"
+                        f"station_id={station_id}.json"
+                    )
+
+                    if not (
+                            self.storage.object_exists(
+                                object_name
+                            )
+                    ):
+                        continue
+
+                    payload = (
+                        self.storage.read_json(
+                            object_name
+                        )
+                    )
+
+                    if not isinstance(
+                            payload,
+                            dict,
+                    ):
+                        logger.warning(
+                            "Invalid Open-Meteo Bronze "
+                            "wrapper will be downloaded "
+                            "again: station_id=%s "
+                            "date=%s object=%s",
+                            station_id,
+                            requested_date,
+                            object_name,
+                        )
+                        continue
+
+                    data = payload.get(
+                        "data"
+                    )
+
+                    if not isinstance(
+                            data,
+                            dict,
+                    ):
+                        logger.warning(
+                            "Invalid Open-Meteo Bronze "
+                            "data will be downloaded "
+                            "again: station_id=%s "
+                            "date=%s object=%s",
+                            station_id,
+                            requested_date,
+                            object_name,
+                        )
+                        continue
+
+                    hourly = data.get(
                         "hourly"
-                    ),
-                    expected_axis=(
-                        expected_axis
-                    ),
-                    dataset=(
-                        self.DATASET_HOURLY
-                    ),
-                    station_id=(
+                    )
+
+                    if not isinstance(
+                            hourly,
+                            dict,
+                    ):
+                        logger.warning(
+                            "Missing Open-Meteo hourly "
+                            "section: station_id=%s "
+                            "date=%s object=%s",
+                            station_id,
+                            requested_date,
+                            object_name,
+                        )
+                        continue
+
+                    actual_axis = hourly.get(
+                        "time"
+                    )
+
+                    if (
+                            actual_axis
+                            != expected_axis
+                    ):
+                        logger.warning(
+                            "Incomplete Open-Meteo hourly "
+                            "Bronze object will be "
+                            "downloaded again: "
+                            "station_id=%s date=%s "
+                            "actual_points=%s "
+                            "expected_points=%s",
+                            station_id,
+                            requested_date,
+                            (
+                                len(actual_axis)
+                                if isinstance(
+                                    actual_axis,
+                                    list,
+                                )
+                                else 0
+                            ),
+                            len(expected_axis),
+                        )
+                        continue
+
+                    completed_ids.add(
                         station_id
-                    ),
+                    )
+
+            elif resume:
+                logger.info(
+                    "Open-Meteo resumability "
+                    "disabled for injected "
+                    "non-MinIO storage."
                 )
 
-                paths.append(
-                    self.storage.save_json(
-                        data,
-                        source=self.SOURCE,
-                        dataset=(
-                            self.DATASET_HOURLY
-                        ),
-                        ingestion_mode=(
-                            "historical"
-                        ),
-                        requested_start_date=(
-                            requested_start
-                        ),
-                        requested_end_date=(
-                            requested_end
-                        ),
-                        extra_metadata={
-                            "station_id": (
-                                location[
-                                    "station_id"
-                                ]
+            pending = (
+                self._pending_locations(
+                    locations=locations,
+                    completed_ids=(
+                        completed_ids
+                    ),
+                )
+            )
+
+            logger.info(
+                "Open-Meteo historical hourly: "
+                "date=%s expected=%d "
+                "existing=%d pending=%d",
+                requested_date,
+                len(expected_ids),
+                len(completed_ids),
+                len(pending),
+            )
+
+            # ------------------------------------------------------------
+            # Download only pending stations for this observation day
+            # ------------------------------------------------------------
+
+            for batch in (
+                    self._paced_batches(
+                        pending
+                    )
+            ):
+                latitude, longitude = (
+                    self._coordinates(
+                        batch
+                    )
+                )
+
+                response = (
+                    self.http_client.get_json(
+                        OPEN_METEO_ARCHIVE_URL,
+                        params={
+                            **OPEN_METEO_API_PARAMS,
+                        "latitude": latitude,
+                            "longitude": longitude,
+                            "hourly": ",".join(
+                                DEFAULT_HOURLY_VARIABLES
                             ),
-                            "station_name": (
-                                location[
-                                    "station_name"
-                                ]
+                            "start_date": (
+                                requested_date
                             ),
-                            "province": (
-                                location[
-                                    "province"
-                                ]
+                            "end_date": (
+                                requested_date
                             ),
-                            "latitude": (
-                                location[
-                                    "latitude"
-                                ]
-                            ),
-                            "longitude": (
-                                location[
-                                    "longitude"
-                                ]
-                            ),
+                            "timezone": "UTC",
                         },
                     )
                 )
 
-                completed_ids.add(
-                    station_id
+                results = (
+                    self._normalize_response(
+                        response,
+                        len(batch),
+                    )
                 )
 
-        self._validate_complete(
-            expected_ids=expected_ids,
-            completed_ids=completed_ids,
-            dataset=(
-                self.DATASET_HOURLY
-            ),
-        )
+                for location, data in zip(
+                        batch,
+                        results,
+                        strict=True,
+                ):
+                    station_id = str(
+                        location[
+                            "station_id"
+                        ]
+                    )
+
+                    self._validate_time_axis(
+                        data=data,
+                        section_name="hourly",
+                        expected_axis=(
+                            expected_axis
+                        ),
+                        dataset=(
+                            self.DATASET_HOURLY
+                        ),
+                        station_id=(
+                            station_id
+                        ),
+                    )
+
+                    object_name = (
+                        "bronze/open_meteo/"
+                        f"{self.DATASET_HOURLY}/"
+                        f"year={year}/"
+                        f"month={month}/"
+                        f"day={day}/"
+                        f"station_id={station_id}.json"
+                    )
+
+                    paths.append(
+                        self.storage.save_json(
+                            data,
+                            source=self.SOURCE,
+                            dataset=(
+                                self.DATASET_HOURLY
+                            ),
+                            object_name=(
+                                object_name
+                            ),
+                            ingestion_mode=(
+                                "historical"
+                            ),
+                            requested_start_date=(
+                                requested_date
+                            ),
+                            requested_end_date=(
+                                requested_date
+                            ),
+                            extra_metadata={
+                                "station_id": (
+                                    location[
+                                        "station_id"
+                                    ]
+                                ),
+                                "station_name": (
+                                    location[
+                                        "station_name"
+                                    ]
+                                ),
+                                "province": (
+                                    location[
+                                        "province"
+                                    ]
+                                ),
+                                "latitude": (
+                                    location[
+                                        "latitude"
+                                    ]
+                                ),
+                                "longitude": (
+                                    location[
+                                        "longitude"
+                                    ]
+                                ),
+                                "observation_date": (
+                                    requested_date
+                                ),
+                            },
+                        )
+                    )
+
+                    completed_ids.add(
+                        station_id
+                    )
+
+            self._validate_complete(
+                expected_ids=expected_ids,
+                completed_ids=completed_ids,
+                dataset=(
+                    self.DATASET_HOURLY
+                ),
+            )
+
+            current_date += timedelta(
+                days=1
+            )
 
         return paths
 
     def ingest_15min_locations(
-        self,
-        *,
-        locations,
-        start_datetime: datetime,
-        end_datetime: datetime,
-        resume: bool = False,
-        ingestion_mode: str = (
-            "incremental"
-        ),
+            self,
+            *,
+            locations,
+            start_datetime: datetime,
+            end_datetime: datetime,
+            resume: bool = False,
+            ingestion_mode: str = "historical",
     ):
+        """
+        Reconstruct historical Open-Meteo 15-minute weather
+        using canonical station per UTC observation-day objects.
+
+        Canonical path:
+
+            bronze/open_meteo/weather_15min/
+            year=YYYY/month=MM/day=DD/
+            station_id=<station_id>.json
+        """
+
         if not locations:
             raise ValueError(
-                "No Open-Meteo locations "
-                "provided."
+                "No Open-Meteo locations provided."
             )
 
         start_datetime = _to_utc(
@@ -889,51 +1282,16 @@ class OpenMeteoBatchIngestion:
             end_datetime
         )
 
-        if (
-            start_datetime
-            > end_datetime
-        ):
+        if start_datetime > end_datetime:
             raise ValueError(
-                "start_datetime is after "
-                "end_datetime."
+                "start_datetime is after end_datetime."
             )
 
-        if ingestion_mode not in {
-            "incremental",
-            "historical",
-        }:
+        if ingestion_mode != "historical":
             raise ValueError(
-                "Unsupported Open-Meteo "
-                "ingestion_mode: "
-                f"{ingestion_mode}"
+                "Open-Meteo 15-minute batch ingestion "
+                "is reserved for historical reconstruction."
             )
-
-        if ingestion_mode == "historical":
-            api_url = (
-                OPEN_METEO_HISTORICAL_FORECAST_URL
-            )
-        else:
-            api_url = OPEN_METEO_BASE_URL
-
-        start_text = (
-            start_datetime.strftime(
-                "%Y-%m-%dT%H:%M"
-            )
-        )
-
-        end_text = (
-            end_datetime.strftime(
-                "%Y-%m-%dT%H:%M"
-            )
-        )
-
-        requested_start = (
-            start_datetime.isoformat()
-        )
-
-        requested_end = (
-            end_datetime.isoformat()
-        )
 
         expected_ids = (
             self._expected_location_ids(
@@ -941,188 +1299,321 @@ class OpenMeteoBatchIngestion:
             )
         )
 
-        completed_ids = (
-            self._existing_location_ids(
-                dataset=(
-                    self.DATASET_15MIN
-                ),
-                requested_start_date=(
-                    requested_start
-                ),
-                requested_end_date=(
-                    requested_end
-                ),
-                ingestion_mode=(
-                    ingestion_mode
-                ),
-                id_fields=(
-                    "location_id",
-                    "station_id",
-                ),
-                resume=resume,
-            )
-        )
-
-        completed_ids &= expected_ids
-
-        pending = (
-            self._pending_locations(
-                locations=locations,
-                completed_ids=(
-                    completed_ids
-                ),
-            )
-        )
-
-        logger.info(
-            "Open-Meteo 15min: "
-            "expected=%d existing=%d "
-            "pending=%d",
-            len(expected_ids),
-            len(completed_ids),
-            len(pending),
-        )
-
-        expected_axis = (
-            self._build_time_axis(
-                start=start_datetime,
-                end=end_datetime,
-                step_minutes=15,
-            )
-        )
-
         paths = []
 
-        for batch in (
-            self._paced_batches(
-                pending
+        current_date = (
+            start_datetime.date()
+        )
+
+        final_date = (
+            end_datetime.date()
+        )
+
+        while current_date <= final_date:
+            requested_date = (
+                current_date.isoformat()
             )
-        ):
-            latitude, longitude = (
-                self._coordinates(
-                    batch
+
+            year = current_date.strftime(
+                "%Y"
+            )
+            month = current_date.strftime(
+                "%m"
+            )
+            day = current_date.strftime(
+                "%d"
+            )
+
+            day_start = datetime.combine(
+                current_date,
+                datetime.min.time(),
+                tzinfo=dt_timezone.utc,
+            )
+
+            day_end = datetime.combine(
+                current_date,
+                datetime.max.time(),
+                tzinfo=dt_timezone.utc,
+            )
+
+            expected_axis = (
+                self._build_time_axis(
+                    start=day_start,
+                    end=day_end,
+                    step_minutes=15,
                 )
             )
 
-            response = (
-                self.http_client.get_json(
-                    api_url,
-                    params={
-                        "latitude": (
-                            latitude
-                        ),
-                        "longitude": (
-                            longitude
-                        ),
-                        "minutely_15": ",".join(
-                            DEFAULT_MINUTELY_15_VARIABLES
-                        ),
-                        "start_minutely_15": (
-                            start_text
-                        ),
-                        "end_minutely_15": (
-                            end_text
-                        ),
-                        "timezone": "UTC",
-                    },
-                )
-            )
+            completed_ids: set[str] = set()
 
-            results = (
-                self._normalize_response(
-                    response,
-                    len(batch),
-                )
-            )
+            # ------------------------------------------------------------
+            # Canonical daily Bronze state
+            # ------------------------------------------------------------
 
-            for location, data in zip(
-                batch,
-                results,
-                strict=True,
+            if (
+                    resume
+                    and isinstance(
+                self.storage,
+                MinIOBronzeStorage,
+            )
             ):
-                station_id = str(
-                    location[
-                        "station_id"
-                    ]
-                )
+                for location in locations:
+                    station_id = str(
+                        location["station_id"]
+                    )
 
-                self._validate_time_axis(
-                    data=data,
-                    section_name=(
+                    object_name = (
+                        "bronze/open_meteo/"
+                        f"{self.DATASET_15MIN}/"
+                        f"year={year}/"
+                        f"month={month}/"
+                        f"day={day}/"
+                        f"station_id={station_id}.json"
+                    )
+
+                    if not self.storage.object_exists(
+                            object_name
+                    ):
+                        continue
+
+                    payload = self.storage.read_json(
+                        object_name
+                    )
+
+                    if not isinstance(
+                            payload,
+                            dict,
+                    ):
+                        logger.warning(
+                            "Invalid Open-Meteo 15min "
+                            "Bronze wrapper will be "
+                            "downloaded again: "
+                            "station_id=%s date=%s",
+                            station_id,
+                            requested_date,
+                        )
+                        continue
+
+                    data = payload.get(
+                        "data"
+                    )
+
+                    if not isinstance(
+                            data,
+                            dict,
+                    ):
+                        continue
+
+                    minutely = data.get(
                         "minutely_15"
-                    ),
-                    expected_axis=(
-                        expected_axis
-                    ),
-                    dataset=(
-                        self.DATASET_15MIN
-                    ),
-                    station_id=(
+                    )
+
+                    if not isinstance(
+                            minutely,
+                            dict,
+                    ):
+                        continue
+
+                    actual_axis = minutely.get(
+                        "time"
+                    )
+
+                    if actual_axis != expected_axis:
+                        logger.warning(
+                            "Incomplete Open-Meteo 15min "
+                            "Bronze object will be "
+                            "downloaded again: "
+                            "station_id=%s date=%s "
+                            "actual_points=%s "
+                            "expected_points=%s",
+                            station_id,
+                            requested_date,
+                            (
+                                len(actual_axis)
+                                if isinstance(
+                                    actual_axis,
+                                    list,
+                                )
+                                else 0
+                            ),
+                            len(expected_axis),
+                        )
+                        continue
+
+                    completed_ids.add(
                         station_id
-                    ),
+                    )
+
+            elif resume:
+                logger.info(
+                    "Open-Meteo resumability "
+                    "disabled for injected "
+                    "non-MinIO storage."
                 )
 
-                paths.append(
-                    self.storage.save_json(
-                        data,
-                        source=self.SOURCE,
-                        dataset=(
-                            self.DATASET_15MIN
-                        ),
-                        ingestion_mode=(
-                            ingestion_mode
-                        ),
-                        requested_start_date=(
-                            requested_start
-                        ),
-                        requested_end_date=(
-                            requested_end
-                        ),
-                        extra_metadata={
-                            "location_id": (
-                                location[
-                                    "station_id"
-                                ]
+            pending = (
+                self._pending_locations(
+                    locations=locations,
+                    completed_ids=completed_ids,
+                )
+            )
+
+            logger.info(
+                "Open-Meteo historical 15min: "
+                "date=%s expected=%d "
+                "existing=%d pending=%d",
+                requested_date,
+                len(expected_ids),
+                len(completed_ids),
+                len(pending),
+            )
+
+            start_text = (
+                day_start.strftime(
+                    "%Y-%m-%dT%H:%M"
+                )
+            )
+
+            end_text = (
+                day_end.strftime(
+                    "%Y-%m-%dT%H:%M"
+                )
+            )
+
+            # ------------------------------------------------------------
+            # Download only pending stations for this day
+            # ------------------------------------------------------------
+
+            for batch in self._paced_batches(
+                    pending
+            ):
+                latitude, longitude = (
+                    self._coordinates(
+                        batch
+                    )
+                )
+
+                response = (
+                    self.http_client.get_json(
+                        OPEN_METEO_HISTORICAL_FORECAST_URL,
+                        params={
+                            **OPEN_METEO_API_PARAMS,
+                        "latitude": latitude,
+                            "longitude": longitude,
+                            "minutely_15": ",".join(
+                                DEFAULT_MINUTELY_15_VARIABLES
                             ),
-                            "station_id": (
-                                location[
-                                    "station_id"
-                                ]
+                            "start_minutely_15": (
+                                start_text
                             ),
-                            "station_name": (
-                                location[
-                                    "station_name"
-                                ]
+                            "end_minutely_15": (
+                                end_text
                             ),
-                            "province": (
-                                location[
-                                    "province"
-                                ]
-                            ),
-                            "latitude": (
-                                location[
-                                    "latitude"
-                                ]
-                            ),
-                            "longitude": (
-                                location[
-                                    "longitude"
-                                ]
-                            ),
+                            "timezone": "UTC",
                         },
                     )
                 )
 
-                completed_ids.add(
-                    station_id
+                results = (
+                    self._normalize_response(
+                        response,
+                        len(batch),
+                    )
                 )
 
-        self._validate_complete(
-            expected_ids=expected_ids,
-            completed_ids=completed_ids,
-            dataset=(
-                self.DATASET_15MIN
-            ),
-        )
+                for location, data in zip(
+                        batch,
+                        results,
+                        strict=True,
+                ):
+                    station_id = str(
+                        location["station_id"]
+                    )
+
+                    self._validate_time_axis(
+                        data=data,
+                        section_name="minutely_15",
+                        expected_axis=expected_axis,
+                        dataset=(
+                            self.DATASET_15MIN
+                        ),
+                        station_id=station_id,
+                    )
+
+                    object_name = (
+                        "bronze/open_meteo/"
+                        f"{self.DATASET_15MIN}/"
+                        f"year={year}/"
+                        f"month={month}/"
+                        f"day={day}/"
+                        f"station_id={station_id}.json"
+                    )
+
+                    paths.append(
+                        self.storage.save_json(
+                            data,
+                            source=self.SOURCE,
+                            dataset=(
+                                self.DATASET_15MIN
+                            ),
+                            object_name=object_name,
+                            ingestion_mode="historical",
+                            requested_start_date=(
+                                requested_date
+                            ),
+                            requested_end_date=(
+                                requested_date
+                            ),
+                            extra_metadata={
+                                "location_id": (
+                                    location[
+                                        "station_id"
+                                    ]
+                                ),
+                                "station_id": (
+                                    location[
+                                        "station_id"
+                                    ]
+                                ),
+                                "station_name": (
+                                    location[
+                                        "station_name"
+                                    ]
+                                ),
+                                "province": (
+                                    location[
+                                        "province"
+                                    ]
+                                ),
+                                "latitude": (
+                                    location[
+                                        "latitude"
+                                    ]
+                                ),
+                                "longitude": (
+                                    location[
+                                        "longitude"
+                                    ]
+                                ),
+                                "observation_date": (
+                                    requested_date
+                                ),
+                            },
+                        )
+                    )
+
+                    completed_ids.add(
+                        station_id
+                    )
+
+            self._validate_complete(
+                expected_ids=expected_ids,
+                completed_ids=completed_ids,
+                dataset=self.DATASET_15MIN,
+            )
+
+            current_date += timedelta(
+                days=1
+            )
 
         return paths

@@ -67,6 +67,9 @@ Python Ingestion
 Apache Airflow provides the orchestration layer responsible for coordinating
 pipeline executions.
 
+The complete historical Bronze → Silver → Gold path has been validated under
+Airflow control.
+
 ---
 
 ## 2. Source Acquisition
@@ -99,17 +102,30 @@ Business transformations are intentionally excluded from this stage.
 Historical ingestion retrieves source information for an explicitly requested
 temporal interval when the source supports historical access.
 
-The general interface is based on:
+The final Airflow historical workflow exposes:
+
+```text
+fecha_inicio
+fecha_fin
+sobreescribir_datos
+eliminar_historial_completo
+```
+
+Internally, source-specific ingestion functions use equivalent date values such
+as:
 
 ```text
 start_date
 end_date
 ```
 
-The processing path is:
+The historical path is:
 
 ```text
 Requested interval
+       │
+       ▼
+Persistence policy
        │
        ▼
 Source-specific ingestion
@@ -153,11 +169,25 @@ Hourly data
 The AEMET station catalogue supplies the locations and coordinates used for
 Open-Meteo acquisition.
 
-The current validated catalogue contains:
+The validated historical catalogue contains:
 
 ```text
 926 locations
 ```
+
+Historical Open-Meteo data is persisted as canonical daily objects per station.
+
+A day is considered complete from its expected temporal axis:
+
+```text
+hourly
+→ 24 timestamps
+
+15-minute
+→ 96 timestamps
+```
+
+Object existence alone is not considered sufficient evidence of completeness.
 
 ### REE / ESIOS
 
@@ -174,6 +204,14 @@ The selected indicators are externalized in:
 config/esios_indicators.json
 ```
 
+A structurally valid ESIOS response with:
+
+```text
+values = []
+```
+
+is handled as a valid `NO_DATA` result and does not generate synthetic records.
+
 ### AEMET
 
 AEMET provides:
@@ -185,8 +223,8 @@ current_observations
 
 The station catalogue acts as a geographical point master.
 
-`current_observations` provides recent observations and is not used to
-reconstruct arbitrary historical periods.
+`current_observations` provides recent observations and is deliberately
+excluded from the final `historical_reload` workflow.
 
 ### CNIG / IGN
 
@@ -229,21 +267,49 @@ Bronze object
 MinIO
 ```
 
-Bronze objects are organized logically as:
+For analytical time-series facts, the physical temporal hierarchy is governed
+by source observation time rather than by ingestion time.
+
+The validated canonical paths include:
 
 ```text
-bronze/
-└── <source>/
-    └── <dataset>/
-        └── year=YYYY/
-            └── month=MM/
-                └── day=DD/
-                    └── <object>
+Open-Meteo hourly
+bronze/open_meteo/weather_hourly/
+year=YYYY/month=MM/day=DD/
+station_id=<station_id>.json
+
+Open-Meteo 15-minute
+bronze/open_meteo/weather_15min/
+year=YYYY/month=MM/day=DD/
+station_id=<station_id>.json
+
+ESIOS hourly
+bronze/esios/<dataset>/
+year=YYYY/month=MM/day=DD/
+data.json
+
+ESIOS monthly
+bronze/esios/<dataset>/
+year=YYYY/month=MM/
+data.json
+
+AEMET stations
+bronze/aemet/stations/stations.json
+
+AEMET current observations
+bronze/aemet/current_observations/
+year=YYYY/month=MM/day=DD/
+observations.json
+
+CNIG provinces
+bronze/cnig/provinces/provinces.csv
+
+CNIG municipalities
+bronze/cnig/municipalities/municipalities.csv
 ```
 
-The physical `year/month/day` hierarchy represents the ingestion date.
-
-The requested source interval is stored independently in object metadata.
+`ingestion_timestamp` remains audit metadata and is not used as the physical
+business partition date.
 
 Typical metadata includes:
 
@@ -311,6 +377,9 @@ Silver processing performs operations including:
 Missing observations are not synthetically generated.
 
 A source `NULL` is not automatically replaced by zero.
+
+For time-series tables, Silver partitioning is governed by the normalized
+observation time or observation month rather than by ingestion time.
 
 ---
 
@@ -429,6 +498,9 @@ Gold processing includes:
 - cross-source integration;
 - construction of fact and dimension tables.
 
+The final Gold physical model is intentionally limited to four analytical
+tables.
+
 ---
 
 ## 9. Main Hourly Analytical Flow
@@ -474,7 +546,7 @@ precipitation
 
 when a valid metric is available.
 
-Open-Meteo provides metric-level fallback.
+Open-Meteo provides metric-level enrichment and fallback.
 
 Open-Meteo also supplies analytical variables including:
 
@@ -486,6 +558,10 @@ wind_direction_120m
 solar_radiation
 direct_normal_irradiance
 ```
+
+For historical reconstruction, AEMET current observations are not backfilled
+into arbitrary historical dates; historical meteorology is supplied by
+Open-Meteo.
 
 ### Energy block
 
@@ -599,6 +675,9 @@ gold_dim_time
 The two dimensions provide reusable geographical and temporal attributes for
 analytical consumption.
 
+The main hourly fact is physically governed by `gold_timestamp`, while the
+installed-capacity fact is governed by `year_month`.
+
 ---
 
 ## 12. Data Validation Flow
@@ -611,8 +690,8 @@ Includes:
 
 - valid requests;
 - valid response structures;
-- authentication;
-- expected data presence where required;
+- authentication where required;
+- valid `NO_DATA` handling for ESIOS;
 - temporal coverage checks;
 - external API error handling.
 
@@ -669,45 +748,42 @@ Gold
 
 ## 13. Incremental Data Flow
 
-The platform is designed to support incremental acquisition after an initial
-historical population.
+The current implementation distinguishes between historical end-to-end
+orchestration and recurrent Bronze ingestion.
 
-The general intended flow is:
+The current Airflow workflows are:
 
 ```text
-Execution window
-       │
-       ▼
-Source API
-       │
-       ▼
-Newly available source data
-       │
-       ▼
-Bronze
-       │
-       ▼
-Silver
-       │
-       ▼
-Gold
+historical_reload
+→ historical Bronze → Silver → Gold
+
+hourly_ingestion
+→ recurrent hourly Bronze ingestion
+
+monthly_ingestion
+→ recurrent monthly Bronze ingestion
+
+open_meteo_15min
+→ manual historical Open-Meteo 15-minute Bronze utility
 ```
 
-The exact window and availability behaviour can differ by source because
-publication schedules and API capabilities are not identical.
+Therefore, the current hourly and monthly DAGs are not documented as complete
+Bronze → Silver → Gold pipelines.
 
-The current Bronze metadata records requested temporal boundaries and ingestion
-timestamps.
+They acquire and persist newly available source data in Bronze.
+
+The exact source window and availability behaviour can differ by provider
+because publication schedules and API capabilities are not identical.
 
 A persistent business-level checkpoint table that automatically stores the last
 successful timestamp per dataset is **not currently part of the validated
 implementation**.
 
-Execution state is therefore not documented as if such a checkpoint mechanism
-already existed.
+Airflow records DAG and task execution metadata, while Bronze metadata records
+ingestion and request context.
 
-Checkpoint-based continuation remains a possible future extension of the
-orchestration layer.
+These mechanisms must not be described as equivalent to a dedicated
+dataset-level business checkpoint subsystem.
 
 ---
 
@@ -718,40 +794,111 @@ Apache Airflow provides the workflow orchestration component.
 Its responsibility is to coordinate execution rather than implement data
 transformation logic.
 
-The intended end-to-end dependency chain is:
+The validated historical orchestration path is:
 
 ```text
 Start
   │
   ▼
-Source ingestion
+Apply Bronze persistence policy
   │
   ▼
-Bronze available
+Select Silver / Gold deletion policy
   │
-  ▼
-Silver table creation / processing
+  ├── FULL
+  │     ├─ drop / purge current Silver and Gold tables
+  │     └─ clean active Silver / Gold warehouse prefixes
   │
-  ▼
-Gold table creation / processing
+  ├── RANGE
+  │     └─ delete only the requested temporal interval
   │
-  ▼
-Gold available through Trino
-  │
-  ▼
-End
+  └── PRESERVE
+        └─ keep existing Silver / Gold data
+             │
+             ▼
+      Persistence policy complete
+             │
+     ┌───────┼──────────────┐
+     │       │              │
+     ▼       ▼              ▼
+ Masters   ESIOS hourly   ESIOS monthly
+     │
+     ▼
+ Open-Meteo historical
+     │
+     └──────────┬───────────┘
+                ▼
+           Bronze ready
+                │
+                ▼
+       Create Silver tables
+                │
+                ▼
+          Write Silver
+                │
+                ▼
+        Create Gold tables
+                │
+                ▼
+           Write Gold
+                │
+                ▼
+               End
 ```
 
-Existing source ingestion DAGs have previously been validated.
+The final historical DAG is:
 
-A historical reload DAG has been implemented to coordinate Bronze ingestion and
-the downstream Spark Silver and Gold jobs.
+```text
+airflow/dags/historical_reload.py
+```
 
-Final runtime validation of the complete Airflow-orchestrated end-to-end
-execution belongs to the orchestration closure phase.
+It exposes exactly:
 
-Therefore, the data-processing path itself is validated, while final Airflow
-runtime orchestration should not yet be documented as completed.
+```text
+fecha_inicio
+fecha_fin
+sobreescribir_datos
+eliminar_historial_completo
+```
+
+The three validated persistence policies are:
+
+```text
+PRESERVE
+sobreescribir_datos = false
+eliminar_historial_completo = false
+
+RANGE OVERWRITE
+sobreescribir_datos = true
+eliminar_historial_completo = false
+
+FULL DELETE
+eliminar_historial_completo = true
+```
+
+FULL DELETE has priority over RANGE OVERWRITE.
+
+The historical Silver and Gold write tasks use:
+
+```text
+LAKEHOUSE_WRITE_POLICY=insert-only
+```
+
+so PRESERVE adds missing natural keys without rewriting existing ones.
+
+The complete Airflow-controlled Bronze → Silver → Gold runtime has been
+validated with real data.
+
+Final DAG discovery confirmed exactly:
+
+```text
+historical_reload
+hourly_ingestion
+monthly_ingestion
+open_meteo_15min
+```
+
+with no DAG import errors.
 
 ---
 
@@ -794,7 +941,7 @@ Apache Superset is responsible for visualization.
 
 The core Lakehouse processing flow has been validated with real source data.
 
-A complete historical Bronze execution was performed for:
+An independent historical Bronze execution was performed for:
 
 ```text
 2026-01-10 → 2026-01-15
@@ -811,6 +958,12 @@ Open-Meteo hourly        = 926 files
 Open-Meteo 15-minute     = 926 files
 AEMET current            = 1 file
 ```
+
+That independent validation predates the final `historical_reload` policy and
+included AEMET current observations.
+
+The final historical Airflow workflow deliberately excludes AEMET current
+observations.
 
 The resulting Silver namespace contained exactly:
 
@@ -841,7 +994,7 @@ The Gold processing subsequently completed successfully with exactly:
 4 tables
 ```
 
-and the following validated row counts:
+and the following validated row counts for that independent execution:
 
 ```text
 gold_dim_geography = 71
@@ -872,7 +1025,7 @@ duplicate Autonomous Community × month keys = 0
 Real integrated rows containing meteorological and ESIOS energy metrics in the
 same Province × hour record were successfully queried through Trino.
 
-Therefore, the following core data-processing flow is technically validated:
+Therefore:
 
 ```text
 Real external sources
@@ -888,6 +1041,41 @@ Real external sources
         │
         ▼
       Trino
+```
+
+is technically validated.
+
+The historical Bronze → Silver → Gold path has also been executed successfully
+under direct Airflow control.
+
+Persistence validation additionally confirmed:
+
+```text
+PRESERVE
+→ existing active files preserved
+→ missing coverage added
+→ duplicate natural keys = 0
+
+RANGE OVERWRITE
+→ requested interval rebuilt
+→ outside-range active files preserved
+→ masters preserved
+→ duplicate natural keys = 0
+
+FULL DELETE
+→ Bronze reset
+→ 9 Silver tables rebuilt
+→ 4 Gold tables rebuilt
+→ masters rebuilt
+→ previous-run physical Silver/Gold objects = 0
+```
+
+After the final orchestration changes, the automated regression suites passed:
+
+```text
+tests/ingestion = 84 passed
+tests/silver    = 85 passed
+tests/gold      = 72 passed
 ```
 
 ---
@@ -959,6 +1147,22 @@ CNIG / IGN ────────┘          │
                        Apache Superset
 
           Apache Airflow coordinates pipeline execution
+```
+
+The validated orchestration roles are:
+
+```text
+historical_reload
+→ historical Bronze → Silver → Gold
+
+hourly_ingestion
+→ hourly Bronze ingestion
+
+monthly_ingestion
+→ monthly Bronze ingestion
+
+open_meteo_15min
+→ manual historical 15-minute Bronze utility
 ```
 
 This design provides a clear separation between acquisition, raw persistence,

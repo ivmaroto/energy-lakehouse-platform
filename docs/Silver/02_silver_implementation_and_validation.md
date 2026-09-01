@@ -89,9 +89,10 @@ They must therefore not be counted as current Silver products.
 
 ---
 
-## 3. Final Silver Row Counts
+## 3. Historical Silver Row Counts
 
-The current real end-to-end validation produced the following Silver counts:
+An earlier validated real end-to-end execution produced the following Silver
+counts:
 
 | Table | Rows |
 |---|---:|
@@ -105,8 +106,15 @@ The current real end-to-end validation produced the following Silver counts:
 | `silver_esios_energy_hourly` | 38,443 |
 | `silver_esios_installed_capacity_monthly` | 123 |
 
-These counts were obtained from the final persisted Silver tables through
-Trino.
+These counts were obtained from persisted Silver tables through Trino for that
+concrete execution.
+
+They are retained as historical validation evidence and must not be interpreted
+as permanent Silver table cardinalities.
+
+The execution also predates the final `historical_reload` policy because it
+included AEMET `current_observations`, which the final historical workflow now
+excludes.
 
 ---
 
@@ -125,6 +133,10 @@ verified to contain actual data for the requested interval.
 
 The same real Bronze acquisition was subsequently processed through Silver and
 Gold.
+
+This execution remains valid historical E2E evidence, but it predates the final
+`historical_reload` orchestration policy because AEMET `current_observations`
+was still included in that earlier run.
 
 ---
 
@@ -304,11 +316,16 @@ lon
 The remaining AEMET meteorological source fields are preserved without
 prematurely translating them into Gold analytical metrics.
 
-Current validated row count:
+Historical row count for the earlier validated E2E execution:
 
 ```text
 9786
 ```
+
+This count belongs to that execution only.
+
+In the final orchestration design, AEMET `current_observations` is excluded from
+arbitrary historical reconstruction by `historical_reload`.
 
 Natural key:
 
@@ -748,11 +765,13 @@ The source geography is preserved.
 Province-level information is not fabricated for records that do not provide
 Province-level geography.
 
-Current validated row count:
+Historical row count for the earlier validated E2E execution:
 
 ```text
 38443
 ```
+
+This count is execution-specific and is not a permanent table cardinality.
 
 ---
 
@@ -780,11 +799,13 @@ Current active scope:
 9 indicators
 ```
 
-Current validated row count:
+Historical row count for the earlier validated E2E execution:
 
 ```text
 123
 ```
+
+This count is execution-specific and is not a permanent table cardinality.
 
 The validated analytical geography is:
 
@@ -807,7 +828,7 @@ They are not artificially distributed to provinces.
 Silver preserves the ESIOS magnitude and time metadata required to maintain
 correct analytical semantics.
 
-The project distinguishes between:
+The project distinguishes strictly between:
 
 ```text
 MW
@@ -819,44 +840,69 @@ and:
 MWh
 ```
 
-Installed capacity represents:
+They represent different physical quantities:
 
 ```text
-power
-→ MW
+MW
+→ power
 ```
-
-Hourly generation feeds the Gold analytical energy metrics represented as:
 
 ```text
-energy
-→ MWh
+MWh
+→ energy
 ```
 
-The two units are never treated as interchangeable physical quantities.
+For an interval of exactly one hour, a power value in MW can be numerically
+equal to the corresponding energy in MWh over that hour, but the physical
+quantity and unit remain conceptually different.
+
+The implementation therefore preserves validated source magnitude and temporal
+semantics and does not infer units only from observation granularity.
+
+Installed capacity remains a power-capacity metric.
+
+The validated hourly ESIOS generation indicators retain their corresponding
+energy semantics.
 
 ---
 
-## 20. ESIOS Empty-Data Protection
+## 20. ESIOS NO_DATA Handling
 
-The ingestion layer rejects an ESIOS acquisition when:
+An ESIOS response containing:
 
 ```text
 indicator.values = []
 ```
 
-Therefore, the final current Silver validation is based on actual ESIOS
-observations rather than successful-but-empty API responses.
+is a valid source response representing:
 
-For the historical validation interval:
+```text
+NO_DATA
+```
+
+It must not be converted into fabricated observations or zero-valued
+measurements.
+
+Therefore:
+
+```text
+NO_DATA != zero-valued measurement
+```
+
+and:
+
+```text
+NULL != 0
+```
+
+For the earlier historical validation interval:
 
 ```text
 2026-01-10 → 2026-01-15
 ```
 
-all configured final ESIOS datasets were verified to contain data.
-
-This enabled the real:
+the configured datasets used by that concrete E2E execution contained actual
+observations and could therefore be processed through:
 
 ```text
 Bronze
@@ -864,7 +910,8 @@ Bronze
 → Gold
 ```
 
-validation.
+That historical availability must not be generalized to every future requested
+interval.
 
 ---
 
@@ -905,6 +952,23 @@ Repeated or overlapping Bronze acquisitions can contain the same logical source
 observation.
 
 Silver therefore deduplicates using the natural keys defined for each table.
+
+For the final historical orchestration path:
+
+```text
+historical_reload
+```
+
+the validated downstream write policy is:
+
+```text
+LAKEHOUSE_WRITE_POLICY=insert-only
+```
+
+Under PRESERVE, only missing natural keys are inserted.
+
+Other workflows keep their default upsert behaviour unless explicitly
+configured otherwise.
 
 Conceptually:
 
@@ -959,9 +1023,10 @@ No failing Silver tests remained in that validated execution.
 
 ---
 
-## 24. Final Silver Reconstruction
+## 24. Historical Silver Reconstruction Evidence
 
-The current Silver model was reconstructed and populated from real Bronze data.
+The final nine-table Silver model was reconstructed and populated from real
+Bronze data in the earlier validated E2E execution.
 
 The resulting physical catalog contained exactly:
 
@@ -1001,7 +1066,10 @@ silver_esios_installed_capacity_monthly
 ```
 
 This confirms that the implemented Silver processing can create and populate
-the complete final model from the current Bronze source scope.
+the complete nine-table model from real Bronze source data.
+
+The row counts above remain execution-specific historical evidence rather than
+permanent table cardinalities.
 
 ---
 
@@ -1015,7 +1083,7 @@ Trino exposed exactly the nine final tables in:
 iceberg.silver
 ```
 
-and returned the expected row counts.
+and returned the expected row counts for the validated execution.
 
 This validates the shared catalog path:
 
@@ -1102,15 +1170,15 @@ required by the final analytical layer.
 
 ---
 
-## 28. Final Gold Evidence Derived from Silver
+## 28. Historical Gold Evidence Derived from Silver
 
-The main Gold fact generated from the final Silver model contains:
+The earlier validated E2E execution produced:
 
 ```text
 8147 Province × hour rows
 ```
 
-with:
+in the main Gold fact, with:
 
 ```text
 8100 rows containing weather
@@ -1126,7 +1194,7 @@ and:
 0 duplicate Province × hour keys
 ```
 
-The installed-capacity fact contains:
+The installed-capacity fact contained:
 
 ```text
 19 Autonomous Community × month rows
@@ -1138,8 +1206,24 @@ with:
 0 duplicate keys
 ```
 
-This confirms that the final Silver datasets provide valid normalized input to
-the intended analytical products.
+These figures are execution-specific historical evidence.
+
+They are not permanent Gold cardinalities.
+
+In particular, the final structural validation of `gold_dim_geography` was
+performed later and established:
+
+```text
+PROVINCE = 52
+AUTONOMOUS_COMMUNITY = 19
+COUNTRY = 1
+PENINSULA = 1
+
+TOTAL = 73
+```
+
+This later structural validation supersedes earlier execution-specific
+geographical row counts without invalidating the historical E2E evidence above.
 
 ---
 
@@ -1190,22 +1274,23 @@ final model.
 
 The final Silver implementation has been technically validated.
 
-Current evidence confirms:
+The following combines final structural/test validation with row counts retained
+from the earlier real E2E execution:
 
 ```text
 Final Silver tables
 = 9
 
-AEMET station rows
+AEMET station rows in validated catalogue
 = 926
 
-AEMET current-observation rows
+AEMET current-observation rows in earlier E2E execution
 = 9786
 
-Open-Meteo hourly rows
+Open-Meteo hourly rows in earlier six-day E2E execution
 = 133344
 
-Open-Meteo 15-minute rows
+Open-Meteo 15-minute rows in earlier six-day E2E execution
 = 533376
 
 CNIG province rows
@@ -1217,10 +1302,10 @@ CNIG Autonomous Community rows
 CNIG municipality rows
 = 8132
 
-ESIOS hourly rows
+ESIOS hourly rows in earlier E2E execution
 = 38443
 
-ESIOS monthly rows
+ESIOS monthly rows in earlier E2E execution
 = 123
 
 Silver automated tests
@@ -1239,6 +1324,9 @@ Silver → Gold
 = VALIDATED
 
 Bronze → Silver → Gold → Trino
+= VALIDATED
+
+historical_reload E2E runtime
 = VALIDATED
 ```
 

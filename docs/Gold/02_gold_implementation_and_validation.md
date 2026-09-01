@@ -14,8 +14,9 @@ docs/Gold/01_gold_design.md
 The design document defines the final analytical model and transformation
 rules.
 
-This document records the implementation evidence obtained from real Silver
-data, Apache Spark execution, Apache Iceberg persistence and Trino queries.
+This document records implementation evidence obtained from real Silver data,
+Apache Spark execution, Apache Iceberg persistence, Trino queries and the final
+Airflow-controlled historical workflow.
 
 The validated Gold processing path is:
 
@@ -100,8 +101,6 @@ meteorological information
 hourly electricity-generation information
 ```
 
----
-
 ## Installed-capacity fact
 
 ```text
@@ -145,8 +144,8 @@ spark/jobs/gold/create_tables.py
 spark/jobs/gold/write_gold.py
 ```
 
-Shared Gold transformation functionality is also maintained under the same
-Gold job package.
+Shared Gold transformation functionality is maintained under the same Gold job
+package.
 
 The implementation separates:
 
@@ -169,11 +168,18 @@ Gold-specific configuration is externalized in:
 config/gold_config.json
 ```
 
-The validated temporal-alignment configuration is:
+The validated configuration includes:
 
 ```json
 {
-  "esios_time_gap_hours": 1
+  "esios_time_gap_hours": 1,
+  "peninsula_excluded_province_codes": [
+    "07",
+    "35",
+    "38",
+    "51",
+    "52"
+  ]
 }
 ```
 
@@ -191,6 +197,9 @@ through configuration rather than a hardcoded transformation constant.
 
 The hourly offset is not automatically applied to monthly installed-capacity
 data.
+
+The excluded province codes define the validated Peninsula scope used by Gold
+geographical logic.
 
 ---
 
@@ -217,6 +226,10 @@ silver_esios_installed_capacity_monthly
 
 Gold therefore operates on the current final Silver model rather than the
 earlier twelve-table implementation.
+
+AEMET current observations remain part of the reusable Silver model, but the
+final historical Airflow reconstruction deliberately excludes new AEMET current
+acquisition from arbitrary historical reloads.
 
 ---
 
@@ -277,8 +290,18 @@ Province × hour
 An AEMET observation without a valid station-to-province resolution must not be
 assigned an invented province.
 
-Such information remains available in upstream layers rather than being
-fabricated in Gold.
+AEMET current observations are a recent/current source.
+
+They are deliberately excluded from arbitrary historical reconstruction by the
+final:
+
+```text
+historical_reload
+```
+
+workflow.
+
+Historical meteorological reconstruction is therefore supplied by Open-Meteo.
 
 ---
 
@@ -310,6 +333,17 @@ solar_radiation
 direct_normal_irradiance
 ```
 
+Historical Open-Meteo hourly Bronze objects are organized as canonical daily
+station objects.
+
+A complete daily object is validated against:
+
+```text
+24 hourly timestamps
+```
+
+rather than object existence alone.
+
 ---
 
 # 10. Open-Meteo 15-Minute Wind Processing
@@ -331,7 +365,14 @@ wind_speed_120m
 wind_direction_120m
 ```
 
----
+Historical Open-Meteo 15-minute Bronze objects are considered complete only
+when the expected daily temporal axis contains:
+
+```text
+96 timestamps
+```
+
+for a complete UTC day.
 
 ## 10.1 Wind Speed
 
@@ -354,8 +395,6 @@ The final grain is:
 ```text
 Province × hour
 ```
-
----
 
 ## 10.2 Wind Direction
 
@@ -419,6 +458,9 @@ precipitation_source
 ```
 
 This is controlled source integration rather than arbitrary imputation.
+
+In historical reloads, AEMET current observations are not used to reconstruct
+arbitrary past dates.
 
 ---
 
@@ -488,6 +530,20 @@ missing observation
 → NULL
 ```
 
+A structurally valid ESIOS response with:
+
+```text
+values = []
+```
+
+is handled upstream as valid:
+
+```text
+NO_DATA
+```
+
+and does not create synthetic zero-valued Gold observations.
+
 ---
 
 # 14. Official Total Generation
@@ -555,8 +611,6 @@ gold_timestamp
 
 Both input blocks must be unique on that grain before the join.
 
----
-
 ## 16.1 Valid Row Types
 
 The FULL OUTER JOIN intentionally allows:
@@ -576,8 +630,6 @@ energy only
 A missing source results in NULL metrics for that source.
 
 The valid source information from the other side is retained.
-
----
 
 ## 16.2 Join Protection
 
@@ -657,7 +709,7 @@ precipitation_source
 gold_created_at
 ```
 
-The timestamp columns are exposed by Trino as:
+Timestamp columns are exposed by Trino as:
 
 ```text
 timestamp(6) with time zone
@@ -692,6 +744,9 @@ Its grain is:
 ```text
 Autonomous Community × month
 ```
+
+Installed capacity remains at the geographical level supplied by the validated
+source and is not artificially distributed to provinces.
 
 ---
 
@@ -791,28 +846,44 @@ The final geographical dimension is:
 gold_dim_geography
 ```
 
-It contains the geographical levels required by the final physical fact model:
+The validated final dimension contains:
+
+```text
+PROVINCE               = 52
+AUTONOMOUS_COMMUNITY   = 19
+COUNTRY                = 1
+PENINSULA              = 1
+```
+
+Therefore:
+
+```text
+gold_dim_geography rows
+= 73
+```
+
+The physical fact grains remain:
 
 ```text
 PROVINCE
 AUTONOMOUS_COMMUNITY
 ```
 
-Validated row count:
+COUNTRY and PENINSULA are reusable analytical members of the dimension and are
+not separate physical fact grains.
+
+CNIG remains the canonical geographical source.
+
+Validated ESIOS hourly geography maps to:
 
 ```text
-71
+47 provinces
 ```
 
-which corresponds to:
+with no unmatched ESIOS province records.
 
-```text
-52 province-level entities
-+
-19 autonomous communities
-```
-
-CNIG remains the canonical source for this dimension.
+The five remaining canonical province-level entities do not require fabricated
+ESIOS identifiers.
 
 ---
 
@@ -824,14 +895,6 @@ The final temporal dimension is:
 gold_dim_time
 ```
 
-It contains the temporal members required by the current final fact tables.
-
-The current validated row count is:
-
-```text
-158
-```
-
 The final fact tables physically contain:
 
 ```text
@@ -840,7 +903,7 @@ time_key
 
 and therefore reference the temporal analytical dimension using this key.
 
-The required final grains are:
+The implemented physical fact grains require temporal members compatible with:
 
 ```text
 HOUR
@@ -848,6 +911,12 @@ MONTH
 ```
 
 No 5-minute or 15-minute Gold fact is part of the final physical model.
+
+The number of rows in `gold_dim_time` depends on the temporal coverage loaded
+into Gold.
+
+Historical row counts are execution evidence and must not be treated as a
+permanent dimensional cardinality.
 
 ---
 
@@ -866,16 +935,29 @@ The validated Peninsular meteorological scope excludes:
 The Peninsula definition is constructed from province-level canonical
 geography.
 
-However:
+Spain and Peninsula are distinct analytical scopes.
+
+The final physical model contains:
 
 ```text
-no dedicated Peninsula Gold fact
+no dedicated Peninsula fact
 ```
 
-is part of the final physical model.
+but:
 
-Spain and Peninsula must still not be treated as equivalent if this scope is
-used in analytical or quality calculations.
+```text
+gold_dim_geography
+```
+
+includes a distinct:
+
+```text
+PENINSULA
+```
+
+member.
+
+This member must not be interpreted as an additional physical fact grain.
 
 ---
 
@@ -908,6 +990,8 @@ COALESCE(metric, 0)
 to missing source information.
 
 The FULL OUTER JOIN preserves legitimate partial source coverage.
+
+A valid ESIOS `NO_DATA` response is also distinct from a published zero.
 
 ---
 
@@ -951,7 +1035,7 @@ Autonomous Community
 
 and any other expansion not supported by the source.
 
-The current monthly installed-capacity fact therefore remains at:
+The monthly installed-capacity fact therefore remains at:
 
 ```text
 Autonomous Community
@@ -964,6 +1048,9 @@ Province
 ```
 
 where supported by the source.
+
+COUNTRY and PENINSULA remain distinct reusable dimension members rather than
+manufactured fact-level detail.
 
 ---
 
@@ -995,6 +1082,10 @@ MW
 
 These physical quantities must not be treated as interchangeable.
 
+For an interval of exactly one hour, a mean power expressed in MW may be
+numerically equal to the energy in MWh over that hour, but the physical
+magnitudes and units remain conceptually different.
+
 ---
 
 # 29. Automated Gold Tests
@@ -1013,28 +1104,36 @@ as:
 - natural-key protection;
 - Gold construction and persistence behaviour.
 
-The validated Gold automated suite completed successfully with:
+The latest validated Gold automated suite completed successfully with:
 
 ```text
 72 passed
 ```
 
-This is the latest validated Gold test result recorded for the final current
-Gold implementation.
+No failing Gold tests remained.
+
+After the final orchestration and persistence changes, the complete regression
+status was:
+
+```text
+tests/ingestion = 84 passed
+tests/silver    = 85 passed
+tests/gold      = 72 passed
+```
 
 **Status: VALIDATED**
 
 ---
 
-# 30. Real Historical E2E Validation
+# 30. Independent Historical E2E Validation
 
-A complete real-data Lakehouse execution was performed for:
+An independent real-data Lakehouse execution was performed for:
 
 ```text
 2026-01-10 → 2026-01-15
 ```
 
-The selected interval had actual data available for all configured final ESIOS
+The selected interval had actual data available for the configured final ESIOS
 indicator families.
 
 Bronze acquisition completed successfully.
@@ -1048,11 +1147,18 @@ Bronze
 → Trino
 ```
 
+This execution predates the final Airflow historical persistence policy.
+
+It also included AEMET current observations in the analytical state.
+
+Those details are retained as historical validation evidence and must not be
+confused with the final `historical_reload` semantics.
+
 ---
 
 # 31. Silver Input Validation
 
-The real historical execution produced exactly nine Silver tables.
+The independent historical execution produced exactly nine Silver tables.
 
 Validated counts were:
 
@@ -1085,7 +1191,10 @@ silver_esios_installed_capacity_monthly
 = 123
 ```
 
-These tables formed the actual input to the final Gold persistence run.
+These counts belong to that specific independent execution.
+
+They are retained as validation evidence and must not be interpreted as
+permanent Silver table sizes.
 
 ---
 
@@ -1110,13 +1219,36 @@ gold_fact_province_hourly
 
 No obsolete Gold fact was present.
 
+The Gold writer supports:
+
+```text
+upsert
+insert-only
+```
+
+The default writer behaviour remains:
+
+```text
+upsert
+```
+
+The final historical Airflow workflow explicitly uses:
+
+```text
+LAKEHOUSE_WRITE_POLICY=insert-only
+```
+
+for historical Silver and Gold writes.
+
+This prevents PRESERVE executions from rewriting existing active natural keys.
+
 **Status: VALIDATED**
 
 ---
 
-# 33. Final Gold Row Counts
+# 33. Historical Gold Row Counts
 
-Trino returned:
+For the independent historical execution described above, Trino returned:
 
 ```text
 gold_dim_geography
@@ -1132,13 +1264,33 @@ gold_fact_installed_capacity_monthly
 = 19
 ```
 
-These counts represent the current validated real-data Gold state.
+These counts represent that specific validation state.
+
+They are not permanent model cardinalities.
+
+In particular, the final geographical dimension was subsequently expanded and
+validated with:
+
+```text
+PROVINCE               = 52
+AUTONOMOUS_COMMUNITY   = 19
+COUNTRY                = 1
+PENINSULA              = 1
+```
+
+for a final structural cardinality of:
+
+```text
+73
+```
+
+members.
 
 ---
 
 # 34. Province-Hour Key Validation
 
-The persisted fact contains:
+For the independent historical validation state, the persisted fact contained:
 
 ```text
 province_codes
@@ -1152,7 +1304,7 @@ duplicate_province_hour_keys
 = 0
 ```
 
-Therefore, the implemented fact preserves the required:
+Therefore, that execution preserved the required:
 
 ```text
 Province × hour
@@ -1160,11 +1312,15 @@ Province × hour
 
 natural-key uniqueness.
 
+Subsequent Airflow persistence validation also returned zero duplicate
+Province × hour keys.
+
 ---
 
 # 35. Installed-Capacity Key Validation
 
-The persisted monthly fact contains:
+For the independent historical validation state, the persisted monthly fact
+contained:
 
 ```text
 rows
@@ -1188,19 +1344,22 @@ All:
 
 rows contained installed-capacity values.
 
-The fact therefore preserves:
+This confirms:
 
 ```text
 Autonomous Community × month
 ```
 
-uniqueness.
+uniqueness for that validation execution.
+
+The row count is execution evidence rather than a permanent table cardinality.
 
 ---
 
 # 36. Weather-Energy Coverage Validation
 
-The persisted Province-hour fact contains:
+For the independent historical validation state, the Province-hour fact
+contained:
 
 ```text
 rows_with_weather
@@ -1247,7 +1406,7 @@ Therefore:
 8147
 ```
 
-which is exactly the persisted fact row count.
+which is exactly the persisted fact row count for that execution.
 
 This provides direct evidence that:
 
@@ -1257,6 +1416,9 @@ FULL OUTER JOIN
 
 preserves valid observations from either source block.
 
+The value `8147` is historical execution evidence and is not a permanent Gold
+table size.
+
 **Status: VALIDATED**
 
 ---
@@ -1265,17 +1427,17 @@ preserves valid observations from either source block.
 
 Real Gold rows were queried through Trino.
 
-Examples include:
+Validated examples included provinces such as:
 
 ```text
-01 — Araba/Álava
-02 — Albacete
-03 — Alacant/Alicante
-04 — Almería
-05 — Ávila
+Araba/Álava
+Albacete
+Alacant/Alicante
+Almería
+Ávila
 ```
 
-These rows contained combinations of actual metrics such as:
+with combinations of actual metrics such as:
 
 ```text
 temperature
@@ -1288,55 +1450,67 @@ total_generation_mwh
 
 according to the coverage provided by the original sources.
 
-For example, a real Albacete row contained simultaneous meteorological and
-electricity-generation values.
-
 This confirms actual cross-source integration rather than independent
-population of unrelated columns.
+population of unrelated weather and energy columns.
 
 ---
 
-# 38. Gold Timestamp Coverage
+# 38. Timestamp Coverage and Historical Semantics
 
-The principal requested historical interval was:
+The independent historical validation requested:
 
 ```text
 2026-01-10 → 2026-01-15
 ```
 
-The persisted Province-hour fact has:
+That earlier execution also contained AEMET current observations with their real
+recent timestamps.
+
+Because the Province-hour fact uses FULL OUTER integration, valid current
+weather-only observations were preserved in that validation state.
+
+This behaviour must not be confused with the final historical Airflow policy.
+
+The final:
 
 ```text
-province_hourly_min_timestamp
-=
-2026-01-10 00:00 UTC
+historical_reload
 ```
 
-and:
-
-```text
-province_hourly_max_timestamp
-=
-2026-08-29 18:00 UTC
-```
-
-The later timestamp is expected because:
+workflow excludes:
 
 ```text
 AEMET current_observations
 ```
 
-contains real current/recent observations.
+from arbitrary historical reconstruction.
 
-The FULL OUTER integration retains those valid current weather-only records.
+Therefore, later recent timestamps found in the earlier validation are evidence
+of that previous execution context rather than a requirement of the final
+historical workflow.
 
-They are not incorrectly rewritten as January observations.
+The configured ESIOS temporal rule:
+
+```text
+gold_timestamp
+=
+observation_timestamp
++
+1 hour
+```
+
+can also produce a valid next-day boundary after the final source hour of a
+requested interval.
+
+That boundary is expected alignment behaviour and must not automatically be
+treated as an out-of-range processing error.
 
 ---
 
 # 39. Installed-Capacity Temporal Coverage
 
-The persisted installed-capacity fact currently contains:
+For the independent historical validation state, the persisted
+installed-capacity fact contained:
 
 ```text
 installed_capacity_min_month
@@ -1344,16 +1518,15 @@ installed_capacity_min_month
 
 installed_capacity_max_month
 = 2026-01
-```
 
-and:
-
-```text
 installed_capacity_months
 = 1
 ```
 
-This is consistent with the historical validation execution.
+This is consistent with that historical validation execution.
+
+These values describe that execution only and are not permanent model
+constraints.
 
 ---
 
@@ -1374,7 +1547,8 @@ gold_fact_installed_capacity_monthly
 gold_fact_province_hourly
 ```
 
-`DESCRIBE` was successfully executed against the final facts.
+`DESCRIBE` and analytical validation queries were successfully executed against
+the final Gold model.
 
 The persisted Iceberg data is therefore accessible independently from Spark.
 
@@ -1382,7 +1556,7 @@ The persisted Iceberg data is therefore accessible independently from Spark.
 
 ---
 
-# 41. End-to-End Lakehouse Validation
+# 41. End-to-End Lakehouse and Airflow Validation
 
 The complete real processing path is:
 
@@ -1410,6 +1584,26 @@ CNIG / IGN ────────┘
 
 This path was executed with real source data.
 
+The complete historical:
+
+```text
+Bronze
+→ Silver
+→ Gold
+```
+
+path was subsequently validated under direct Airflow control.
+
+The final `historical_reload` workflow supports:
+
+```text
+PRESERVE
+RANGE OVERWRITE
+FULL DELETE
+```
+
+and all three persistence behaviours were validated with real data.
+
 Therefore:
 
 ```text
@@ -1420,7 +1614,7 @@ Real APIs
 → Trino
 ```
 
-is technically validated.
+and the final historical orchestration path are technically validated.
 
 ---
 
@@ -1458,10 +1652,24 @@ Gold Iceberg persistence
 
 Gold queryability through Trino
 = VALIDATED
+
+Historical PRESERVE
+= VALIDATED
+
+Historical RANGE OVERWRITE
+= VALIDATED
+
+Historical FULL DELETE
+= VALIDATED
+
+Historical insert-only Gold writes
+= VALIDATED
 ```
 
 Metric NULL values remain allowed when they represent genuine source coverage
 limitations.
+
+A valid ESIOS `NO_DATA` response remains distinct from a published zero.
 
 ---
 
@@ -1540,7 +1748,7 @@ They belong to the visualization stage.
 
 ---
 
-# 46. Airflow Boundary
+# 46. Airflow Validation
 
 The underlying data-processing path:
 
@@ -1551,24 +1759,59 @@ Bronze
 → Trino
 ```
 
-has been validated independently.
+is validated.
 
-The final complete execution of this processing chain directly coordinated from
-Apache Airflow remains part of the orchestration closure.
+The final historical Bronze → Silver → Gold runtime was also executed
+successfully under direct Apache Airflow control.
 
-This does not invalidate Gold itself.
-
-It only distinguishes:
+The validated `historical_reload` parameters are:
 
 ```text
-Gold implementation validation
+fecha_inicio
+fecha_fin
+sobreescribir_datos
+eliminar_historial_completo
 ```
 
-from:
+The validated policies are:
 
 ```text
-final Airflow-controlled runtime validation
+PRESERVE
+
+RANGE OVERWRITE
+
+FULL DELETE
 ```
+
+FULL DELETE has priority over RANGE OVERWRITE.
+
+Validation confirmed:
+
+```text
+PRESERVE
+→ existing active Silver/Gold files preserved
+→ missing coverage added
+→ duplicate natural keys = 0
+```
+
+```text
+RANGE OVERWRITE
+→ requested interval rebuilt
+→ outside-range data preserved
+→ masters preserved
+→ duplicate natural keys = 0
+```
+
+```text
+FULL DELETE
+→ active Bronze removed
+→ current Silver and Gold tables purged
+→ active Silver/Gold warehouse prefixes physically cleaned
+→ masters rebuilt
+→ previous-run physical Silver/Gold objects = 0
+```
+
+**Status: VALIDATED**
 
 ---
 
@@ -1617,6 +1860,9 @@ Monthly ESIOS capacity indicators
 AEMET / Open-Meteo fallback
 = VALIDATED
 
+ESIOS valid empty response
+= NO_DATA
+
 ESIOS hourly temporal alignment
 = CONFIGURED AT +1 HOUR
 
@@ -1629,20 +1875,14 @@ Province-hour duplicate keys
 Installed-capacity duplicate keys
 = 0
 
-gold_fact_province_hourly
-= 8147 rows
-
-gold_fact_installed_capacity_monthly
-= 19 rows
-
-gold_dim_geography
-= 71 rows
-
-gold_dim_time
-= 158 rows
+Final gold_dim_geography structure
+= 73 members
 
 Gold automated tests
 = 72 PASSED
+
+Complete regression suites
+= 84 INGESTION / 85 SILVER / 72 GOLD PASSED
 
 Gold Iceberg persistence
 = VALIDATED
@@ -1650,15 +1890,41 @@ Gold Iceberg persistence
 Gold Trino queryability
 = VALIDATED
 
+Historical Airflow PRESERVE
+= VALIDATED
+
+Historical Airflow RANGE OVERWRITE
+= VALIDATED
+
+Historical Airflow FULL DELETE
+= VALIDATED
+
+Historical Gold write policy
+= INSERT-ONLY
+
 Real APIs → Bronze → Silver → Gold → Trino
 = VALIDATED
 
-Final Airflow-controlled E2E runtime
-= PENDING ORCHESTRATION VALIDATION
+Airflow Bronze → Silver → Gold
+= VALIDATED
 
 Final Superset dashboards
 = PENDING VISUALIZATION IMPLEMENTATION
 ```
 
-The Gold layer itself is therefore implemented and technically validated for
-the final Energy Lakehouse Platform scope.
+Historical row counts such as:
+
+```text
+gold_fact_province_hourly = 8147
+gold_fact_installed_capacity_monthly = 19
+gold_dim_geography = 71
+gold_dim_time = 158
+```
+
+are retained only as evidence of the independent historical validation state in
+which they were measured.
+
+They are not permanent cardinalities of the final model.
+
+The Gold layer is implemented and technically validated for the final
+Energy Lakehouse Platform scope.

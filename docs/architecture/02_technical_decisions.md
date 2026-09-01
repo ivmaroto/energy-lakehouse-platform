@@ -18,6 +18,10 @@ Source code, configuration templates, infrastructure definitions and technical
 documentation are maintained in Git so that the environment can be reproduced
 on another compatible machine.
 
+A destructive reconstruction from empty persistent Docker volumes is not yet
+part of the validated evidence and is therefore not claimed as a completed
+clean-environment reproducibility test.
+
 ### Modularity
 
 Each platform component has a clearly defined responsibility.
@@ -70,6 +74,14 @@ must not be replaced by synthetic values.
 A source NULL
 must not automatically be interpreted as zero.
 ```
+
+A structurally valid ESIOS response with:
+
+```text
+values = []
+```
+
+is handled as valid `NO_DATA` and does not create synthetic observations.
 
 ### Progressive refinement
 
@@ -268,19 +280,51 @@ MinIO stores two different types of data.
 
 ### Bronze source objects
 
-Raw acquisitions are persisted under the Bronze hierarchy with ingestion
-metadata.
+Raw acquisitions are persisted under the Bronze hierarchy.
 
-Conceptually:
+For analytical time-series datasets, the physical temporal hierarchy is
+governed by source observation time rather than by ingestion time.
+
+The validated canonical paths include:
 
 ```text
-bronze/
-└── <source>/
-    └── <dataset>/
-        └── year=YYYY/
-            └── month=MM/
-                └── day=DD/
+Open-Meteo hourly
+bronze/open_meteo/weather_hourly/
+year=YYYY/month=MM/day=DD/
+station_id=<station_id>.json
+
+Open-Meteo 15-minute
+bronze/open_meteo/weather_15min/
+year=YYYY/month=MM/day=DD/
+station_id=<station_id>.json
+
+ESIOS hourly
+bronze/esios/<dataset>/
+year=YYYY/month=MM/day=DD/
+data.json
+
+ESIOS monthly
+bronze/esios/<dataset>/
+year=YYYY/month=MM/
+data.json
+
+AEMET stations
+bronze/aemet/stations/stations.json
+
+AEMET current observations
+bronze/aemet/current_observations/
+year=YYYY/month=MM/day=DD/
+observations.json
+
+CNIG provinces
+bronze/cnig/provinces/provinces.csv
+
+CNIG municipalities
+bronze/cnig/municipalities/municipalities.csv
 ```
+
+`ingestion_timestamp` remains audit metadata and does not determine the physical
+business partition date.
 
 ### Apache Iceberg storage
 
@@ -327,7 +371,7 @@ Its responsibilities include:
 
 - triggering ingestion processes;
 - coordinating task dependencies;
-- coordinating Bronze, Silver and Gold stages;
+- coordinating Bronze, Silver and Gold stages where the DAG scope requires it;
 - handling task retries;
 - recording workflow execution status;
 - exposing operational logs;
@@ -346,6 +390,64 @@ Airflow
    │
    └──► Spark Gold jobs
 ```
+
+The current runtime contains exactly four DAGs:
+
+```text
+historical_reload
+hourly_ingestion
+monthly_ingestion
+open_meteo_15min
+```
+
+Their validated roles are:
+
+```text
+historical_reload
+→ historical Bronze → Silver → Gold
+
+hourly_ingestion
+→ recurrent hourly Bronze ingestion
+
+monthly_ingestion
+→ recurrent monthly Bronze ingestion
+
+open_meteo_15min
+→ manual historical Open-Meteo 15-minute Bronze utility
+```
+
+The complete historical Bronze → Silver → Gold path has been executed
+successfully under Airflow control.
+
+The historical reload workflow exposes exactly:
+
+```text
+fecha_inicio
+fecha_fin
+sobreescribir_datos
+eliminar_historial_completo
+```
+
+and supports the three validated persistence behaviours:
+
+```text
+PRESERVE
+RANGE OVERWRITE
+FULL DELETE
+```
+
+FULL DELETE has priority over RANGE OVERWRITE.
+
+The historical Silver and Gold write tasks use:
+
+```text
+LAKEHOUSE_WRITE_POLICY=insert-only
+```
+
+so PRESERVE can add missing natural keys without rewriting existing ones.
+
+AEMET current observations are deliberately excluded from historical
+reconstruction.
 
 This keeps orchestration logic separated from transformation logic.
 
@@ -429,6 +531,9 @@ The intended analytical functionality includes:
 
 Transformation and business logic should remain in Gold rather than being
 duplicated inside dashboard definitions whenever possible.
+
+The Superset service is deployed, while the final dashboard layer remains a
+separate visualization implementation stage.
 
 ---
 
@@ -579,6 +684,14 @@ The final active ESIOS scope contains:
 The previously evaluated 5-minute ESIOS analytical flow is not part of the
 current physical Silver or Gold model.
 
+A structurally valid ESIOS response with:
+
+```text
+values = []
+```
+
+is handled as valid `NO_DATA` and does not create synthetic observations.
+
 This reduced scope keeps the implemented analytical model aligned with the
 validated final use cases.
 
@@ -623,11 +736,29 @@ used as a generic replacement for historical 15-minute acquisition.
 The AEMET station catalogue supplies the point catalogue and coordinates used
 for Open-Meteo acquisition.
 
-The current validated catalogue contains:
+The validated historical catalogue contains:
 
 ```text
 926 locations
 ```
+
+Historical Open-Meteo objects are persisted as canonical daily objects per
+station.
+
+Completeness is validated against the expected daily temporal axis:
+
+```text
+hourly
+→ 24 timestamps per complete UTC day
+
+15-minute
+→ 96 timestamps per complete UTC day
+```
+
+Object existence alone is not considered sufficient evidence of completeness.
+
+Any runtime source-access configuration required by the configured Open-Meteo
+service plan remains externalized from source code.
 
 ---
 
@@ -648,8 +779,25 @@ Current observations provide recent conventional meteorological information.
 
 They are not treated as an arbitrary historical source.
 
+The final `historical_reload` workflow therefore excludes AEMET current
+observations from historical reconstruction.
+
 Historical meteorological coverage used by the main analytical flow is
-therefore supplied by Open-Meteo.
+supplied by Open-Meteo.
+
+Within historical reloads, the AEMET station master behaves as an ensure-style
+reference dataset:
+
+```text
+master exists
+→ preserve it
+
+master missing
+→ ingest it
+```
+
+Therefore, PRESERVE and RANGE OVERWRITE keep the existing station master,
+whereas FULL DELETE rebuilds it after the active Bronze layer has been removed.
 
 ---
 
@@ -689,6 +837,9 @@ silver_esios_installed_capacity_monthly
 Silver is responsible for normalized reusable datasets and does not perform the
 final cross-domain analytical integration.
 
+Time-series Silver tables are partitioned by normalized observation time or
+observation month, according to their grain.
+
 ---
 
 # 18. Gold Physical Model
@@ -704,6 +855,9 @@ gold_dim_time
 
 No separate country-level 5-minute or 15-minute Gold facts are part of the
 current physical implementation.
+
+The principal hourly fact is governed by `gold_timestamp`, while the
+installed-capacity fact is governed by `year_month`.
 
 ---
 
@@ -842,7 +996,7 @@ Silver tables = 9
 Gold tables   = 4
 ```
 
-The main Gold fact was validated with:
+An independent historical validation produced:
 
 ```text
 8147 total Province × hour rows
@@ -859,8 +1013,42 @@ The installed-capacity fact was validated with:
 0 duplicate Autonomous Community × month keys
 ```
 
+The complete historical Bronze → Silver → Gold path was subsequently validated
+under Airflow control.
+
+The three historical persistence behaviours were validated separately:
+
+```text
+PRESERVE
+→ existing active Silver/Gold files preserved
+→ missing coverage added
+→ duplicate natural keys = 0
+
+RANGE OVERWRITE
+→ requested interval rebuilt
+→ outside-range active files preserved
+→ masters preserved
+→ duplicate natural keys = 0
+
+FULL DELETE
+→ active Bronze reset
+→ 9 Silver tables rebuilt
+→ 4 Gold tables rebuilt
+→ masters rebuilt
+→ previous-run physical Silver/Gold objects = 0
+```
+
+After the final orchestration and persistence changes, the automated regression
+suites passed:
+
+```text
+tests/ingestion = 84 passed
+tests/silver    = 85 passed
+tests/gold      = 72 passed
+```
+
 These results validate the core architectural decisions from source acquisition
-through analytical SQL access.
+through orchestration and analytical SQL access.
 
 ---
 
@@ -900,9 +1088,22 @@ Docker Compose
 
 The architecture combines raw-data preservation, distributed transformation,
 managed analytical tables and an independent SQL consumption layer while
-remaining fully deployable on a local environment.
+remaining deployable in a local environment.
 
-The main design decisions ensure that the platform does not invent missing
-source detail, retains source traceability, separates transformation from
-interactive querying and provides reusable analytical products at the
-geographical and temporal grains actually supported by the validated data.
+The main design decisions ensure that the platform:
+
+- does not invent missing temporal or geographical source detail;
+- retains source traceability;
+- separates transformation from interactive querying;
+- uses observation time rather than ingestion time to physically organize
+  analytical Bronze facts;
+- exposes reusable analytical products at the geographical and temporal grains
+  supported by validated source data;
+- keeps historical orchestration policy explicit through PRESERVE, RANGE
+  OVERWRITE and FULL DELETE behaviours;
+- keeps credentials and runtime source-access configuration outside committed
+  source code.
+
+A complete destructive reconstruction from empty persistent Docker volumes is
+not yet part of the validated evidence and is therefore not claimed as a
+completed reproducibility test.

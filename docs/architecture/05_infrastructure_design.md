@@ -304,52 +304,87 @@ using MinIO as their shared physical storage backend.
 
 ### Bronze
 
-Bronze data is persisted as source objects:
+Bronze data is persisted as source objects below:
 
 ```text
-MinIO
-└── bronze/
-    └── <source>/
-        └── <dataset>/
-            └── year=YYYY/
-                └── month=MM/
-                    └── day=DD/
+bronze/
 ```
 
-Bronze preserves:
+For analytical time-series facts, the physical temporal hierarchy is governed
+by source observation time rather than by ingestion time.
 
-- source payloads;
-- ingestion metadata;
-- requested temporal windows;
-- source traceability.
+The validated canonical paths are:
+
+```text
+Open-Meteo hourly
+bronze/open_meteo/weather_hourly/
+year=YYYY/month=MM/day=DD/
+station_id=<station_id>.json
+
+Open-Meteo 15-minute
+bronze/open_meteo/weather_15min/
+year=YYYY/month=MM/day=DD/
+station_id=<station_id>.json
+
+ESIOS hourly
+bronze/esios/<dataset>/
+year=YYYY/month=MM/day=DD/
+data.json
+
+ESIOS monthly
+bronze/esios/<dataset>/
+year=YYYY/month=MM/
+data.json
+
+AEMET stations
+bronze/aemet/stations/stations.json
+
+AEMET current observations
+bronze/aemet/current_observations/
+year=YYYY/month=MM/day=DD/
+observations.json
+
+CNIG provinces
+bronze/cnig/provinces/provinces.csv
+
+CNIG municipalities
+bronze/cnig/municipalities/municipalities.csv
+```
+
+Bronze preserves source payloads and audit metadata.
+
+`ingestion_timestamp` remains audit metadata and does not determine the
+physical business partition date.
 
 Bronze is not implemented as Apache Iceberg tables.
-
----
 
 ### Silver
 
 Silver is implemented as Apache Iceberg tables.
 
-The current physical model contains:
+The current physical model contains exactly:
 
 ```text
 9 Silver tables
 ```
 
-Silver data files and Iceberg metadata are persisted in MinIO.
+Time-series Silver tables are partitioned according to normalized observation
+time or observation month, depending on their grain.
 
----
+Silver data files and Iceberg metadata are persisted in MinIO.
 
 ### Gold
 
 Gold is also implemented as Apache Iceberg tables.
 
-The current physical model contains:
+The current physical model contains exactly:
 
 ```text
 4 Gold tables
 ```
+
+The principal hourly fact is governed by `gold_timestamp`, while the
+installed-capacity fact is governed by `year_month`.
 
 Gold contains the analytical facts and dimensions consumed through Trino.
 
@@ -453,17 +488,22 @@ Spark Master
 Spark Worker
 ```
 
----
-
 ### Apache Airflow image
 
 The Airflow image contains the Python dependencies required by the ingestion
 and orchestration layers.
 
-It allows Airflow tasks to invoke project ingestion logic and coordinate
-downstream Spark processing.
+The final Airflow image is based on:
 
----
+```text
+apache/airflow:2.10.5-python3.10
+```
+
+This Python version was selected to maintain runtime compatibility with the
+Spark worker Python environment used by PySpark tasks.
+
+The Airflow image allows DAG tasks to invoke project ingestion logic and
+coordinate downstream Spark processing.
 
 ### Apache Superset image
 
@@ -647,20 +687,14 @@ Airflow
 Superset
 AEMET
 ESIOS
+Open-Meteo access where required by the configured service plan
 ```
 
-Relevant API credentials include:
+Credentials, API keys and passwords must never be embedded directly in
+committed source code or documentation.
 
-```text
-AEMET_API_KEY
-ESIOS_API_KEY
-```
-
-Open-Meteo does not require an API key for the access pattern used by the
-project.
-
-Credentials and passwords must never be embedded directly in committed source
-code or documentation.
+Source-access configuration is injected at runtime through environment
+configuration rather than hardcoded into connectors or DAG definitions.
 
 ---
 
@@ -769,15 +803,27 @@ gold_fact_installed_capacity_monthly
 gold_fact_province_hourly
 ```
 
+The infrastructure has also supported the complete historical
+Airflow-controlled:
+
+```text
+Bronze
+→ Silver
+→ Gold
+```
+
+runtime path.
+
 This demonstrates that the infrastructure supports the implemented Lakehouse
-processing path from object storage through distributed processing and SQL
-access.
+from source acquisition and object storage through distributed processing,
+managed Iceberg persistence, orchestration and SQL access.
 
 ---
 
 ## 15. Airflow Infrastructure Status
 
-The Airflow infrastructure itself has been validated at service level.
+The Airflow infrastructure and historical orchestration path have been
+validated.
 
 Validated components include:
 
@@ -786,21 +832,71 @@ Airflow Webserver
 Airflow Scheduler
 PostgreSQL metadata connectivity
 DAG discovery
+DAG import validation
+historical end-to-end orchestration
 ```
 
-Existing ingestion DAGs have previously been executed successfully for
-source-ingestion scenarios.
-
-The final complete Airflow-orchestrated execution of:
+Final DAG import validation returned:
 
 ```text
-Bronze
-→ Silver
-→ Gold
+No data found
 ```
 
-is part of the current orchestration closure work and must not yet be described
-as fully runtime-validated until that final execution has been completed.
+from:
+
+```text
+airflow dags list-import-errors
+```
+
+which confirms that no DAG import errors were present.
+
+The runtime DAG inventory contained exactly:
+
+```text
+historical_reload
+hourly_ingestion
+monthly_ingestion
+open_meteo_15min
+```
+
+Their validated roles are:
+
+```text
+historical_reload
+→ historical Bronze → Silver → Gold
+
+hourly_ingestion
+→ recurrent hourly Bronze ingestion
+
+monthly_ingestion
+→ recurrent monthly Bronze ingestion
+
+open_meteo_15min
+→ manual historical Open-Meteo 15-minute Bronze utility
+```
+
+The `historical_reload` DAG has been executed successfully for the three
+supported persistence policies:
+
+```text
+PRESERVE
+RANGE OVERWRITE
+FULL DELETE
+```
+
+Validation confirmed:
+
+- PRESERVE keeps existing active Silver/Gold files unchanged while adding
+  missing coverage;
+- RANGE OVERWRITE rebuilds only the requested interval while preserving
+  outside-range data and existing masters;
+- FULL DELETE removes active Bronze, purges the current Silver and Gold tables,
+  physically cleans the active Silver/Gold warehouse prefixes, rebuilds masters
+  and reconstructs the requested interval;
+- no duplicate natural keys were produced by the validated executions;
+- previous-run physical Silver/Gold objects after FULL DELETE were zero.
+
+The historical orchestration layer is therefore runtime-validated.
 
 ---
 
@@ -826,6 +922,9 @@ Gold Iceberg tables
 
 This preserves the separation between visualization and distributed processing.
 
+Service availability must not be confused with completion of the final
+dashboard layer.
+
 ---
 
 ## 17. Deployment Validation
@@ -845,13 +944,34 @@ docker compose ps -a
 The platform has also been stopped and restarted while preserving persistent
 data.
 
-A complete clean-environment reproducibility test after intentionally deleting
-all persistent Docker volumes is not considered part of the currently validated
-evidence unless explicitly executed and confirmed.
+The runtime environment has successfully supported:
 
-Therefore, normal deployment and restart behaviour are validated, while a
-destructive clean-volume reconstruction should not be documented as completed
-without corresponding execution evidence.
+```text
+Python ingestion
+→ Bronze / MinIO
+→ Spark / Silver
+→ Spark / Gold
+→ Trino
+```
+
+and the complete historical processing path has been coordinated successfully
+through Airflow.
+
+A complete clean-environment reproducibility test after intentionally deleting
+all persistent Docker volumes is **not yet part of the validated evidence**.
+
+Therefore:
+
+```text
+normal deployment / restart
+= VALIDATED
+
+clean-volume full reconstruction
+= PENDING
+```
+
+The latter must not be documented as completed until corresponding execution
+evidence exists.
 
 ---
 
@@ -939,6 +1059,34 @@ The implemented infrastructure can be summarized as:
                        Apache Superset
 ```
 
-This infrastructure provides the local execution environment required by the
-Energy Lakehouse Platform while maintaining clear separation between storage,
-processing, metadata, orchestration, querying and visualization.
+The validated historical runtime path is:
+
+```text
+External sources
+      │
+      ▼
+Python ingestion
+      │
+      ▼
+MinIO / Bronze
+      │
+      ▼
+Apache Spark / Silver
+      │
+      ▼
+Apache Spark / Gold
+      │
+      ▼
+Trino
+```
+
+with Airflow coordinating the complete historical Bronze → Silver → Gold
+execution.
+
+The current infrastructure therefore provides the local execution environment
+required by the Energy Lakehouse Platform while maintaining clear separation
+between storage, processing, metadata, orchestration, querying and
+visualization.
+
+The remaining infrastructure-level validation item is a destructive
+clean-volume reconstruction from an empty persistent environment.

@@ -268,25 +268,45 @@ def test_invalid_datetime_range_raises_error():
         )
 
 
-def test_incremental_ingestion_accepts_exact_datetime_window():
+def test_incremental_ingestion_persists_hourly_canonical_day():
     client = Mock()
     storage = Mock()
 
     client.get_indicator.return_value = {
         "indicator": {
             "id": 1159,
+            "tiempo": [
+                {
+                    "id": 4,
+                    "name": "Hora",
+                }
+            ],
             "values": [
                 {
                     "value": 8.186,
+                    "datetime_utc": (
+                        "2026-01-15T10:00:00Z"
+                    ),
+                    "geo_id": 22,
+                    "geo_name": "Almería",
                 }
             ],
         }
     }
 
-    storage.save_json.return_value = (
+    storage.object_exists.return_value = (
+        False
+    )
+
+    expected_path = (
         "bronze/esios/"
         "generacion_medida_eolica_terrestre/"
-        "test.json"
+        "year=2026/month=01/day=15/"
+        "data.json"
+    )
+
+    storage.save_json.return_value = (
+        expected_path
     )
 
     ingestion = EsiosIngestion(
@@ -314,45 +334,171 @@ def test_incremental_ingestion_accepts_exact_datetime_window():
         tzinfo=timezone.utc,
     )
 
-    result = ingestion.ingest_incremental(
-        indicator_id=1159,
-        dataset="generacion_medida_eolica_terrestre",
-        start_date=start_datetime,
-        end_date=end_datetime,
+    result = (
+        ingestion.ingest_incremental(
+            indicator_id=1159,
+            dataset=(
+                "generacion_medida_eolica_terrestre"
+            ),
+            start_date=start_datetime,
+            end_date=end_datetime,
+        )
     )
 
-    client.get_indicator.assert_called_once_with(
-        indicator_id=1159,
-        start_date=start_datetime,
-        end_date=end_datetime,
-        time_trunc=None,
-        time_agg=None,
-        geo_ids=None,
-        geo_trunc=None,
-        geo_agg=None,
+    assert result == [
+        expected_path
+    ]
+
+    call = (
+        storage.save_json
+        .call_args
     )
 
-    storage.save_json.assert_called_once_with(
-        client.get_indicator.return_value,
-        source="esios",
-        dataset="generacion_medida_eolica_terrestre",
-        ingestion_mode="incremental",
-        requested_start_date=(
-            "2026-01-15T10:00:00+00:00"
-        ),
-        requested_end_date=(
-            "2026-01-15T10:59:59+00:00"
-        ),
+    assert call.kwargs[
+        "object_name"
+    ] == expected_path
+
+    assert call.kwargs[
+        "extra_metadata"
+    ][
+        "observation_date"
+    ] == "2026-01-15"
+
+
+def test_incremental_ingestion_merges_duplicate_observation():
+    client = Mock()
+    storage = Mock()
+
+    dataset = (
+        "generacion_medida_eolica_terrestre"
     )
 
-    assert result == (
+    object_name = (
         "bronze/esios/"
-        "generacion_medida_eolica_terrestre/"
-        "test.json"
+        f"{dataset}/"
+        "year=2026/month=01/day=15/"
+        "data.json"
     )
 
+    existing_value = {
+        "value": 8.0,
+        "datetime_utc": (
+            "2026-01-15T10:00:00Z"
+        ),
+        "geo_id": 22,
+        "geo_name": "Almería",
+    }
 
-def test_incremental_ingestion_rejects_empty_values():
+    updated_value = {
+        "value": 8.5,
+        "datetime_utc": (
+            "2026-01-15T10:00:00Z"
+        ),
+        "geo_id": 22,
+        "geo_name": "Almería",
+    }
+
+    new_value = {
+        "value": 9.0,
+        "datetime_utc": (
+            "2026-01-15T11:00:00Z"
+        ),
+        "geo_id": 22,
+        "geo_name": "Almería",
+    }
+
+    client.get_indicator.return_value = {
+        "indicator": {
+            "id": 1159,
+            "tiempo": [
+                {
+                    "id": 4,
+                    "name": "Hora",
+                }
+            ],
+            "values": [
+                updated_value,
+                new_value,
+            ],
+        }
+    }
+
+    storage.object_exists.return_value = (
+        True
+    )
+
+    storage.read_json.return_value = {
+        "metadata": {},
+        "data": {
+            "indicator": {
+                "id": 1159,
+                "values": [
+                    existing_value,
+                ],
+            }
+        },
+    }
+
+    storage.save_json.return_value = (
+        object_name
+    )
+
+    ingestion = EsiosIngestion(
+        client=client,
+        storage=storage,
+    )
+
+    result = (
+        ingestion.ingest_incremental(
+            indicator_id=1159,
+            dataset=dataset,
+            start_date=datetime(
+                2026,
+                1,
+                15,
+                10,
+                0,
+                tzinfo=timezone.utc,
+            ),
+            end_date=datetime(
+                2026,
+                1,
+                15,
+                11,
+                59,
+                59,
+                tzinfo=timezone.utc,
+            ),
+        )
+    )
+
+    assert result == [
+        object_name
+    ]
+
+    saved_data = (
+        storage.save_json
+        .call_args.args[0]
+    )
+
+    values = (
+        saved_data[
+            "indicator"
+        ][
+            "values"
+        ]
+    )
+
+    assert len(
+        values
+    ) == 2
+
+    assert updated_value in values
+    assert new_value in values
+    assert existing_value not in values
+
+
+def test_incremental_ingestion_no_data_returns_empty_list():
     client = Mock()
     storage = Mock()
 
@@ -368,35 +514,130 @@ def test_incremental_ingestion_rejects_empty_values():
         storage=storage,
     )
 
-    start_datetime = datetime(
-        2026,
-        8,
-        24,
-        0,
-        0,
-        0,
-        tzinfo=timezone.utc,
-    )
-
-    end_datetime = datetime(
-        2026,
-        8,
-        24,
-        23,
-        59,
-        59,
-        tzinfo=timezone.utc,
-    )
-
-    with pytest.raises(
-        RuntimeError,
-        match="ESIOS returned no observations",
-    ):
+    result = (
         ingestion.ingest_incremental(
             indicator_id=1159,
-            dataset="generacion_medida_eolica_terrestre",
-            start_date=start_datetime,
-            end_date=end_datetime,
+            dataset=(
+                "generacion_medida_eolica_terrestre"
+            ),
+            start_date=datetime(
+                2026,
+                8,
+                24,
+                0,
+                0,
+                tzinfo=timezone.utc,
+            ),
+            end_date=datetime(
+                2026,
+                8,
+                24,
+                23,
+                59,
+                59,
+                tzinfo=timezone.utc,
+            ),
         )
+    )
+
+    assert result == []
 
     storage.save_json.assert_not_called()
+
+
+def test_incremental_ingestion_monthly_uses_utc_observation_month():
+    client = Mock()
+    storage = Mock()
+
+    dataset = (
+        "potencia_instalada_hidraulica"
+    )
+
+    client.get_indicator.return_value = {
+        "indicator": {
+            "id": 1475,
+            "tiempo": [
+                {
+                    "id": 2,
+                    "name": "Mes",
+                }
+            ],
+            "values": [
+                {
+                    "value": 100.0,
+                    "datetime_utc": (
+                        "2026-01-31T23:00:00Z"
+                    ),
+                    "datetime": (
+                        "2026-02-01T00:00:00.000+01:00"
+                    ),
+                    "geo_id": 4,
+                    "geo_name": "Andalucía",
+                }
+            ],
+        }
+    }
+
+    storage.object_exists.return_value = (
+        False
+    )
+
+    expected_path = (
+        "bronze/esios/"
+        f"{dataset}/"
+        "year=2026/month=01/"
+        "data.json"
+    )
+
+    storage.save_json.return_value = (
+        expected_path
+    )
+
+    ingestion = EsiosIngestion(
+        client=client,
+        storage=storage,
+    )
+
+    result = (
+        ingestion.ingest_incremental(
+            indicator_id=1475,
+            dataset=dataset,
+            start_date=datetime(
+                2026,
+                1,
+                1,
+                tzinfo=timezone.utc,
+            ),
+            end_date=datetime(
+                2026,
+                1,
+                31,
+                23,
+                59,
+                59,
+                tzinfo=timezone.utc,
+            ),
+        )
+    )
+
+    assert result == [
+        expected_path
+    ]
+
+    assert (
+        storage.save_json
+        .call_args.kwargs[
+            "object_name"
+        ]
+        == expected_path
+    )
+
+    assert (
+        storage.save_json
+        .call_args.kwargs[
+            "extra_metadata"
+        ][
+            "observation_month"
+        ]
+        == "2026-01"
+    )

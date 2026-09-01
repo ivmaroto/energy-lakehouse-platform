@@ -24,9 +24,10 @@ Validation has been performed using:
 - containerized execution;
 - historical batch execution;
 - downstream Silver and Gold processing;
-- SQL validation through Trino.
+- SQL validation through Trino;
+- Airflow-controlled end-to-end historical executions.
 
-The final core processing path validated with real data is:
+The validated core processing path is:
 
 ```text
 External sources
@@ -53,8 +54,8 @@ Apache Iceberg
 Trino
 ```
 
-Final execution of this complete chain directly orchestrated by Airflow remains
-part of the orchestration closure.
+The complete historical Bronze → Silver → Gold path has also been executed
+successfully under direct Airflow control.
 
 ---
 
@@ -64,7 +65,7 @@ The current ingestion validation covers:
 
 - configuration loading;
 - credential externalization;
-- API authentication;
+- API authentication where required;
 - HTTP connectivity;
 - HTTP retry behaviour;
 - API-response validation;
@@ -76,15 +77,20 @@ The current ingestion validation covers:
 - Open-Meteo temporal coverage validation;
 - resumable Open-Meteo acquisition;
 - ESIOS indicator configuration;
-- ESIOS empty-data rejection;
+- ESIOS valid empty-response (`NO_DATA`) handling;
 - MinIO Bronze persistence;
+- observation-time Bronze partitioning;
 - Bronze metadata;
 - source-specific error handling;
 - automated regression testing;
 - real historical ingestion;
 - compatibility with Silver processing;
 - compatibility with Gold processing;
-- Trino queryability of the final Lakehouse output.
+- Trino queryability of the final Lakehouse output;
+- Airflow historical orchestration;
+- PRESERVE persistence behaviour;
+- RANGE OVERWRITE persistence behaviour;
+- FULL DELETE persistence behaviour.
 
 The following earlier experimental dataset families are no longer part of the
 final physical scope:
@@ -139,18 +145,8 @@ implemented by the project.
 
 Runtime configuration is externalized from source code.
 
-Relevant environment values include:
-
-```text
-AEMET_API_KEY
-ESIOS_API_KEY
-
-MINIO_ENDPOINT
-MINIO_ROOT_USER
-MINIO_ROOT_PASSWORD
-MINIO_BUCKET
-MINIO_SECURE
-```
+Relevant environment values include source credentials and storage
+configuration.
 
 The repository provides:
 
@@ -166,7 +162,7 @@ while the real:
 
 is excluded from version control.
 
-The final ESIOS indicator catalogue is also externalized in:
+The final ESIOS indicator catalogue is externalized in:
 
 ```text
 config/esios_indicators.json
@@ -174,6 +170,8 @@ config/esios_indicators.json
 
 This prevents the validated indicator IDs and dataset mappings from being
 duplicated across ingestion code and orchestration definitions.
+
+No literal production credential is required to be committed to source code.
 
 **Status: VALIDATED**
 
@@ -191,14 +189,7 @@ The shared HTTP layer was tested for functionality including:
 - JSON-response handling;
 - malformed-response handling.
 
-Open-Meteo additionally uses source-specific:
-
-```text
-retry
-backoff
-pacing
-```
-
+Open-Meteo additionally uses source-specific retry, backoff and pacing
 behaviour for large historical batches.
 
 **Status: VALIDATED**
@@ -214,15 +205,12 @@ stations
 current_observations
 ```
 
-AEMET authentication was validated using a real API credential supplied through:
-
-```text
-AEMET_API_KEY
-```
+AEMET authentication was validated using a real API credential supplied through
+runtime configuration.
 
 ### Station catalogue
 
-The current validated station catalogue contains:
+The validated station catalogue used by the historical pipeline contains:
 
 ```text
 926 stations
@@ -255,6 +243,9 @@ historical periods.
 
 Historical meteorological reconstruction for the analytical model is therefore
 provided by Open-Meteo.
+
+The final `historical_reload` DAG deliberately excludes AEMET current
+observations.
 
 **AEMET validation status: VALIDATED**
 
@@ -341,8 +332,7 @@ direct_normal_irradiance
 The source payload is persisted in Bronze before downstream normalization and
 analytical naming.
 
-No API credential is required for the Open-Meteo access pattern used by the
-project.
+Runtime source access configuration is externalized from source code.
 
 **Status: VALIDATED**
 
@@ -350,8 +340,8 @@ project.
 
 ## 9. Open-Meteo Batch Validation
 
-Historical Open-Meteo acquisition operates over the complete AEMET station
-catalogue:
+Historical Open-Meteo acquisition operates over the complete validated AEMET
+station catalogue:
 
 ```text
 926 locations
@@ -371,8 +361,10 @@ Relevant implementation includes:
 
 ```text
 ingestion/open_meteo/batch.py
-ingestion/open_meteo/bronze_state.py
 ```
+
+Historical Open-Meteo observations are persisted as canonical daily objects per
+station.
 
 The historical execution successfully completed:
 
@@ -387,15 +379,34 @@ The historical execution successfully completed:
 
 ## 10. Open-Meteo Temporal Completeness Validation
 
-Temporal completeness was validated for:
+Temporal completeness is validated from the expected observation axis rather
+than from object existence alone.
+
+For each canonical station/day object:
+
+### Hourly expected coverage
+
+```text
+24 timestamps per complete UTC day
+```
+
+### 15-minute expected coverage
+
+```text
+96 timestamps per complete UTC day
+```
+
+A partial daily object is therefore considered incomplete and can be reloaded.
+
+This behaviour was also validated over:
 
 ```text
 2026-01-10 → 2026-01-15
 ```
 
-The interval contains six complete days.
+which contains six complete days.
 
-### Hourly expected coverage
+### Hourly interval coverage
 
 ```text
 6 × 24
@@ -416,7 +427,7 @@ silver_open_meteo_hourly
 = 133344 rows
 ```
 
-### 15-minute expected coverage
+### 15-minute interval coverage
 
 ```text
 6 × 24 × 4
@@ -446,21 +457,24 @@ historical Open-Meteo coverage for the selected interval.
 
 ## 11. Open-Meteo Recovery Validation
 
-The Bronze-state implementation distinguishes between:
-
-```text
-complete location
-incomplete location
-missing location
-```
-
-A historical batch can therefore resume only the locations that still require
-acquisition.
+The historical implementation distinguishes between complete, incomplete and
+missing daily station coverage.
 
 The existence of a Bronze object alone is not considered sufficient evidence
 of completeness.
 
-Expected temporal coverage is also inspected.
+The expected temporal axis is inspected:
+
+```text
+hourly
+→ 24 timestamps per complete day
+
+15-minute
+→ 96 timestamps per complete day
+```
+
+A historical batch can therefore preserve already complete coverage and reload
+missing or incomplete daily coverage.
 
 Automated tests cover this behaviour.
 
@@ -470,11 +484,8 @@ Automated tests cover this behaviour.
 
 ## 12. REE / ESIOS Validation
 
-REE / ESIOS was validated using a real API credential supplied through:
-
-```text
-ESIOS_API_KEY
-```
+REE / ESIOS was validated using a real API credential supplied through runtime
+configuration.
 
 The final active configuration contains:
 
@@ -570,12 +581,12 @@ FAILED_DATASETS = []
 ALL_ESIOS_AVAILABLE = True
 ```
 
-This interval was therefore selected for the final historical end-to-end
-technical validation.
+This interval was selected for an independent historical end-to-end technical
+validation.
 
 The result proves that:
 
-- the configured indicator IDs are valid;
+- the configured indicator IDs are valid for the tested execution;
 - authentication works;
 - the ESIOS connector works;
 - the API can return actual observations for the selected historical period.
@@ -589,14 +600,20 @@ indicator.
 
 ## 16. ESIOS Empty-Response Validation
 
-Real recent ESIOS requests demonstrated that HTTP success can occur while:
+Real ESIOS requests demonstrated that HTTP success can occur while:
 
 ```text
 indicator.values = []
 ```
 
-The ingestion implementation was therefore modified so that an empty ESIOS
-values collection is not treated as successful source acquisition.
+The final ingestion implementation treats a structurally valid empty values
+collection as a valid:
+
+```text
+NO_DATA
+```
+
+result.
 
 The current behaviour is:
 
@@ -609,18 +626,17 @@ Indicator structure
       ▼
 Validate indicator.values
       │
-      ├── non-empty → continue
+      ├── non-empty → persist observations
       │
-      └── empty     → fail acquisition
+      └── empty     → valid NO_DATA / no observations persisted
 ```
+
+An empty response therefore does not fabricate records and is not converted
+into a false acquisition failure.
 
 Automated regression tests cover this behaviour.
 
-The final orchestration behaviour for a legitimate recent publication delay is
-not documented here as an implemented `NO_DATA` state because that behaviour
-has not yet been validated.
-
-**Status: VALIDATED AT INGESTION LEVEL**
+**Status: VALIDATED**
 
 ---
 
@@ -635,7 +651,7 @@ provinces
 municipalities
 ```
 
-The resulting Silver geographical model contains:
+The independently validated Silver geographical model contained:
 
 ```text
 silver_cnig_provinces
@@ -651,8 +667,8 @@ silver_cnig_municipalities
 Official codes are preserved as strings where required so leading zeroes are
 not lost.
 
-CNIG therefore supplies the geographical reference used later by the
-meteorological and energy normalization logic.
+CNIG supplies the geographical reference used later by the meteorological and
+energy normalization logic.
 
 **Status: VALIDATED**
 
@@ -660,27 +676,56 @@ meteorological and energy normalization logic.
 
 ## 18. Bronze Storage Validation
 
-MinIO is the production-like Bronze storage backend.
+MinIO is the Bronze storage backend.
 
-Bronze acquisitions are persisted below the configured:
+Bronze acquisitions are persisted below:
 
 ```text
 bronze/
 ```
 
-prefix and organized logically by:
+For analytical time-series facts, the physical temporal hierarchy is governed
+by source observation time rather than by `ingestion_timestamp`.
+
+The validated canonical organization includes:
 
 ```text
-source
-dataset
-ingestion year
-ingestion month
-ingestion day
+Open-Meteo hourly
+bronze/open_meteo/weather_hourly/
+year=YYYY/month=MM/day=DD/
+station_id=<station_id>.json
+
+Open-Meteo 15-minute
+bronze/open_meteo/weather_15min/
+year=YYYY/month=MM/day=DD/
+station_id=<station_id>.json
+
+ESIOS hourly
+bronze/esios/<dataset>/
+year=YYYY/month=MM/day=DD/
+data.json
+
+ESIOS monthly
+bronze/esios/<dataset>/
+year=YYYY/month=MM/
+data.json
+
+AEMET stations
+bronze/aemet/stations/stations.json
+
+AEMET current observations
+bronze/aemet/current_observations/
+year=YYYY/month=MM/day=DD/
+observations.json
+
+CNIG provinces
+bronze/cnig/provinces/provinces.csv
+
+CNIG municipalities
+bronze/cnig/municipalities/municipalities.csv
 ```
 
-The physical date path represents ingestion time rather than observation time.
-
-The requested source interval remains preserved in object metadata.
+`ingestion_timestamp` remains audit metadata.
 
 Validation confirmed:
 
@@ -691,6 +736,8 @@ Validation confirmed:
 - JSON deserialization;
 - metadata inspection;
 - source-payload inspection;
+- observation-time physical organization;
+- controlled prefix deletion;
 - compatibility with downstream Spark processing.
 
 **Status: VALIDATED**
@@ -699,7 +746,7 @@ Validation confirmed:
 
 ## 19. Bronze Metadata Validation
 
-The common Bronze metadata structure includes:
+Bronze metadata includes audit and request-context information such as:
 
 ```text
 source
@@ -716,25 +763,16 @@ Examples include:
 
 ```text
 Open-Meteo
-→ location_id
+→ station/location identifier
 → latitude
 → longitude
 
 ESIOS
-→ indicator_id
+→ indicator identifier
 ```
 
-This metadata separates:
-
-```text
-when data was ingested
-```
-
-from:
-
-```text
-which source interval was requested
-```
+This metadata distinguishes the ingestion event from the business observation
+period used for physical organization.
 
 **Status: VALIDATED**
 
@@ -752,11 +790,15 @@ including:
 - authentication errors;
 - invalid JSON;
 - malformed API structures;
-- empty ESIOS values;
+- valid ESIOS `NO_DATA` responses;
 - incomplete Open-Meteo coverage;
 - MinIO persistence failures.
 
-A failed acquisition is not represented as a valid completed dataset.
+A malformed or failed acquisition is not represented as a valid completed
+dataset.
+
+A structurally valid ESIOS response containing no observations is represented
+as `NO_DATA` and does not create synthetic records.
 
 **Status: VALIDATED**
 
@@ -773,15 +815,15 @@ Open-Meteo
 ESIOS
 date utilities
 Bronze storage
-Open-Meteo Bronze state
 Open-Meteo historical batch behaviour
 historical orchestration support
 ```
 
-The latest validated complete ingestion regression execution finished with:
+After the final persistence, master-handling and Airflow-orchestration changes,
+the latest complete ingestion regression execution finished with:
 
 ```text
-68 passed
+84 passed in 0.60s
 ```
 
 No failures remained in that execution.
@@ -790,25 +832,40 @@ The suite includes tests associated with:
 
 - temporal-range validation;
 - storage behaviour;
-- ESIOS empty-response rejection;
+- ESIOS valid `NO_DATA` handling;
 - Open-Meteo endpoint behaviour;
 - historical batch processing;
-- temporal completeness;
-- resumable acquisition.
+- daily temporal completeness;
+- resumable acquisition;
+- historical orchestration policies;
+- master preservation/rebuild support.
 
-**Automated ingestion test status: 68 PASSED**
+The downstream regression suites were also executed after the final
+orchestration changes:
+
+```text
+Silver
+= 85 passed in 16.82s
+
+Gold
+= 72 passed in 45.25s
+```
+
+**Automated ingestion test status: 84 PASSED**
+
+**Complete final regression status: 84 + 85 + 72 PASSED**
 
 ---
 
 ## 22. Real Historical Bronze Validation
 
-A complete historical Bronze execution was performed for:
+An independent complete historical Bronze execution was performed for:
 
 ```text
 2026-01-10 → 2026-01-15
 ```
 
-The final execution reported:
+The execution reported:
 
 ```text
 BRONZE HISTORICAL LOAD COMPLETED
@@ -842,8 +899,14 @@ AEMET current observations
 = 1 file
 ```
 
+That independent validation predates the final `historical_reload` DAG policy
+and included an AEMET current-observations acquisition.
+
 AEMET current observations retained their real current timestamps and were not
 rewritten as January historical observations.
+
+The final Airflow `historical_reload` workflow deliberately excludes AEMET
+current observations.
 
 **Status: VALIDATED**
 
@@ -851,8 +914,8 @@ rewritten as January historical observations.
 
 ## 23. Silver Compatibility Validation
 
-The Bronze execution was processed through the complete final Silver
-implementation.
+The independent Bronze execution was processed through the complete final
+Silver implementation.
 
 The resulting physical Silver namespace contained exactly:
 
@@ -891,6 +954,9 @@ silver_esios_installed_capacity_monthly
 = 123
 ```
 
+These counts belong to the independent historical validation interval and are
+not the counts from the later one-day FULL DELETE validation.
+
 This validates that the ingestion output can be consumed by the implemented
 Bronze-to-Silver Spark processing.
 
@@ -900,7 +966,8 @@ Bronze-to-Silver Spark processing.
 
 ## 24. Gold Compatibility Validation
 
-The same data was subsequently processed through the final Gold implementation.
+The same independent data was subsequently processed through the final Gold
+implementation.
 
 Gold persistence completed successfully with exactly four tables:
 
@@ -911,7 +978,7 @@ gold_fact_installed_capacity_monthly
 gold_fact_province_hourly
 ```
 
-Validated row counts were:
+Validated counts for that independent run were:
 
 ```text
 gold_dim_geography
@@ -964,7 +1031,7 @@ duplicate_province_hour_keys
 = 0
 ```
 
-The full outer integration can also be verified arithmetically.
+The full-outer integration can also be verified arithmetically.
 
 Weather-only rows:
 
@@ -1049,19 +1116,8 @@ gold_fact_installed_capacity_monthly
 gold_fact_province_hourly
 ```
 
-Real integrated rows containing both:
-
-```text
-meteorological metrics
-```
-
-and:
-
-```text
-ESIOS electricity-generation metrics
-```
-
-were successfully returned.
+Real integrated rows containing both meteorological metrics and ESIOS
+electricity-generation metrics were successfully returned.
 
 This proves that data acquired by the ingestion layer reaches the final SQL
 consumption layer.
@@ -1113,11 +1169,14 @@ APIs
 
 is technically validated.
 
+The historical Bronze → Silver → Gold path has also been executed successfully
+under Airflow control.
+
 ---
 
 ## 29. Airflow Infrastructure Validation
 
-Apache Airflow infrastructure has previously been validated.
+Apache Airflow infrastructure has been validated.
 
 Validated components include:
 
@@ -1126,12 +1185,34 @@ Airflow Webserver
 Airflow Scheduler
 PostgreSQL metadata connectivity
 DAG discovery
+DAG import validation
 ```
 
-Earlier ingestion DAGs demonstrated that Python ingestion can execute from the
-Airflow environment and persist Bronze objects in MinIO.
+Final DAG import validation returned:
 
-This validates the Airflow infrastructure and ingestion execution capability.
+```text
+No data found
+```
+
+from:
+
+```text
+airflow dags list-import-errors
+```
+
+which means no DAG import errors were present.
+
+The runtime DAG inventory contained exactly:
+
+```text
+historical_reload
+hourly_ingestion
+monthly_ingestion
+open_meteo_15min
+```
+
+The final task tree for `historical_reload` matched the intended branch and
+dependency structure.
 
 **Status: VALIDATED**
 
@@ -1145,9 +1226,12 @@ The project contains:
 airflow/dags/historical_reload.py
 ```
 
-The DAG is designed to coordinate:
+The DAG coordinates:
 
 ```text
+Persistence policy
+      │
+      ▼
 Bronze ingestion
       │
       ▼
@@ -1157,35 +1241,78 @@ Silver processing
 Gold processing
 ```
 
-The DAG implementation and task structure have been created.
-
-The processing components that it invokes have already been independently
-validated end to end.
-
-However, a final complete execution of:
+It exposes exactly four runtime parameters:
 
 ```text
-Airflow trigger
-      │
-      ▼
-Bronze
-      │
-      ▼
-Silver
-      │
-      ▼
-Gold
+fecha_inicio
+fecha_fin
+sobreescribir_datos
+eliminar_historial_completo
 ```
 
-has not yet been accepted as fully runtime-validated.
+The complete Airflow-controlled historical runtime has been validated for all
+three supported persistence behaviours.
 
-**Status: IMPLEMENTED / FINAL AIRFLOW RUNTIME VALIDATION PENDING**
+### PRESERVE
+
+```text
+sobreescribir_datos = false
+eliminar_historial_completo = false
+```
+
+Validation confirmed:
+
+- existing active Silver/Gold files remained physically unchanged;
+- missing historical coverage was added;
+- existing masters were preserved;
+- no duplicate natural keys were created.
+
+### RANGE OVERWRITE
+
+```text
+sobreescribir_datos = true
+eliminar_historial_completo = false
+```
+
+Validation confirmed:
+
+- the requested interval was reconstructed;
+- active files outside the requested interval were preserved;
+- existing masters were preserved;
+- no duplicate natural keys were created.
+
+### FULL DELETE
+
+```text
+eliminar_historial_completo = true
+```
+
+FULL DELETE has priority over RANGE OVERWRITE.
+
+Validation confirmed:
+
+- the active Bronze layer was removed;
+- the current 9 Silver tables and 4 Gold tables were dropped/purged and rebuilt;
+- active Silver/Gold warehouse prefixes were physically cleaned;
+- masters were rebuilt;
+- previous-run physical data files were absent after reconstruction;
+- no duplicate natural keys were created.
+
+The physical-residue verification returned:
+
+```text
+OLD_PREVIOUS_RUN_OBJECTS = 0
+```
+
+AEMET current observations are deliberately excluded from this historical DAG.
+
+**Status: VALIDATED**
 
 ---
 
-## 31. Current Recent-Data Limitation
+## 31. Current Recent-Data Behaviour
 
-Real testing showed that very recent ESIOS requests can return:
+Real testing showed that recent ESIOS requests can return:
 
 ```text
 HTTP success
@@ -1197,22 +1324,34 @@ while still containing:
 values = []
 ```
 
-The ingestion implementation correctly rejects these responses as valid
-completed datasets.
-
-What is not yet validated is the final orchestration policy for treating a
-legitimate publication delay gracefully without failing an entire recent-data
-workflow.
-
-A dedicated successful:
+The current ingestion implementation handles this as a valid:
 
 ```text
 NO_DATA
 ```
 
-state must therefore not be described as currently implemented.
+result.
 
-This behaviour belongs to the final orchestration validation.
+No synthetic observations are created.
+
+The current recurrent Airflow workflows remain intentionally limited in scope:
+
+```text
+hourly_ingestion
+→ recurrent Bronze ingestion
+
+monthly_ingestion
+→ recurrent Bronze ingestion
+
+open_meteo_15min
+→ manual historical Bronze utility
+```
+
+These recurrent DAGs must not be described as complete Bronze → Silver → Gold
+pipelines.
+
+The fully validated Airflow-controlled Bronze → Silver → Gold path is
+`historical_reload`.
 
 ---
 
@@ -1221,25 +1360,35 @@ This behaviour belongs to the final orchestration validation.
 The current technical evidence includes:
 
 - automated ingestion tests;
-- `68 passed` regression result;
+- final `84 passed` ingestion regression result;
+- final `85 passed` Silver regression result;
+- final `72 passed` Gold regression result;
 - real AEMET requests;
 - real Open-Meteo requests;
 - real ESIOS requests;
 - real CNIG master processing;
 - Open-Meteo historical 15-minute endpoint validation;
 - 926-location Open-Meteo historical batch;
-- Open-Meteo temporal-completeness validation;
+- Open-Meteo daily temporal-completeness validation;
 - Open-Meteo resumability validation;
 - ESIOS configured-indicator availability validation;
-- ESIOS empty-response rejection;
+- ESIOS valid `NO_DATA` handling;
 - MinIO Bronze persistence;
+- observation-time Bronze partitioning;
 - real six-day historical Bronze load;
-- final Silver row-count validation;
-- final Gold row-count validation;
+- Silver row-count validation;
+- Gold row-count validation;
 - Gold natural-key uniqueness validation;
 - full-outer integration validation;
 - Trino query validation;
-- Airflow infrastructure and DAG-discovery validation.
+- Airflow infrastructure and DAG-discovery validation;
+- Airflow-controlled historical E2E validation;
+- PRESERVE persistence validation;
+- RANGE OVERWRITE persistence validation;
+- FULL DELETE persistence validation;
+- master preservation during PRESERVE/RANGE;
+- master rebuild during FULL DELETE;
+- physical previous-run warehouse cleanup validation.
 
 ---
 
@@ -1252,20 +1401,24 @@ The current technical evidence includes:
 | Common HTTP layer | VALIDATED |
 | AEMET station acquisition | VALIDATED |
 | AEMET current observations | VALIDATED |
+| AEMET current exclusion from `historical_reload` | VALIDATED |
 | Open-Meteo hourly historical acquisition | VALIDATED |
 | Open-Meteo 15-minute historical acquisition | VALIDATED |
 | Open-Meteo historical 15-minute endpoint | VALIDATED |
 | Open-Meteo 926-location batch | VALIDATED |
-| Open-Meteo completeness validation | VALIDATED |
+| Open-Meteo daily completeness validation | VALIDATED |
 | Open-Meteo resumable acquisition | VALIDATED |
 | Final 11 ESIOS hourly indicators | VALIDATED |
 | Final 9 ESIOS monthly indicators | VALIDATED |
-| ESIOS empty-values rejection | VALIDATED |
+| ESIOS empty-values `NO_DATA` handling | VALIDATED |
 | CNIG geographical masters | VALIDATED |
 | MinIO Bronze persistence | VALIDATED |
+| Observation-time Bronze partitioning | VALIDATED |
 | Bronze metadata | VALIDATED |
 | Historical Bronze load | VALIDATED |
-| Ingestion regression suite | 68 PASSED |
+| Ingestion regression suite | 84 PASSED |
+| Silver regression suite | 85 PASSED |
+| Gold regression suite | 72 PASSED |
 | Bronze → Silver | VALIDATED |
 | Silver → Gold | VALIDATED |
 | Gold → Trino | VALIDATED |
@@ -1273,12 +1426,15 @@ The current technical evidence includes:
 | FULL OUTER weather/energy integration | VALIDATED |
 | CCAA × month installed-capacity uniqueness | VALIDATED |
 | Airflow infrastructure | VALIDATED |
-| Historical reload DAG implementation | IMPLEMENTED |
-| Complete Airflow-controlled E2E runtime | PENDING FINAL VALIDATION |
-| Graceful recent ESIOS `NO_DATA` orchestration | NOT YET VALIDATED |
+| Airflow DAG import validation | VALIDATED |
+| Historical reload DAG implementation | VALIDATED |
+| Complete Airflow-controlled E2E runtime | VALIDATED |
+| PRESERVE persistence policy | VALIDATED |
+| RANGE OVERWRITE persistence policy | VALIDATED |
+| FULL DELETE persistence policy | VALIDATED |
+| Master preservation during PRESERVE/RANGE | VALIDATED |
+| Master rebuild during FULL DELETE | VALIDATED |
+| Previous-run physical Silver/Gold objects after FULL DELETE | 0 |
 
-The ingestion layer itself is implemented and validated for the current project
-scope.
-
-The remaining work concerns final orchestration behaviour and runtime proof
-through Apache Airflow rather than redesign of the ingestion components.
+The ingestion layer and the historical Airflow orchestration required for the
+current project scope are implemented and validated.

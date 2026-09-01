@@ -38,9 +38,19 @@ def test_ingest_ngmep_persists_required_master_files():
         build_ngmep_zip()
     )
 
+    provinces_path = (
+        "bronze/cnig/provinces/"
+        "provinces.csv"
+    )
+
+    municipalities_path = (
+        "bronze/cnig/municipalities/"
+        "municipalities.csv"
+    )
+
     storage.save_bytes.side_effect = [
-        "bronze/cnig/provinces/test.csv",
-        "bronze/cnig/municipalities/test.csv",
+        provinces_path,
+        municipalities_path,
     ]
 
     ingestion = CnigIngestion(
@@ -51,20 +61,52 @@ def test_ingest_ngmep_persists_required_master_files():
     result = ingestion.ingest_ngmep()
 
     assert result == [
-        "bronze/cnig/provinces/test.csv",
-        "bronze/cnig/municipalities/test.csv",
+        provinces_path,
+        municipalities_path,
     ]
 
-    assert storage.save_bytes.call_count == 2
+    assert (
+        storage.save_bytes.call_count
+        == 2
+    )
 
-    first = storage.save_bytes.call_args_list[0]
-    second = storage.save_bytes.call_args_list[1]
+    first = (
+        storage.save_bytes
+        .call_args_list[0]
+    )
 
-    assert first.kwargs["source"] == "cnig"
-    assert first.kwargs["dataset"] == "provinces"
-    assert first.kwargs["extension"] == "csv"
+    second = (
+        storage.save_bytes
+        .call_args_list[1]
+    )
 
-    assert second.kwargs["dataset"] == "municipalities"
+    assert first.kwargs[
+        "source"
+    ] == "cnig"
+
+    assert first.kwargs[
+        "dataset"
+    ] == "provinces"
+
+    assert first.kwargs[
+        "object_name"
+    ] == provinces_path
+
+    assert first.kwargs[
+        "content_type"
+    ] == "text/csv"
+
+    assert second.kwargs[
+        "dataset"
+    ] == "municipalities"
+
+    assert second.kwargs[
+        "object_name"
+    ] == municipalities_path
+
+    assert second.kwargs[
+        "content_type"
+    ] == "text/csv"
 
 
 def test_ingest_ngmep_rejects_missing_required_file():

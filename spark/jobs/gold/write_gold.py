@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
@@ -73,6 +75,14 @@ GOLD_NATURAL_KEYS = {
 GOLD_CREATED_AT_COLUMN = (
     "gold_created_at"
 )
+
+
+# ============================================================================
+# Gold write policies
+# ============================================================================
+
+WRITE_POLICY_UPSERT = "upsert"
+WRITE_POLICY_INSERT_ONLY = "insert-only"
 
 
 def add_gold_created_at(
@@ -1410,9 +1420,9 @@ def merge_into_gold_table(
     view_name: str,
 ) -> None:
     """
-    Persist one validated Gold DataFrame through an idempotent Iceberg MERGE.
+    Persist one validated Gold DataFrame through an Iceberg MERGE.
 
-    Approved behavior:
+    Default write policy (upsert):
 
         MATCH
             -> update analytical/structural columns
@@ -1420,6 +1430,18 @@ def merge_into_gold_table(
 
         NOT MATCH
             -> insert the complete new Gold row
+
+    Historical reload write policy (insert-only):
+
+        MATCH
+            -> preserve the existing Gold row without rewriting it
+
+        NOT MATCH
+            -> insert the complete new Gold row
+
+    The historical DAG selects insert-only through
+    LAKEHOUSE_WRITE_POLICY=insert-only. Other workflows preserve the
+    previous upsert behavior by default.
 
     Blind append is prohibited.
     """
@@ -1552,8 +1574,36 @@ def merge_into_gold_table(
         in target_columns
     )
 
-    spark.sql(
-        f"""
+    write_policy = (
+        os.getenv(
+            "LAKEHOUSE_WRITE_POLICY",
+            WRITE_POLICY_UPSERT,
+        )
+        .strip()
+        .lower()
+    )
+
+    print(
+        f"WRITE_POLICY = {write_policy}"
+    )
+
+    if write_policy == WRITE_POLICY_INSERT_ONLY:
+        merge_sql = f"""
+        MERGE INTO {table_name} AS target
+        USING {view_name} AS source
+        ON {merge_condition}
+
+        WHEN NOT MATCHED THEN
+            INSERT (
+                {insert_columns}
+            )
+            VALUES (
+                {insert_values}
+            )
+        """
+
+    elif write_policy == WRITE_POLICY_UPSERT:
+        merge_sql = f"""
         MERGE INTO {table_name} AS target
         USING {view_name} AS source
         ON {merge_condition}
@@ -1570,6 +1620,15 @@ def merge_into_gold_table(
                 {insert_values}
             )
         """
+
+    else:
+        raise ValueError(
+            "Unsupported LAKEHOUSE_WRITE_POLICY: "
+            f"{write_policy}"
+        )
+
+    spark.sql(
+        merge_sql
     )
 
     target_count = (

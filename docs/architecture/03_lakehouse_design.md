@@ -149,22 +149,49 @@ CNIG / IGN
 Bronze data is persisted in MinIO as source objects rather than Apache Iceberg
 tables.
 
-The logical storage structure follows:
+For analytical time-series datasets, the physical temporal hierarchy is
+governed by source observation time rather than by ingestion time.
+
+The validated canonical paths are:
 
 ```text
-bronze/
-└── <source>/
-    └── <dataset>/
-        └── year=YYYY/
-            └── month=MM/
-                └── day=DD/
-                    └── <object>
+Open-Meteo hourly
+bronze/open_meteo/weather_hourly/
+year=YYYY/month=MM/day=DD/
+station_id=<station_id>.json
+
+Open-Meteo 15-minute
+bronze/open_meteo/weather_15min/
+year=YYYY/month=MM/day=DD/
+station_id=<station_id>.json
+
+ESIOS hourly
+bronze/esios/<dataset>/
+year=YYYY/month=MM/day=DD/
+data.json
+
+ESIOS monthly
+bronze/esios/<dataset>/
+year=YYYY/month=MM/
+data.json
+
+AEMET stations
+bronze/aemet/stations/stations.json
+
+AEMET current observations
+bronze/aemet/current_observations/
+year=YYYY/month=MM/day=DD/
+observations.json
+
+CNIG provinces
+bronze/cnig/provinces/provinces.csv
+
+CNIG municipalities
+bronze/cnig/municipalities/municipalities.csv
 ```
 
-The temporal directory hierarchy represents the ingestion date.
-
-The actual requested source interval is preserved independently inside the
-Bronze ingestion metadata.
+`ingestion_timestamp` remains audit metadata and does not determine the physical
+business partition date.
 
 ### Bronze responsibilities
 
@@ -175,7 +202,6 @@ Bronze is responsible for:
 - separating providers and datasets;
 - supporting historical acquisition;
 - supporting incremental acquisition;
-- retaining repeated acquisitions when applicable;
 - providing the input for Silver processing.
 
 Bronze does not perform:
@@ -230,9 +256,21 @@ Silver does not fabricate missing observations.
 
 A valid source `NULL` is not automatically interpreted as zero.
 
+A structurally valid ESIOS response with:
+
+```text
+values = []
+```
+
+is handled upstream as valid `NO_DATA` and therefore produces no synthetic
+Silver records.
+
 Silver also avoids changing the real geographical or temporal granularity of a
 source unless the transformation is explicitly required by the normalized
 dataset design.
+
+Time-series Silver tables are partitioned according to normalized observation
+time or observation month, depending on their grain.
 
 ---
 
@@ -346,7 +384,8 @@ The current validated catalogue contains:
 
 AEMET current observations provide recent official meteorological measurements.
 
-They are not used as a generic historical source for arbitrary past periods.
+They are not used as a generic historical source for arbitrary past periods and
+are deliberately excluded from the final `historical_reload` reconstruction.
 
 ### Open-Meteo
 
@@ -361,6 +400,21 @@ Open-Meteo supplies the reproducible historical meteorological data required by
 the principal analytical flow.
 
 Hourly and 15-minute observations remain separate in Silver.
+
+Historical Open-Meteo objects are persisted as canonical daily objects per
+station.
+
+Completeness is validated against the expected daily temporal axis:
+
+```text
+hourly
+→ 24 timestamps per complete UTC day
+
+15-minute
+→ 96 timestamps per complete UTC day
+```
+
+Object existence alone is not considered sufficient evidence of completeness.
 
 Temporal aggregation required for analytical products is performed in Gold.
 
@@ -391,6 +445,17 @@ Silver preserves:
 - source geography;
 - numerical value;
 - source traceability.
+
+A structurally valid ESIOS payload with:
+
+```text
+values = []
+```
+
+is treated as valid `NO_DATA`.
+
+No artificial zero-valued observations are generated from an empty valid source
+response.
 
 The previously evaluated 5-minute ESIOS flow is not part of the final physical
 Silver model.
@@ -508,7 +573,7 @@ precipitation
 
 AEMET acts as the preferred source when a valid observation exists.
 
-Open-Meteo provides the fallback for the individual metric when AEMET is not
+Open-Meteo provides metric-level enrichment and fallback when AEMET is not
 available.
 
 The fallback is metric-specific.
@@ -522,6 +587,10 @@ temperature_source
 humidity_source
 precipitation_source
 ```
+
+Because AEMET current observations are not used to reconstruct arbitrary
+historical dates, historical meteorological coverage is provided by
+Open-Meteo.
 
 ### Open-Meteo variables
 
@@ -744,7 +813,8 @@ Spark is primarily responsible for:
 
 - creating tables;
 - writing transformed data;
-- updating analytical datasets.
+- updating or inserting analytical datasets according to the active write
+  policy.
 
 Trino is primarily responsible for:
 
@@ -753,6 +823,18 @@ Trino is primarily responsible for:
 - downstream SQL access.
 
 Both engines operate over the same Apache Iceberg tables.
+
+For the historical Airflow workflow, Silver and Gold writes use:
+
+```text
+LAKEHOUSE_WRITE_POLICY=insert-only
+```
+
+so PRESERVE can add missing natural keys without rewriting existing active
+records.
+
+Other workflows retain the default upsert behaviour unless explicitly
+configured otherwise.
 
 ---
 
@@ -788,8 +870,36 @@ CNIG / IGN ───────┘
                 Apache Superset
 ```
 
-Apache Airflow provides the orchestration layer that coordinates the execution
-of the pipeline.
+Apache Airflow provides the orchestration layer that coordinates pipeline
+execution.
+
+The current runtime contains exactly:
+
+```text
+historical_reload
+hourly_ingestion
+monthly_ingestion
+open_meteo_15min
+```
+
+with the following validated roles:
+
+```text
+historical_reload
+→ historical Bronze → Silver → Gold
+
+hourly_ingestion
+→ recurrent hourly Bronze ingestion
+
+monthly_ingestion
+→ recurrent monthly Bronze ingestion
+
+open_meteo_15min
+→ manual historical Open-Meteo 15-minute Bronze utility
+```
+
+The complete historical Bronze → Silver → Gold path has been executed
+successfully under Airflow control.
 
 ---
 
@@ -829,13 +939,19 @@ The analytical consumer therefore does not need to execute Spark jobs.
 
 The current Lakehouse implementation has been validated using real source data.
 
-A complete historical execution for:
+An independent historical execution for:
 
 ```text
 2026-01-10 → 2026-01-15
 ```
 
 successfully populated Bronze and produced the current Silver and Gold models.
+
+That independent validation predates the final `historical_reload` policy and
+included AEMET current observations.
+
+The final Airflow historical reconstruction deliberately excludes AEMET current
+observations.
 
 ### Silver validation
 
@@ -845,7 +961,7 @@ The final Silver namespace contains:
 9 tables
 ```
 
-Relevant validated row counts include:
+Relevant validated row counts from that independent execution include:
 
 ```text
 silver_aemet_stations = 926
@@ -878,7 +994,7 @@ The final Gold namespace contains:
 4 tables
 ```
 
-Validated row counts are:
+Validated row counts for that independent execution are:
 
 ```text
 gold_dim_geography = 71
@@ -920,6 +1036,45 @@ Bronze
 
 using real source data.
 
+### Airflow persistence validation
+
+The final historical Bronze → Silver → Gold workflow was subsequently validated
+under Airflow control.
+
+The three persistence behaviours were validated with real data:
+
+```text
+PRESERVE
+→ existing active Silver/Gold files preserved
+→ missing coverage added
+→ duplicate natural keys = 0
+
+RANGE OVERWRITE
+→ requested interval rebuilt
+→ outside-range active files preserved
+→ masters preserved
+→ duplicate natural keys = 0
+
+FULL DELETE
+→ active Bronze reset
+→ 9 Silver tables rebuilt
+→ 4 Gold tables rebuilt
+→ masters rebuilt
+→ previous-run physical Silver/Gold objects = 0
+```
+
+The FULL DELETE validation confirmed that no objects from the previous run
+remained in the active Silver/Gold warehouse prefixes.
+
+After the final orchestration and persistence changes, the regression suites
+passed:
+
+```text
+tests/ingestion = 84 passed
+tests/silver    = 85 passed
+tests/gold      = 72 passed
+```
+
 ---
 
 ## 22. Design Principles
@@ -930,6 +1085,11 @@ The final Lakehouse design follows these principles.
 
 Bronze preserves source acquisitions before analytical transformation.
 
+For analytical time-series datasets, physical Bronze partitioning is governed
+by observation time rather than ingestion time.
+
+`ingestion_timestamp` remains audit metadata.
+
 ### Progressive refinement
 
 Each layer performs only the transformations appropriate to its role.
@@ -938,10 +1098,16 @@ Each layer performs only the transformations appropriate to its role.
 
 Missing geographical, temporal or measurement information is not invented.
 
+A valid ESIOS `NO_DATA` response does not generate synthetic zero-valued
+observations.
+
 ### Natural-key consistency
 
 Silver and Gold datasets use explicit natural keys to avoid duplicated logical
 records.
+
+Historical PRESERVE uses insert-only Silver/Gold writes so missing keys can be
+added without rewriting existing active records.
 
 ### Source traceability
 
@@ -969,6 +1135,21 @@ Silver and Gold use Apache Iceberg.
 
 Bronze remains a raw object-storage layer.
 
+### Explicit historical persistence policy
+
+Historical orchestration supports validated:
+
+```text
+PRESERVE
+RANGE OVERWRITE
+FULL DELETE
+```
+
+FULL DELETE has priority over RANGE OVERWRITE.
+
+PRESERVE and RANGE OVERWRITE preserve existing masters, while FULL DELETE
+rebuilds them after the active Bronze layer is reset.
+
 ### Governed analytical consumption
 
 The final Business Intelligence layer consumes curated Gold datasets through
@@ -978,3 +1159,6 @@ Trino rather than reproducing processing logic in dashboards.
 
 The complete architecture remains based on Open Source technologies and is
 deployable locally using Docker Compose.
+
+A complete destructive reconstruction from empty persistent Docker volumes has
+not yet been validated and is therefore not claimed as completed.

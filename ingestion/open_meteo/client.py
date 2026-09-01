@@ -6,6 +6,7 @@ from datetime import date, datetime, timezone as dt_timezone
 from typing import Any
 
 from ingestion.common.config import (
+    OPEN_METEO_API_PARAMS,
     OPEN_METEO_ARCHIVE_URL,
     OPEN_METEO_BASE_URL,
 )
@@ -96,6 +97,7 @@ class OpenMeteoClient:
         )
 
         params = {
+            **OPEN_METEO_API_PARAMS,
             "latitude": latitude,
             "longitude": longitude,
             "start_date": start_date.isoformat(),
@@ -115,16 +117,15 @@ class OpenMeteoClient:
             params=params,
         )
 
-
     def get_minutely_15_weather(
-            self,
-            *,
-            latitude: float,
-            longitude: float,
-            start_datetime: datetime,
-            end_datetime: datetime,
-            minutely_15_variables: list[str],
-            timezone: str = "UTC",
+        self,
+        *,
+        latitude: float,
+        longitude: float,
+        start_datetime: datetime,
+        end_datetime: datetime,
+        minutely_15_variables: list[str],
+        timezone: str = "UTC",
     ) -> dict[str, Any] | list[Any]:
         """
         Retrieve 15-minutely weather data from Open-Meteo
@@ -155,10 +156,10 @@ class OpenMeteoClient:
             )
 
         start_datetime = start_datetime.astimezone(dt_timezone.utc)
-
         end_datetime = end_datetime.astimezone(dt_timezone.utc)
 
         params = {
+            **OPEN_METEO_API_PARAMS,
             "latitude": latitude,
             "longitude": longitude,
             "start_minutely_15": start_datetime.strftime(

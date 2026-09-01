@@ -103,8 +103,8 @@ bronze/
     └── municipalities/
 ```
 
-The exact object hierarchy below each dataset also includes ingestion-date
-partitions.
+Temporal datasets use deterministic canonical paths organized by source
+observation time. Master datasets use fixed canonical paths.
 
 Datasets evaluated during earlier implementation stages but not retained in the
 final physical scope include:
@@ -123,41 +123,65 @@ These datasets must not be treated as part of the final Bronze contract.
 
 ## 5. Temporal Partitioning
 
-Bronze objects are organized using the ingestion-date hierarchy:
+The final Bronze storage model organizes time-series datasets by source
+**observation time**, not by ingestion time.
+
+`ingestion_timestamp` is retained as technical audit metadata, but it does not
+govern the physical temporal hierarchy.
+
+The validated canonical paths are:
+
+### Open-Meteo hourly
 
 ```text
-bronze/
-└── <source>/
-    └── <dataset>/
-        └── year=YYYY/
-            └── month=MM/
-                └── day=DD/
-                    └── <object>
+bronze/open_meteo/weather_hourly/
+year=YYYY/month=MM/day=DD/
+station_id=<station_id>.json
 ```
 
-The:
+### Open-Meteo 15-minute
 
 ```text
-year
-month
-day
+bronze/open_meteo/weather_15min/
+year=YYYY/month=MM/day=DD/
+station_id=<station_id>.json
 ```
 
-values represent the **ingestion date**.
+### ESIOS hourly
 
-They do not necessarily represent:
+```text
+bronze/esios/<dataset>/
+year=YYYY/month=MM/day=DD/
+data.json
+```
 
-- the observation timestamp;
-- the requested historical interval;
-- the source publication date.
+### ESIOS monthly
 
-For example, historical January observations downloaded in August remain stored
-under the August ingestion-date path.
+```text
+bronze/esios/<dataset>/
+year=YYYY/month=MM/
+data.json
+```
 
-The requested source interval is retained separately in Bronze metadata.
+### AEMET current observations
 
-This distinction is important because physical storage location and analytical
-observation time represent different concepts.
+```text
+bronze/aemet/current_observations/
+year=YYYY/month=MM/day=DD/
+observations.json
+```
+
+For example, observations from January that are acquired in August remain under
+the January observation-time path. The August ingestion moment is preserved only
+in audit metadata.
+
+Master datasets are not governed by historical observation-date partitions:
+
+```text
+bronze/aemet/stations/stations.json
+bronze/cnig/provinces/provinces.csv
+bronze/cnig/municipalities/municipalities.csv
+```
 
 ---
 
@@ -203,6 +227,10 @@ ESIOS
 Reference/master datasets may not require the same temporal metadata as
 observation datasets.
 
+`ingestion_timestamp` records when the object entered the platform. It must not
+be interpreted as the business observation timestamp or as the physical
+partitioning key for historical facts.
+
 ---
 
 ## 7. Source Preservation
@@ -217,7 +245,9 @@ storage, such as:
 - serialization;
 - addition of ingestion metadata;
 - storage-path generation;
-- source/dataset identification.
+- source/dataset identification;
+- source-specific merge or completeness checks required by canonical Bronze
+  persistence.
 
 Bronze does not perform:
 
@@ -255,6 +285,12 @@ The current validated catalogue contains:
 
 These coordinates are also used by Open-Meteo.
 
+The canonical master path is:
+
+```text
+bronze/aemet/stations/stations.json
+```
+
 ### Current observations
 
 `current_observations` contains recent/current official AEMET meteorological
@@ -262,7 +298,19 @@ observations.
 
 These observations retain their actual source timestamps.
 
+They are persisted under the observation-day path:
+
+```text
+bronze/aemet/current_observations/
+year=YYYY/month=MM/day=DD/
+observations.json
+```
+
 They are not rewritten to match an arbitrary historical execution interval.
+
+AEMET current observations are deliberately excluded from the final
+`historical_reload` workflow and are not used to reconstruct arbitrary
+historical periods.
 
 ---
 
@@ -304,14 +352,31 @@ Open-Meteo Forecast API
 The resulting Bronze structure remains the same logical dataset regardless of
 the source endpoint used to acquire the observations.
 
+The canonical daily paths are:
+
+```text
+bronze/open_meteo/weather_hourly/
+year=YYYY/month=MM/day=DD/
+station_id=<station_id>.json
+```
+
+and:
+
+```text
+bronze/open_meteo/weather_15min/
+year=YYYY/month=MM/day=DD/
+station_id=<station_id>.json
+```
+
 ---
 
 ## 10. Open-Meteo Coverage State
 
 Open-Meteo historical acquisition contains additional Bronze-state logic.
 
-The implementation can inspect already persisted objects and determine whether
-the requested temporal interval is complete for a given location.
+The implementation can inspect already persisted canonical daily objects and
+determine whether the requested temporal coverage is complete for a given
+location and observation day.
 
 The relevant implementation is:
 
@@ -319,9 +384,9 @@ The relevant implementation is:
 ingestion/open_meteo/bronze_state.py
 ```
 
-A location is not considered complete only because an object exists.
+A location/day is not considered complete only because an object exists.
 
-Its temporal coverage must correspond to the requested interval.
+Its temporal coverage must contain the expected timestamps.
 
 This allows the batch process to distinguish between:
 
@@ -331,7 +396,7 @@ incomplete
 missing
 ```
 
-locations.
+objects.
 
 ---
 
@@ -360,11 +425,32 @@ completed locations.
 For this reason, Bronze persistence must not be described as a single universal
 append-only rule independent of source behaviour.
 
-The persistence and recovery semantics are source-aware.
+The persistence and recovery semantics are source-aware and operate over the
+canonical observation-time objects.
 
 ---
 
 ## 12. Open-Meteo Temporal Completeness
+
+The final daily completeness rules are:
+
+### Hourly
+
+A complete UTC day contains:
+
+```text
+24 timestamps
+```
+
+### 15-minute
+
+A complete UTC day contains:
+
+```text
+96 timestamps
+```
+
+Therefore, object existence alone does not prove that a station/day is complete.
 
 For the validated historical interval:
 
@@ -407,6 +493,9 @@ The downstream Silver counts confirmed that coverage:
 = 533376 fifteen-minute rows
 ```
 
+These counts are evidence from that specific historical execution and are not
+permanent table cardinalities.
+
 ---
 
 ## 13. ESIOS Bronze Storage
@@ -436,6 +525,22 @@ ingestion metadata
 source payload
 ```
 
+Hourly datasets use the canonical daily path:
+
+```text
+bronze/esios/<dataset>/
+year=YYYY/month=MM/day=DD/
+data.json
+```
+
+Monthly installed-capacity datasets use:
+
+```text
+bronze/esios/<dataset>/
+year=YYYY/month=MM/
+data.json
+```
+
 The current physical Bronze scope does not contain an analytical 5-minute ESIOS
 family.
 
@@ -443,8 +548,7 @@ family.
 
 ## 14. ESIOS Empty-Data Protection
 
-A successful ESIOS HTTP response is not sufficient for Bronze persistence to be
-considered successful.
+A successful ESIOS HTTP response does not necessarily contain observations.
 
 The ingestion implementation validates:
 
@@ -452,31 +556,49 @@ The ingestion implementation validates:
 indicator.values
 ```
 
-before accepting the dataset.
-
-If:
+A structurally valid response with:
 
 ```text
 indicator.values = []
 ```
 
-the acquisition fails rather than persisting the empty payload as if valid
-observations had been obtained.
-
-This avoids confusing:
+is treated as valid:
 
 ```text
-HTTP success
+NO_DATA
 ```
 
-with:
+It is not converted into a technical failure and does not create fabricated
+observations.
+
+The final behaviour is:
 
 ```text
-source data available
+HTTP response
+      │
+      ▼
+Indicator structure
+      │
+      ▼
+Validate indicator.values
+      │
+      ├── non-empty → persist observations
+      └── empty     → valid NO_DATA / no observations persisted
 ```
 
-The orchestration policy for legitimate recent-source publication delays is a
-separate concern and is not implemented by the Bronze storage layer.
+This preserves the distinction between:
+
+```text
+NO_DATA
+```
+
+and:
+
+```text
+zero-valued measurement
+```
+
+No missing source observation is manufactured as zero.
 
 ---
 
@@ -489,6 +611,13 @@ The current Bronze datasets are:
 ```text
 provinces
 municipalities
+```
+
+Their canonical paths are:
+
+```text
+bronze/cnig/provinces/provinces.csv
+bronze/cnig/municipalities/municipalities.csv
 ```
 
 These datasets are reference information rather than analytical time series.
@@ -508,61 +637,76 @@ differs from meteorological and electricity observations.
 
 ## 16. Re-execution Behaviour
 
-Bronze preserves source acquisition traceability.
+The final Bronze implementation uses canonical observation-time objects for
+active temporal data.
 
-Repeated requests can therefore result in overlapping source observations.
+Repeated acquisition therefore does not rely on creating an unlimited sequence
+of ingestion-time files for the same historical business period.
 
-However, re-execution behaviour is not identical for every source.
+Re-execution behaviour remains source-aware.
 
 For example:
 
 ```text
 Open-Meteo
-→ can inspect existing temporal coverage
-→ can skip complete locations
-→ can resume missing locations
+→ inspect existing canonical daily coverage
+→ skip complete station/day objects
+→ reacquire incomplete or missing station/day objects
 ```
 
-Other acquisitions may create new source objects on repeated execution.
+Incremental canonical objects can also merge newly acquired observations with
+already persisted observations according to the source-specific ingestion
+logic.
 
-Therefore, the architecture does not rely on physical Bronze uniqueness as the
-final deduplication mechanism.
+Historical reconstruction behaviour is additionally governed by the Airflow
+policies:
 
-Business-level canonicalization occurs in Silver.
+```text
+PRESERVE
+RANGE OVERWRITE
+FULL DELETE
+```
+
+Business-level canonicalization and final deduplication remain responsibilities
+of Silver.
 
 ---
 
 ## 17. Duplicate Handling
 
-Bronze can contain repeated business observations originating from overlapping
-or repeated acquisitions.
+Bronze storage is designed to avoid uncontrolled physical duplication of the
+same canonical observation period.
 
-This is acceptable because Bronze represents source acquisitions rather than the
-canonical analytical dataset.
+The same observation-time object path is reused for the corresponding source,
+dataset and period.
 
-Silver applies source-specific natural keys to produce normalized records.
+Where an incremental source supports merging into an existing canonical object,
+source-specific natural observation identity is used to avoid repeating the
+same business observation inside that object.
+
+Silver still applies its own source-specific natural keys and deduplication
+rules to produce the canonical structured tables.
 
 Conceptually:
 
 ```text
-Bronze object A ──┐
-                  │
-Bronze object B ──┼──► Spark parsing
-                  │
-Bronze object C ──┘
-                        │
-                        ▼
-                 Natural-key logic
-                        │
-                        ▼
-                   Deduplication
-                        │
-                        ▼
-                      Silver
+Canonical Bronze objects
+        │
+        ▼
+    Spark parsing
+        │
+        ▼
+ Natural-key logic
+        │
+        ▼
+  Deduplication
+        │
+        ▼
+      Silver
 ```
 
-This separation allows Bronze to retain acquisition evidence while Silver
-maintains logical dataset consistency.
+This keeps Bronze source-oriented while preserving Silver as the layer that
+guarantees logical dataset consistency.
 
 ---
 
@@ -571,7 +715,7 @@ maintains logical dataset consistency.
 Technical validation is performed before successful Bronze persistence whenever
 possible.
 
-Handled failure categories include:
+Handled conditions include:
 
 - invalid temporal ranges;
 - connection failures;
@@ -581,12 +725,17 @@ Handled failure categories include:
 - malformed API responses;
 - missing expected source structures;
 - incomplete Open-Meteo temporal coverage;
-- empty ESIOS values;
+- valid ESIOS `NO_DATA` responses;
 - MinIO persistence errors.
 
-A failed request must not be represented as a successfully acquired dataset.
+A malformed or technically failed request must not be represented as a
+successfully acquired dataset.
 
-Existing valid Bronze data remains available for subsequent processing.
+A structurally valid ESIOS response with no observations is not a technical
+failure: it is represented as `NO_DATA` and does not create synthetic records.
+
+Existing valid Bronze data remains available for subsequent processing when a
+later acquisition fails.
 
 ---
 
@@ -609,6 +758,8 @@ MinIO has been validated for:
 - object reading;
 - historical Bronze persistence;
 - current-source Bronze persistence;
+- observation-time physical organization;
+- controlled prefix deletion;
 - downstream Spark access.
 
 The Bronze layer therefore operates as real object storage rather than only as a
@@ -618,13 +769,14 @@ local filesystem development abstraction.
 
 ## 20. Historical Bronze Execution
 
-A complete historical Bronze execution was performed using real source data for:
+An independent complete historical Bronze execution was performed using real
+source data for:
 
 ```text
 2026-01-10 → 2026-01-15
 ```
 
-The final execution reported:
+The execution reported:
 
 ```text
 BRONZE HISTORICAL LOAD COMPLETED
@@ -658,7 +810,19 @@ AEMET current observations
 = 1 file
 ```
 
-This is the current principal real-data Bronze validation.
+This remains valid historical execution evidence.
+
+However, that independent execution predates the final `historical_reload`
+policy and included an AEMET current-observations acquisition.
+
+AEMET current observations retained their real current timestamps and were not
+rewritten as January historical observations.
+
+The final `historical_reload` workflow deliberately excludes AEMET current
+observations.
+
+The execution-specific object counts above must therefore not be interpreted as
+a permanent Bronze cardinality or as the final Airflow task policy.
 
 ---
 
@@ -744,7 +908,7 @@ Silver
 Gold
 ```
 
-The final Gold model contains:
+The final Gold model contains exactly:
 
 ```text
 gold_fact_province_hourly
@@ -759,6 +923,15 @@ data at:
 ```text
 Province × hour
 ```
+
+using a validated `FULL OUTER JOIN` between the meteorological and energy blocks
+on:
+
+```text
+(province_code, gold_timestamp)
+```
+
+after validating uniqueness on both sides.
 
 The installed-capacity fact operates at:
 
@@ -790,17 +963,77 @@ Common storage component
 MinIO / Bronze
 ```
 
-Airflow Bronze-ingestion capability has previously been validated.
-
-The final complete Airflow-controlled:
+The final Airflow runtime contains exactly four DAGs:
 
 ```text
-Bronze
-→ Silver
-→ Gold
+historical_reload
+hourly_ingestion
+monthly_ingestion
+open_meteo_15min
 ```
 
-runtime execution remains part of the orchestration closure.
+Their validated roles are:
+
+```text
+historical_reload
+= historical E2E Bronze → Silver → Gold
+
+hourly_ingestion
+= recurrent hourly Bronze ingestion
+
+monthly_ingestion
+= recurrent monthly Bronze ingestion
+
+open_meteo_15min
+= manual/historical Open-Meteo 15-minute Bronze utility
+```
+
+The hourly and monthly DAGs do not execute Silver or Gold.
+
+`open_meteo_15min` is not automatically scheduled as a recurrent 15-minute
+production flow.
+
+The final `historical_reload` workflow was executed end-to-end successfully
+under Airflow control.
+
+Its exact parameters are:
+
+```text
+fecha_inicio
+fecha_fin
+sobreescribir_datos
+eliminar_historial_completo
+```
+
+and the validated historical policies are:
+
+```text
+PRESERVE
+RANGE OVERWRITE
+FULL DELETE
+```
+
+`FULL DELETE` has priority over `RANGE OVERWRITE`.
+
+For AEMET and CNIG masters:
+
+```text
+PRESERVE / RANGE OVERWRITE
+→ preserve existing masters
+
+FULL DELETE
+→ remove masters and rebuild them
+```
+
+The validated FULL DELETE flow removes active Bronze, purges the 9 Silver and 4
+Gold tables, removes the physical `warehouse/silver` and `warehouse/gold`
+content and reconstructs the requested scope.
+
+Physical validation of the final FULL DELETE execution produced:
+
+```text
+OLD_PREVIOUS_RUN_OBJECTS = 0
+```
 
 ---
 
@@ -830,11 +1063,15 @@ also remains outside source control.
 
 Real credentials must never be committed.
 
+The repository state must only be described as clean after validating it with
+an actual `git status` execution.
+
 ---
 
 ## 26. Current Bronze-to-Silver Validation
 
-The validated historical Bronze execution produced the following Silver counts:
+The independent historical Bronze execution described above produced the
+following Silver counts:
 
 ```text
 silver_aemet_stations
@@ -868,11 +1105,30 @@ silver_esios_installed_capacity_monthly
 The exact Open-Meteo counts validate complete historical Bronze coverage for the
 requested six-day interval.
 
+These counts belong to that specific independent validation execution and are
+not permanent cardinalities of the Silver tables.
+
+The final regression suites subsequently completed with:
+
+```text
+Ingestion
+= 84 passed
+
+Silver
+= 85 passed
+
+Gold
+= 72 passed
+```
+
+with no failures in the latest validated regression execution.
+
 ---
 
 ## 27. End-to-End Validation
 
-The Bronze data was successfully consumed through the complete processing chain:
+The independent Bronze data was successfully consumed through the complete
+processing chain:
 
 ```text
 Real external sources
@@ -896,7 +1152,7 @@ Apache Iceberg
 Trino
 ```
 
-The resulting Gold tables contained:
+That historical execution produced:
 
 ```text
 gold_dim_geography
@@ -926,8 +1182,29 @@ and:
 0 duplicate Province × hour keys
 ```
 
-This confirms that Bronze objects persisted in MinIO are valid inputs to the
-implemented Lakehouse processing chain.
+These values are execution-specific historical evidence and are not permanent
+Gold cardinalities.
+
+In particular, the final `gold_dim_geography` structure was validated later with:
+
+```text
+PROVINCE = 52
+AUTONOMOUS_COMMUNITY = 19
+COUNTRY = 1
+PENINSULA = 1
+```
+
+for a final structural total of:
+
+```text
+73 members
+```
+
+The earlier value of 71 rows therefore remains historical execution evidence and
+must not be presented as the final structural cardinality.
+
+The final Airflow-controlled historical Bronze → Silver → Gold runtime was also
+executed successfully after the orchestration refactor.
 
 ---
 
@@ -945,7 +1222,10 @@ Source-based organization
 Dataset-based organization
 = VALIDATED
 
-Ingestion-date partitioning
+Observation-time physical organization
+= VALIDATED
+
+Canonical Bronze paths
 = VALIDATED
 
 Bronze metadata
@@ -966,13 +1246,13 @@ CNIG Bronze persistence
 Historical Bronze acquisition
 = VALIDATED
 
-Open-Meteo temporal coverage checks
+Open-Meteo daily temporal coverage checks
 = VALIDATED
 
 Open-Meteo resumable acquisition
 = VALIDATED
 
-ESIOS empty-response protection
+ESIOS values=[] → NO_DATA handling
 = VALIDATED
 
 Bronze → Silver processing
@@ -985,8 +1265,17 @@ Gold → Trino querying
 = VALIDATED
 
 Complete final Airflow E2E runtime
-= PENDING ORCHESTRATION VALIDATION
+= VALIDATED
+
+Ingestion regression suite
+= 84 PASSED
+
+Silver regression suite
+= 85 PASSED
+
+Gold regression suite
+= 72 PASSED
 ```
 
-The Bronze storage layer is therefore implemented and operational for the
-current project scope.
+The Bronze storage layer is therefore implemented, validated and aligned with
+the final project scope.

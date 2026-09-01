@@ -69,11 +69,29 @@ class CnigIngestion:
 
                 raw_bytes = archive.read(filename)
 
+                if dataset == self.DATASET_PROVINCES:
+                    object_name = (
+                        "bronze/cnig/provinces/"
+                        "provinces.csv"
+                    )
+
+                elif dataset == self.DATASET_MUNICIPALITIES:
+                    object_name = (
+                        "bronze/cnig/municipalities/"
+                        "municipalities.csv"
+                    )
+
+                else:
+                    raise ValueError(
+                        f"Unsupported CNIG Bronze dataset: "
+                        f"{dataset}"
+                    )
+
                 output_path = self.storage.save_bytes(
                     raw_bytes,
                     source=self.SOURCE,
                     dataset=dataset,
-                    extension="csv",
+                    object_name=object_name,
                     content_type="text/csv",
                 )
 

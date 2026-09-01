@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 
+from pyspark.errors import AnalysisException
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
@@ -10,11 +11,20 @@ from silver.common import (
     read_bronze_json,
 )
 
+from pyspark.sql.types import (
+    StringType,
+    StructField,
+    StructType,
+)
 
 SOURCE = "aemet"
 
 STATIONS_DATASET = "stations"
 CURRENT_OBSERVATIONS_DATASET = "current_observations"
+
+CURRENT_OBSERVATIONS_SILVER_TABLE = (
+    "lakehouse.silver.silver_aemet_current_observations"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -452,27 +462,60 @@ def build_aemet_silver(
     Active AEMET scope:
         stations
         current observations
+
+    Historical reconstruction does not ingest AEMET current
+    observations. When that Bronze dataset is absent, preserve
+    the existing Silver table schema and return an empty
+    DataFrame for current observations.
     """
 
     stations_bronze = read_stations_bronze(
         spark
     )
 
-    current_bronze = (
-        read_current_observations_bronze(
-            spark
-        )
-    )
-
     stations_silver = transform_stations(
         stations_bronze
     )
 
-    current_silver = (
-        transform_current_observations(
-            current_bronze
+    try:
+        current_bronze = (
+            read_current_observations_bronze(
+                spark
+            )
         )
-    )
+
+        current_silver = (
+            transform_current_observations(
+                current_bronze
+            )
+        )
+
+    except AnalysisException as exc:
+        if "PATH_NOT_FOUND" not in str(exc):
+            raise
+
+        empty_current_bronze = (
+            spark.createDataFrame(
+                [],
+                schema=StructType(
+                    [
+                        StructField(
+                            column_name,
+                            StringType(),
+                            True,
+                        )
+                        for column_name
+                        in CURRENT_OBSERVATION_COLUMNS
+                    ]
+                ),
+            )
+        )
+
+        current_silver = (
+            transform_current_observations(
+                empty_current_bronze
+            )
+        )
 
     return (
         stations_silver,

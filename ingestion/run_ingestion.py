@@ -73,6 +73,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     open_meteo_parser.add_argument(
+        "--station-id",
+        required=True,
+    )
+
+    open_meteo_parser.add_argument(
         "--start-date",
         type=parse_date,
     )
@@ -221,6 +226,7 @@ def run_open_meteo(
             longitude=args.longitude,
             start_date=args.start_date,
             end_date=args.end_date,
+            station_id=args.station_id,
         )
 
     else:
@@ -243,6 +249,7 @@ def run_open_meteo(
             longitude=args.longitude,
             start_datetime=start_datetime,
             end_datetime=end_datetime,
+            location_id=args.station_id,
         )
 
     log_output_paths(output)

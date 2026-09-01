@@ -118,17 +118,11 @@ Airflow
 Superset
 AEMET
 ESIOS
+Open-Meteo access where required by the configured service plan
 ```
 
-The ingestion layer requires the corresponding API credentials, including:
-
-```text
-AEMET_API_KEY
-ESIOS_API_KEY
-```
-
-Open-Meteo does not require an API key for the access pattern used by the
-project.
+Credentials, API keys and passwords must never be embedded directly in
+committed source code or documentation.
 
 The real:
 
@@ -183,6 +177,9 @@ docker compose build --no-cache
 
 This is normally unnecessary unless dependencies or image configuration have
 changed.
+
+The final Airflow image uses Python 3.10 to remain compatible with the Python
+runtime used by the Spark worker during PySpark execution.
 
 ---
 
@@ -315,21 +312,51 @@ storage models.
 
 ### Bronze
 
-Bronze stores raw source objects directly in MinIO.
+Bronze stores source objects directly in MinIO.
 
-Conceptually:
+For analytical time-series datasets, the physical temporal hierarchy is governed
+by source observation time rather than by ingestion time.
+
+The validated canonical paths include:
 
 ```text
-bronze/
-└── <source>/
-    └── <dataset>/
-        └── year=YYYY/
-            └── month=MM/
-                └── day=DD/
-                    └── <object>
+Open-Meteo hourly
+bronze/open_meteo/weather_hourly/
+year=YYYY/month=MM/day=DD/
+station_id=<station_id>.json
+
+Open-Meteo 15-minute
+bronze/open_meteo/weather_15min/
+year=YYYY/month=MM/day=DD/
+station_id=<station_id>.json
+
+ESIOS hourly
+bronze/esios/<dataset>/
+year=YYYY/month=MM/day=DD/
+data.json
+
+ESIOS monthly
+bronze/esios/<dataset>/
+year=YYYY/month=MM/
+data.json
+
+AEMET stations
+bronze/aemet/stations/stations.json
+
+AEMET current observations
+bronze/aemet/current_observations/
+year=YYYY/month=MM/day=DD/
+observations.json
+
+CNIG provinces
+bronze/cnig/provinces/provinces.csv
+
+CNIG municipalities
+bronze/cnig/municipalities/municipalities.csv
 ```
 
-Bronze preserves source payloads and ingestion metadata.
+`ingestion_timestamp` remains audit metadata and does not determine the physical
+business partition date.
 
 Bronze is not implemented as Apache Iceberg tables.
 
@@ -337,7 +364,7 @@ Bronze is not implemented as Apache Iceberg tables.
 
 Silver is implemented as Apache Iceberg tables stored in MinIO.
 
-The final physical Silver model contains:
+The final physical Silver model contains exactly:
 
 ```text
 9 tables
@@ -347,7 +374,7 @@ The final physical Silver model contains:
 
 Gold is also implemented as Apache Iceberg tables stored in MinIO.
 
-The final physical Gold model contains:
+The final physical Gold model contains exactly:
 
 ```text
 4 tables
@@ -481,12 +508,34 @@ airflow/dags/
 
 Airflow metadata is stored in PostgreSQL.
 
-The Airflow infrastructure and DAG discovery have been validated.
+The final Airflow runtime contains exactly four DAGs:
 
-Existing ingestion workflows have also been executed during earlier project
-phases.
+```text
+historical_reload
+hourly_ingestion
+monthly_ingestion
+open_meteo_15min
+```
 
-The final complete Airflow-controlled execution of:
+Their validated roles are:
+
+```text
+historical_reload
+→ historical Bronze → Silver → Gold
+
+hourly_ingestion
+→ recurrent hourly Bronze ingestion
+
+monthly_ingestion
+→ recurrent monthly Bronze ingestion
+
+open_meteo_15min
+→ manual historical Open-Meteo 15-minute Bronze utility
+```
+
+Final DAG import validation reported no import errors.
+
+The complete Airflow-controlled historical:
 
 ```text
 Bronze
@@ -494,8 +543,29 @@ Bronze
 → Gold
 ```
 
-is part of the orchestration closure and must not be considered fully
-runtime-validated until that execution has been completed successfully.
+execution has been validated successfully.
+
+The `historical_reload` workflow exposes exactly:
+
+```text
+fecha_inicio
+fecha_fin
+sobreescribir_datos
+eliminar_historial_completo
+```
+
+and supports the three validated persistence behaviours:
+
+```text
+PRESERVE
+RANGE OVERWRITE
+FULL DELETE
+```
+
+FULL DELETE has priority over RANGE OVERWRITE.
+
+AEMET current observations are deliberately excluded from historical
+reconstruction.
 
 ---
 
@@ -629,14 +699,17 @@ depending on the volume configuration.
 
 It must only be used when a complete environment reset is explicitly intended.
 
-After the reset, the environment can be recreated with:
+After the reset, the infrastructure can be recreated with:
 
 ```bash
 docker compose up -d
 ```
 
-A full clean-volume reproducibility test must not be considered validated unless
-that destructive test has actually been executed successfully.
+A complete clean-volume reproducibility test has **not yet been validated**.
+
+Therefore, a successful destructive reconstruction from an empty persistent
+environment must not be claimed until that test has actually been executed and
+confirmed.
 
 ---
 
@@ -752,20 +825,34 @@ Gold / Apache Iceberg
 Trino
 ```
 
+The complete historical Bronze → Silver → Gold path has also been coordinated
+successfully through Airflow.
+
 The current Gold tables have been queried successfully through Trino.
 
-The core Lakehouse infrastructure is therefore operational.
+The core Lakehouse infrastructure is therefore operational and validated for the
+implemented project scope.
 
 ---
 
-## 26. Validated Lakehouse Execution
+## 26. Validated Lakehouse and Airflow Execution
 
-A real historical processing execution has successfully completed outside the
-final Airflow orchestration validation for the interval:
+An independent real historical processing execution was completed for:
 
 ```text
 2026-01-10 → 2026-01-15
 ```
+
+That execution validated the underlying:
+
+```text
+MinIO
+→ Spark
+→ Iceberg
+→ Trino
+```
+
+processing path using real data.
 
 The final Silver implementation contained exactly:
 
@@ -779,7 +866,7 @@ and the final Gold implementation contained exactly:
 4 tables
 ```
 
-Relevant validated Gold counts include:
+Relevant validated Gold counts for that independent execution include:
 
 ```text
 gold_dim_geography = 71
@@ -788,16 +875,36 @@ gold_fact_installed_capacity_monthly = 19
 gold_fact_province_hourly = 8147
 ```
 
-This validates the Docker infrastructure required for:
+The final historical Airflow orchestration was subsequently validated
+separately.
+
+Its three persistence behaviours were validated with real data:
 
 ```text
-MinIO
-→ Spark
-→ Iceberg
-→ Trino
+PRESERVE
+RANGE OVERWRITE
+FULL DELETE
 ```
 
-using real data.
+Validation confirmed that:
+
+- PRESERVE keeps existing active Silver/Gold files unchanged and inserts only
+  missing natural keys;
+- RANGE OVERWRITE rebuilds only the requested interval while preserving
+  outside-range data and existing masters;
+- FULL DELETE removes active Bronze, purges the current Silver and Gold tables,
+  physically cleans the active Silver/Gold warehouse prefixes and rebuilds
+  masters;
+- no duplicate natural keys were produced;
+- previous-run physical Silver/Gold objects after FULL DELETE were zero.
+
+After the final orchestration changes, the regression suites passed:
+
+```text
+tests/ingestion = 84 passed
+tests/silver    = 85 passed
+tests/gold      = 72 passed
+```
 
 ---
 
@@ -836,11 +943,23 @@ Trino access
 Airflow infrastructure
 = VALIDATED
 
-Superset infrastructure
+Airflow DAG import validation
 = VALIDATED
 
-Final Airflow E2E runtime orchestration
-= PENDING FINAL VALIDATION
+Historical Airflow E2E runtime
+= VALIDATED
+
+PRESERVE persistence policy
+= VALIDATED
+
+RANGE OVERWRITE persistence policy
+= VALIDATED
+
+FULL DELETE persistence policy
+= VALIDATED
+
+Superset infrastructure
+= VALIDATED
 
 Final Superset dashboards
 = PENDING IMPLEMENTATION
@@ -849,8 +968,11 @@ Destructive clean-volume reconstruction
 = NOT VALIDATED
 ```
 
-The final two pending application-level stages do not invalidate the underlying
-infrastructure deployment.
+The remaining pending deployment-related validation is the complete destructive
+reconstruction from empty persistent volumes.
+
+The Superset service is deployed, while the final dashboard layer remains a
+separate downstream implementation task.
 
 ---
 

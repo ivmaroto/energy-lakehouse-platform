@@ -32,11 +32,14 @@ Apache Superset
 → visualization
 ```
 
-The orchestration layer is designed to support both historical executions and
-subsequent recurrent or incremental executions.
+The orchestration layer supports:
 
-The core data-processing path itself has already been validated independently
-from Airflow:
+- an end-to-end historical reload workflow covering Bronze, Silver and Gold;
+- recurrent source-ingestion workflows that persist data in Bronze;
+- manual historical Open-Meteo 15-minute reconstruction.
+
+The complete historical processing path has been validated both independently
+from Airflow and under direct Airflow control:
 
 ```text
 External sources
@@ -54,8 +57,8 @@ Gold / Spark / Iceberg
 Trino
 ```
 
-Final runtime validation of this complete chain when launched and coordinated
-directly by Airflow remains part of the orchestration closure.
+The Airflow-controlled historical Bronze → Silver → Gold path and its validated
+persistence policies are therefore part of the implemented platform.
 
 ---
 
@@ -162,13 +165,31 @@ DAG discovery
 Airflow web interface
 ```
 
-Existing source-ingestion DAGs were previously discovered and executed during
-ingestion validation.
+Final DAG-import validation returned:
 
-This proves that Airflow can execute project Python ingestion code inside the
-containerized environment.
+```text
+No data found
+```
 
-It does not by itself prove that the final complete:
+from:
+
+```text
+airflow dags list-import-errors
+```
+
+which confirms that no DAG import errors were present.
+
+The runtime DAG inventory contained exactly:
+
+```text
+historical_reload
+hourly_ingestion
+monthly_ingestion
+open_meteo_15min
+```
+
+The `historical_reload` DAG has also been executed successfully through the
+complete:
 
 ```text
 Bronze
@@ -176,30 +197,95 @@ Bronze
 → Gold
 ```
 
-workflow has been executed end to end from Airflow.
+processing path.
 
-That distinction is preserved explicitly in this document.
+Its three persistence behaviours were validated separately with real data:
+
+```text
+PRESERVE
+RANGE OVERWRITE
+FULL DELETE
+```
+
+Therefore, Airflow infrastructure, DAG discovery and the historical end-to-end
+orchestration path are all validated.
 
 ---
 
-## 6. Existing Ingestion Workflows
+## 6. Current Airflow Workflows
 
-The project originally implemented source- and frequency-oriented DAGs during
-the ingestion phase.
+The current repository contains four Airflow DAGs.
 
-These DAGs demonstrated that:
+### `historical_reload`
 
-- Airflow can discover project workflows;
-- Airflow can execute ingestion code;
-- ingestion tasks can communicate with external APIs;
-- ingestion tasks can persist Bronze data in MinIO;
-- retries and task states can be managed through Airflow.
+Role:
 
-Some of those early workflows correspond to ingestion experiments or dataset
-families that are no longer part of the final physical analytical scope.
+```text
+historical end-to-end reload
+Bronze → Silver → Gold
+```
 
-The final current data scope is defined by the active Bronze, Silver and Gold
-models rather than by retaining every earlier experimental ingestion path.
+It is the principal workflow for controlled historical reconstruction and for
+the persistence policies described later in this document.
+
+### `hourly_ingestion`
+
+Role:
+
+```text
+hourly Bronze ingestion
+```
+
+It coordinates:
+
+- approved hourly ESIOS generation indicators;
+- AEMET current observations;
+- Open-Meteo hourly ingestion for the AEMET station master.
+
+Its schedule is:
+
+```text
+0 * * * *
+```
+
+This DAG persists source data in Bronze. It does not itself execute the Silver
+or Gold stages.
+
+### `monthly_ingestion`
+
+Role:
+
+```text
+monthly Bronze ingestion
+```
+
+It coordinates the approved ESIOS installed-capacity indicators.
+
+Its schedule is:
+
+```text
+@monthly
+```
+
+This DAG also persists source data in Bronze and does not itself execute the
+Silver or Gold stages.
+
+### `open_meteo_15min`
+
+Role:
+
+```text
+manual historical Open-Meteo 15-minute Bronze reconstruction
+```
+
+Its schedule is:
+
+```text
+None
+```
+
+The underlying 15-minute batch implementation is reserved for historical
+reconstruction.
 
 The active analytical source scope is:
 
@@ -232,39 +318,79 @@ airflow/dags/historical_reload.py
 ```
 
 Its objective is to coordinate a historical execution through the complete
-Lakehouse processing chain.
+Lakehouse processing chain while applying an explicit persistence policy.
 
-The logical workflow is:
+The validated workflow is:
 
 ```text
 Start
   │
-  ├──► Master/reference ingestion
+  ▼
+Apply Bronze persistence policy
   │
-  ├──► Historical Open-Meteo ingestion
+  ▼
+Select Silver / Gold deletion policy
   │
-  ├──► Historical ESIOS ingestion
+  ├── FULL
+  │     ├─ drop / purge current Silver and Gold tables
+  │     └─ remove residual warehouse/silver and warehouse/gold objects
   │
-  └──► AEMET current acquisition
+  ├── RANGE
+  │     └─ delete only the requested Silver / Gold temporal range
+  │
+  └── PRESERVE
+        └─ skip Silver / Gold deletion
              │
              ▼
-         Bronze ready
+      Persistence policy complete
              │
-             ▼
-      Create Silver tables
-             │
-             ▼
-        Write Silver
-             │
-             ▼
-       Create Gold tables
-             │
-             ▼
-         Write Gold
-             │
-             ▼
-            End
+     ┌───────┼──────────────┐
+     │       │              │
+     ▼       ▼              ▼
+ Masters   ESIOS hourly   ESIOS monthly
+     │
+     ▼
+ Open-Meteo historical
+     │
+     └──────────┬───────────┘
+                ▼
+           Bronze ready
+                │
+                ▼
+       Create Silver tables
+                │
+                ▼
+          Write Silver
+                │
+                ▼
+        Create Gold tables
+                │
+                ▼
+           Write Gold
+                │
+                ▼
+               End
 ```
+
+AEMET current observations are deliberately excluded from this historical
+workflow.
+
+Master ingestion behaves as an ensure operation:
+
+```text
+master already exists
+→ preserve it
+
+master missing
+→ ingest it
+```
+
+Therefore:
+
+- PRESERVE keeps existing masters unchanged;
+- RANGE OVERWRITE keeps existing masters unchanged;
+- FULL DELETE removes the active Bronze layer, after which the missing masters
+  are rebuilt.
 
 The workflow reuses the same Python ingestion and Spark-processing
 implementations that have already been validated independently.
@@ -273,41 +399,105 @@ It does not duplicate transformation logic inside the DAG.
 
 ---
 
-## 8. Historical Parameters
+## 8. Historical Parameters and Persistence Policies
 
-The historical orchestration workflow supports an explicit requested temporal
-interval.
-
-The principal temporal parameters are:
+The historical reload workflow exposes exactly four runtime parameters:
 
 ```text
-start_date
-end_date
+fecha_inicio
+fecha_fin
+sobreescribir_datos
+eliminar_historial_completo
 ```
 
-These parameters determine the requested historical interval for source
-connectors that support historical acquisition.
+`fecha_inicio` and `fecha_fin` define the requested historical interval and are
+required.
 
-Different sources retain their own acquisition semantics.
+The two boolean parameters select the persistence behaviour.
 
-For example:
+### PRESERVE
 
 ```text
-Open-Meteo
-→ historical meteorological interval
-
-ESIOS
-→ historical energy interval
-
-AEMET stations
-→ master/reference acquisition
-
-AEMET current observations
-→ recent/current acquisition
+sobreescribir_datos = false
+eliminar_historial_completo = false
 ```
 
-AEMET current observations are therefore not reinterpreted as arbitrary
-historical observations.
+Behaviour:
+
+- preserve existing Bronze data;
+- preserve existing Silver and Gold rows;
+- preserve existing masters;
+- ingest missing source coverage;
+- insert only natural keys that are not already persisted.
+
+This behaviour was validated physically and logically. Existing Silver and Gold
+Parquet files remained unchanged while new temporal coverage was added, and no
+duplicate natural keys were produced.
+
+### RANGE OVERWRITE
+
+```text
+sobreescribir_datos = true
+eliminar_historial_completo = false
+```
+
+Behaviour:
+
+- delete the requested Bronze historical interval;
+- delete the requested Silver and Gold temporal interval;
+- preserve data outside the requested interval;
+- preserve existing masters;
+- rebuild the requested interval.
+
+Validation confirmed that active Iceberg files inside the overwritten range
+were replaced, while files outside the range and master-object metadata remained
+unchanged.
+
+### FULL DELETE
+
+```text
+eliminar_historial_completo = true
+```
+
+Full deletion has priority over range overwrite.
+
+Behaviour:
+
+- delete the complete active Bronze layer, including masters;
+- drop and purge the current 9 Silver tables;
+- drop and purge the current 4 Gold tables;
+- remove residual physical objects under `warehouse/silver/` and
+  `warehouse/gold/`;
+- rebuild missing masters;
+- load only the requested historical interval;
+- recreate Silver and Gold.
+
+Validation confirmed that no data files from previous runs remained after the
+full reset.
+
+### Historical write policy
+
+The historical DAG passes:
+
+```text
+LAKEHOUSE_WRITE_POLICY=insert-only
+```
+
+only to:
+
+```text
+silver_write
+gold_write
+```
+
+This prevents existing natural keys from being physically rewritten during
+PRESERVE.
+
+RANGE OVERWRITE and FULL DELETE first remove the data that must be reconstructed,
+so the rebuilt rows are subsequently inserted as new rows.
+
+AEMET current observations are not reinterpreted as arbitrary historical
+observations and are excluded from `historical_reload`.
 
 ---
 
@@ -337,6 +527,9 @@ Hourly historical data
 Large station batches include source-specific retry, backoff, pacing and
 coverage-validation mechanisms.
 
+Canonical daily objects are validated for expected temporal coverage rather
+than being considered complete only because the object exists.
+
 ---
 
 ### REE / ESIOS
@@ -354,16 +547,16 @@ Indicator configuration is externalized in:
 config/esios_indicators.json
 ```
 
-ESIOS responses are technically validated before successful Bronze persistence.
+ESIOS responses are technically validated before Bronze persistence.
 
-In particular, an indicator response with:
+A valid ESIOS response with:
 
 ```text
 values = []
 ```
 
-is not considered a valid completed source acquisition by the current ingestion
-implementation.
+is handled as a valid `NO_DATA` result. It returns no observations and does not
+fabricate synthetic records.
 
 ---
 
@@ -373,6 +566,9 @@ CNIG provides the territorial master required by Silver geographical
 normalization.
 
 The master data is independent from the analytical historical date interval.
+
+During PRESERVE and RANGE OVERWRITE, an existing master is preserved. After a
+FULL DELETE or in a clean installation, a missing master is ingested again.
 
 ---
 
@@ -387,7 +583,8 @@ current_observations
 
 The station catalogue is used as a meteorological location master.
 
-Current observations remain a recent/current data source.
+The station master is ensured by the historical workflow, but AEMET current
+observations are deliberately excluded from historical reconstruction.
 
 ---
 
@@ -482,29 +679,51 @@ Airflow coordinates execution but does not replicate this analytical logic.
 
 ## 12. Task Dependencies
 
-The final orchestration must preserve the following dependency relationship:
+The historical orchestration preserves the following dependency relationship:
 
 ```text
-Required Bronze ingestion
-          │
-          ▼
-   Bronze available
-          │
-          ▼
-Create Silver tables
-          │
-          ▼
-     Write Silver
-          │
-          ▼
-Create Gold tables
-          │
-          ▼
-      Write Gold
-          │
-          ▼
- Gold available
+Start
+  │
+  ▼
+Bronze persistence policy
+  │
+  ▼
+Silver / Gold deletion branch
+  │
+  ▼
+persistence_policy_complete
+  │
+  ├─► masters ─► Open-Meteo historical
+  ├─► ESIOS hourly
+  └─► ESIOS monthly
+           │
+           ▼
+      bronze_complete
+           │
+           ▼
+ Create Silver tables
+           │
+           ▼
+      Write Silver
+           │
+           ▼
+  Create Gold tables
+           │
+           ▼
+       Write Gold
+           │
+           ▼
+          End
 ```
+
+The convergence task after the deletion branch uses:
+
+```text
+TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS
+```
+
+so the selected branch can continue while the non-selected branch tasks remain
+skipped.
 
 A downstream processing stage must not execute successfully before its required
 upstream stage has completed.
@@ -612,39 +831,35 @@ respective components and are visible through the execution environment.
 
 ## 16. Incremental Orchestration
 
-The architecture is designed to support subsequent incremental or recent-data
-executions.
+The current implementation distinguishes historical end-to-end orchestration
+from recurrent Bronze ingestion.
 
-The general intended model is:
+The current workflows are:
 
 ```text
-Requested execution window
-          │
-          ▼
-      Source ingestion
-          │
-          ▼
-         Bronze
-          │
-          ▼
-         Silver
-          │
-          ▼
-          Gold
+historical_reload
+→ historical Bronze → Silver → Gold
+
+hourly_ingestion
+→ recurrent hourly Bronze ingestion
+
+monthly_ingestion
+→ recurrent monthly Bronze ingestion
+
+open_meteo_15min
+→ manual historical 15-minute Bronze reconstruction
 ```
 
-The exact source window cannot be assumed to behave identically for all
-providers.
+Therefore, the current hourly and monthly DAGs must not be described as
+end-to-end Bronze → Silver → Gold pipelines.
 
-External sources may differ in:
+They acquire and persist source data in Bronze.
 
-- publication latency;
-- available latest timestamp;
-- temporal granularity;
-- historical availability.
+Automatic promotion of those recurrent Bronze acquisitions through Silver and
+Gold is not part of the currently validated recurrent DAG implementation.
 
-Therefore, the orchestration layer must respect the real data availability of
-each source rather than fabricate observations up to the requested end time.
+The historical workflow remains the validated Airflow-controlled path for
+complete Bronze → Silver → Gold reconstruction.
 
 ---
 
@@ -842,13 +1057,17 @@ The principal Gold fact contained:
 
 This validates the processing components that Airflow must coordinate.
 
-It does **not** replace final Airflow runtime validation.
+This independent run predates the final historical persistence-policy
+validation and included an AEMET current-observation acquisition. The final
+`historical_reload` workflow deliberately excludes AEMET current observations.
+
+Final Airflow-controlled runtime validation is recorded in Section 22.
 
 ---
 
 ## 22. Current Orchestration Status
 
-The current status is:
+The final validated status is:
 
 ```text
 Airflow infrastructure
@@ -857,27 +1076,60 @@ Airflow infrastructure
 Airflow Webserver / Scheduler
 = VALIDATED
 
-Existing ingestion workflow execution
-= VALIDATED
+DAG import validation
+= VALIDATED / no import errors
 
-Historical reload DAG implementation
-= IMPLEMENTED
+DAG discovery
+= VALIDATED / 4 DAGs registered
 
-Historical reload DAG structure / task definition
-= VALIDATED
-
-Bronze → Silver → Gold → Trino processing outside Airflow
+Historical reload DAG structure
 = VALIDATED
 
 Complete Airflow-triggered Bronze → Silver → Gold runtime execution
-= PENDING FINAL VALIDATION
+= VALIDATED
+
+PRESERVE persistence policy
+= VALIDATED
+
+RANGE OVERWRITE persistence policy
+= VALIDATED
+
+FULL DELETE persistence policy
+= VALIDATED
+
+Master preservation during PRESERVE / RANGE
+= VALIDATED
+
+Master rebuild during FULL DELETE
+= VALIDATED
+
+Physical removal of previous-run Silver / Gold data files during FULL DELETE
+= VALIDATED
+
+Gold natural-key duplicates after orchestration validation
+= 0
 ```
 
-The final orchestration acceptance criterion is therefore a successful
-Airflow-controlled execution of the required end-to-end processing path.
+The final full-delete validation also confirmed:
 
-Until that execution is completed, the orchestration layer must not be
-documented as fully closed.
+```text
+OLD_PREVIOUS_RUN_OBJECTS = 0
+```
+
+after reconstruction.
+
+After the final orchestration and persistence changes, the complete automated
+test suites passed:
+
+```text
+tests/ingestion = 84 passed
+tests/silver    = 85 passed
+tests/gold      = 72 passed
+```
+
+No failures remained in these suites.
+
+The historical orchestration layer is therefore implemented and validated.
 
 ---
 

@@ -91,7 +91,7 @@ weather_15min
 The AEMET station catalogue provides the point catalogue and coordinates used
 for Open-Meteo acquisition.
 
-The current validated production location count is:
+The validated production location catalogue contains:
 
 ```text
 926 locations
@@ -249,15 +249,20 @@ Provides the Bronze persistence abstraction used by the source connectors.
 
 The production-like Bronze backend is MinIO.
 
-Objects are organized logically by:
+Objects are organized logically by source, dataset and canonical observation
+time where the dataset is temporal.
+
+For temporal Bronze datasets:
 
 ```text
-source
-dataset
 year
 month
 day
 ```
+
+represent the source observation period, not the ingestion timestamp.
+
+`ingestion_timestamp` is retained as technical audit metadata only.
 
 The storage layer isolates object persistence from API-specific connector code.
 
@@ -413,6 +418,20 @@ requested temporal window.
 A location is considered complete only when the expected temporal coverage is
 present.
 
+For a complete UTC day, the validated requirements are:
+
+```text
+weather_hourly
+→ 24 timestamps
+```
+
+and:
+
+```text
+weather_15min
+→ 96 timestamps
+```
+
 For the validated six-day interval:
 
 ```text
@@ -429,12 +448,14 @@ Hourly:
 6 days × 24 × 4 = 576 observations
 ```
 
-The final complete historical acquisition produced:
+The complete historical acquisition produced:
 
 ```text
 weather_hourly = 926 / 926 locations
 weather_15min  = 926 / 926 locations
 ```
+
+This is execution-specific historical evidence.
 
 ---
 
@@ -499,24 +520,44 @@ config/esios_indicators.json
 
 ## 10. ESIOS Response Validation
 
-A successful HTTP request is not sufficient for an ESIOS ingestion to be
-considered successful.
+A successful HTTP request is not sufficient to assume that ESIOS observations
+exist for the requested interval.
 
-The ingestion implementation validates that the response contains the expected
-indicator structure and a non-empty:
+The ingestion implementation validates the expected indicator structure.
+
+An ESIOS response containing:
 
 ```text
-indicator.values
+indicator.values = []
 ```
 
-An empty values list therefore causes the affected ingestion attempt to fail
-before an empty Bronze object is persisted as a successful dataset.
+is a valid source response representing:
 
-This behaviour prevents a technically valid HTTP response without observations
-from being incorrectly treated as a completed Bronze acquisition.
+```text
+NO_DATA
+```
 
-Real API validation confirmed that the configured ESIOS indicators return
-actual observations for supported historical periods.
+It must not be converted into fabricated observations or zero-valued
+measurements.
+
+Therefore:
+
+```text
+NO_DATA != zero-valued measurement
+```
+
+and:
+
+```text
+NULL != 0
+```
+
+Real API validation confirmed that the configured ESIOS indicators returned
+actual observations for the historical intervals used in the validated E2E
+executions.
+
+That historical availability must not be generalized to every future requested
+interval.
 
 ---
 
@@ -589,23 +630,72 @@ project.
 
 The current production-like Bronze persistence backend is MinIO.
 
-Objects are stored under the configured Lakehouse bucket using a logical
-structure such as:
+Temporal Bronze datasets are physically organized by:
 
 ```text
-bronze/
-└── <source>/
-    └── <dataset>/
-        └── year=YYYY/
-            └── month=MM/
-                └── day=DD/
-                    └── <generated-object>.json
+observation time
 ```
 
-The temporal directory hierarchy represents the ingestion date of the object,
-not necessarily the source observation period.
+and not by:
 
-The requested source interval is retained separately in Bronze metadata.
+```text
+ingestion_timestamp
+```
+
+`ingestion_timestamp` is retained only as technical audit metadata.
+
+The final canonical Bronze paths are:
+
+### Open-Meteo hourly
+
+```text
+bronze/open_meteo/weather_hourly/year=YYYY/month=MM/day=DD/station_id=<id>.json
+```
+
+### Open-Meteo 15-minute
+
+```text
+bronze/open_meteo/weather_15min/year=YYYY/month=MM/day=DD/station_id=<id>.json
+```
+
+### ESIOS hourly
+
+```text
+bronze/esios/<dataset>/year=YYYY/month=MM/day=DD/data.json
+```
+
+### ESIOS monthly
+
+```text
+bronze/esios/<dataset>/year=YYYY/month=MM/data.json
+```
+
+### AEMET stations
+
+```text
+bronze/aemet/stations/stations.json
+```
+
+### AEMET current observations
+
+```text
+bronze/aemet/current_observations/year=YYYY/month=MM/day=DD/observations.json
+```
+
+### CNIG provinces
+
+```text
+bronze/cnig/provinces/provinces.csv
+```
+
+### CNIG municipalities
+
+```text
+bronze/cnig/municipalities/municipalities.csv
+```
+
+The requested source interval and ingestion timestamp can additionally be
+retained in Bronze metadata for traceability.
 
 ---
 
@@ -651,19 +741,14 @@ Generated runtime Bronze data must not be committed to Git.
 
 ## 15. Historical Ingestion
 
-Historical ingestion receives an explicit temporal interval:
-
-```text
-start_date
-end_date
-```
+Historical ingestion receives an explicit temporal interval.
 
 Its purpose is to populate Bronze with source data available for that interval.
 
 Large requested periods can be divided into smaller source-specific request
 windows.
 
-Historical acquisition currently includes:
+Historical acquisition includes:
 
 ```text
 Open-Meteo hourly
@@ -675,7 +760,33 @@ ESIOS monthly
 AEMET station and CNIG geographical masters are loaded independently from the
 historical observation interval.
 
-AEMET current observations remain a recent/current dataset.
+AEMET current observations remain a recent/current dataset and are explicitly
+excluded from the final:
+
+```text
+historical_reload
+```
+
+workflow for arbitrary historical reconstruction.
+
+The final historical orchestration parameters are:
+
+```text
+fecha_inicio
+fecha_fin
+sobreescribir_datos
+eliminar_historial_completo
+```
+
+The validated historical policies are:
+
+```text
+PRESERVE
+RANGE OVERWRITE
+FULL DELETE
+```
+
+`FULL DELETE` has priority over `RANGE OVERWRITE`.
 
 ---
 
@@ -696,8 +807,37 @@ Incremental ────┘
 The exact execution window depends on the source because publication latency and
 data availability are not identical across providers.
 
-Automatic end-to-end orchestration of these executions is handled by the
-Airflow layer.
+The final Airflow orchestration model contains exactly four DAGs:
+
+```text
+historical_reload
+hourly_ingestion
+monthly_ingestion
+open_meteo_15min
+```
+
+Their validated roles are:
+
+```text
+historical_reload
+= historical E2E Bronze → Silver → Gold
+
+hourly_ingestion
+= incremental hourly Bronze ingestion
+
+monthly_ingestion
+= incremental monthly Bronze ingestion
+
+open_meteo_15min
+= manual/historical Open-Meteo 15-minute Bronze utility
+```
+
+The hourly and monthly incremental DAGs perform Bronze ingestion only.
+
+They do not automatically execute Silver or Gold.
+
+`open_meteo_15min` is not scheduled as a recurrent 15-minute production
+pipeline.
 
 ---
 
@@ -711,7 +851,7 @@ The ingestion layer provides controlled handling for:
 - authentication errors;
 - invalid JSON responses;
 - malformed API structures;
-- empty ESIOS datasets;
+- ESIOS `NO_DATA` responses and malformed ESIOS structures;
 - invalid date ranges;
 - incomplete Open-Meteo temporal coverage;
 - storage failures.
@@ -723,6 +863,9 @@ for large station batches.
 
 Failures are raised before data is promoted downstream as a valid acquisition
 whenever possible.
+
+A valid ESIOS `NO_DATA` response is not treated as a fabricated successful
+observation and does not produce zero-valued measurements.
 
 ---
 
@@ -742,7 +885,7 @@ The ingestion implementation includes automated regression tests for:
 The latest validated complete ingestion regression suite completed with:
 
 ```text
-68 passed
+84 passed
 ```
 
 No ingestion test failures remained in that validated execution.
@@ -756,6 +899,11 @@ A complete real-source Bronze historical execution was validated for:
 ```text
 2026-01-10 → 2026-01-15
 ```
+
+This execution is retained as historical evidence.
+
+It predates the final `historical_reload` policy because it still included
+AEMET `current_observations`, which the final historical workflow now excludes.
 
 The execution completed with:
 
@@ -799,12 +947,16 @@ through the Silver row counts:
 = 533376 rows
 ```
 
-ESIOS data was also successfully transformed downstream, producing:
+ESIOS data was also successfully transformed downstream, producing in that
+specific historical execution:
 
 ```text
 38443 hourly Silver observations
 123 monthly Silver observations
 ```
+
+These are execution-specific historical row counts and are not permanent table
+cardinalities.
 
 This confirms that the historical ingestion supplied real data successfully to
 the downstream Lakehouse processing chain.
@@ -838,6 +990,9 @@ Trino
 Real data acquired through the ingestion layer was successfully transformed
 into the final Silver and Gold Apache Iceberg tables and queried through Trino.
 
+The final `historical_reload` Airflow workflow was also executed successfully
+end to end.
+
 This demonstrates that Bronze ingestion is operational as the source stage of
 the Lakehouse rather than only as an isolated connector implementation.
 
@@ -861,13 +1016,14 @@ the Lakehouse rather than only as an isolated connector implementation.
 | Open-Meteo resumable acquisition | Validated |
 | ESIOS hourly ingestion | Validated |
 | ESIOS monthly ingestion | Validated |
-| ESIOS empty-value rejection | Validated |
+| ESIOS `NO_DATA` handling | Validated |
 | CNIG master ingestion | Validated |
 | Historical ingestion | Validated |
 | MinIO integration | Validated |
 | API → Bronze integration | Validated |
 | Bronze → Silver → Gold → Trino E2E | Validated |
-| Ingestion regression suite | 68 passed |
+| `historical_reload` E2E runtime | Validated |
+| Ingestion regression suite | 84 passed |
 
 Detailed ingestion validation evidence is documented in:
 

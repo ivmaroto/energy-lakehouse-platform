@@ -46,8 +46,8 @@ for installed-capacity analysis.
 
 The Gold processing layer is implemented and queryable through Trino.
 
-Final dashboard construction and visualization validation in Apache Superset
-remain a downstream implementation stage.
+Final Superset dataset configuration, dashboard construction and visualization
+validation remain a downstream implementation stage.
 
 ---
 
@@ -233,10 +233,8 @@ total_generation_mwh
 Possible analytical views include:
 
 - total generation evolution;
-- generation by technology;
-- renewable-generation evolution;
+- generation by selected technology metric;
 - comparison between provinces;
-- technology mix by period;
 - comparison between meteorological variables and related generation metrics.
 
 The current analytical scope does **not** include electricity demand or market
@@ -281,7 +279,7 @@ solar photovoltaic generation
 ```text
 temperature / precipitation
 vs.
-changes in generation mix
+changes in generation metrics
 ```
 
 These visualizations represent analytical relationships and should not
@@ -319,9 +317,10 @@ other_renewables_installed_capacity_mw
 
 Possible analytical views include:
 
-- installed capacity by technology;
+- installed capacity by technology metric;
 - comparison between Autonomous Communities;
-- renewable versus non-renewable capacity;
+- renewable installed capacity;
+- comparison of installed-capacity metrics;
 - monthly capacity evolution when multiple months are available.
 
 Installed capacity remains at Autonomous Community level.
@@ -332,8 +331,10 @@ It must not be visually presented as province-level information.
 
 ## 9. Proposed Dashboard Structure
 
-The visualization layer can be organized into a small number of dashboards
-aligned with the final Gold model.
+The final dashboard layer is still pending implementation.
+
+The following structure is therefore a **design proposal**, not evidence of an
+already implemented Superset dashboard.
 
 ### 9.1 Energy and Weather Overview
 
@@ -343,18 +344,17 @@ Main dataset:
 gold_fact_province_hourly
 ```
 
-Possible contents:
+Proposed contents:
 
-- selected period;
-- selected province;
+- date/time range;
+- Autonomous Community filter;
+- Province filter;
 - total electricity generation;
 - average temperature;
 - average wind speed;
 - average solar radiation;
-- generation evolution by technology;
+- generation evolution by selected technology metric;
 - weather evolution over time.
-
----
 
 ### 9.2 Weather and Renewable Generation
 
@@ -364,18 +364,19 @@ Main dataset:
 gold_fact_province_hourly
 ```
 
-Possible analyses:
+Proposed analyses:
 
 - wind speed versus wind generation;
 - solar radiation versus photovoltaic generation;
 - province comparison;
 - hourly temporal evolution;
-- scatter plots for exploratory relationships.
+- exploratory scatter plots.
 
-This dashboard directly supports the principal analytical objective of the
+This dashboard would directly support the principal analytical objective of the
 project.
 
----
+The resulting visual relationships must not be interpreted automatically as
+causal relationships.
 
 ### 9.3 Installed Capacity
 
@@ -385,28 +386,31 @@ Main dataset:
 gold_fact_installed_capacity_monthly
 ```
 
-Possible contents:
+Proposed contents:
 
 - installed capacity by Autonomous Community;
-- installed capacity by technology;
+- installed capacity by selected technology metric;
 - renewable installed capacity;
-- comparison of generation technologies;
+- comparison between installed-capacity metrics;
 - monthly evolution when sufficient temporal coverage exists.
+
+Installed capacity remains at Autonomous Community level and must not be
+presented as province-level information.
 
 ---
 
 ## 10. Filtering Strategy
 
-The visualization layer should allow users to reduce the analytical scope
-without reproducing business transformations.
+The visualization layer should reduce the analytical scope without reproducing
+business transformations already implemented in Gold.
 
-Relevant filters include:
+Validated filtering dimensions available from the current analytical model
+include:
 
 ```text
 date / time range
 autonomous community
 province
-generation technology
 ```
 
 The available geographical filter depends on the fact table being consumed.
@@ -417,7 +421,8 @@ For:
 gold_fact_province_hourly
 ```
 
-both Autonomous Community and Province can be used.
+Autonomous Community and Province can be used according to the geographical
+attributes available through the Gold model.
 
 For:
 
@@ -426,6 +431,18 @@ gold_fact_installed_capacity_monthly
 ```
 
 the valid analytical geography is Autonomous Community.
+
+The current Gold facts store generation and installed-capacity technologies as
+separate metric columns rather than as a row-level `technology` dimension.
+
+Therefore, a generic:
+
+```text
+generation technology
+```
+
+dashboard filter must not be assumed to exist unless it is implemented
+explicitly in Superset or provided through an additional analytical structure.
 
 ---
 
@@ -457,8 +474,10 @@ and the monthly installed-capacity fact uses:
 
 ```text
 year_month
-gold_month_timestamp
 ```
+
+Any additional temporal field used by a Superset dataset must be validated
+against the actual Gold schema before being documented as available.
 
 Aggregation performed by the visualization layer must respect the meaning and
 unit of the underlying metrics.
@@ -473,7 +492,7 @@ The geographical analytical dimension is:
 gold_dim_geography
 ```
 
-The final model allows analysis using the hierarchy:
+The final model supports the hierarchy:
 
 ```text
 Autonomous Community
@@ -484,13 +503,17 @@ Autonomous Community
 
 for the Province × hour fact.
 
-Potential visualizations include:
+Validated geographical analysis includes:
 
-- maps by province;
+- filtering by Autonomous Community;
+- filtering by Province;
 - ranked province comparisons;
-- Autonomous Community filters;
 - province-level meteorological comparisons;
 - province-level electricity-generation comparisons.
+
+Map visualizations are a possible Superset implementation option, but their
+final use depends on the geographical fields and map configuration actually
+implemented during the visualization phase.
 
 Installed capacity remains at Autonomous Community level and must not be
 disaggregated visually into provinces unless an actual province-level source
@@ -500,22 +523,23 @@ exists.
 
 ## 13. KPI Strategy
 
-KPIs should be calculated only from metrics already supported by the Gold
-tables.
+KPIs should be calculated only from metrics supported by the final Gold tables.
 
-Potential KPIs include:
+Validated candidate KPIs from the current analytical contract include:
 
 ```text
 Total generation
 Wind generation
 Solar photovoltaic generation
+Solar thermal generation
 Hydraulic generation
-Renewable generation metrics
+Nuclear generation
+Combined-cycle generation
 Average temperature
 Average wind speed
 Average solar radiation
 Installed renewable capacity
-Installed capacity by technology
+Installed capacity by individual technology
 ```
 
 KPI definitions must preserve the distinction between:
@@ -535,8 +559,11 @@ Installed capacity is expressed in MW.
 Hourly ESIOS generation metrics represented in the main analytical fact are
 expressed in MWh according to their validated analytical interpretation.
 
-No KPI for demand or electricity market price belongs to the current project
+No KPI for electricity demand or market price belongs to the current project
 scope.
+
+Derived KPIs should only be added once their exact formula and source metrics
+have been explicitly defined and validated.
 
 ---
 
@@ -663,7 +690,10 @@ consumes the same analytical definitions.
 
 ## 18. Validated Gold Data Available for Visualization
 
-The current Gold namespace contains:
+The analytical datasets required by the visualization layer have been validated
+through real Lakehouse executions and Trino queries.
+
+An independent historical validation produced:
 
 ```text
 gold_dim_geography = 71 rows
@@ -672,7 +702,7 @@ gold_fact_installed_capacity_monthly = 19 rows
 gold_fact_province_hourly = 8147 rows
 ```
 
-The Province × hour fact contains:
+For that execution, the Province × hour fact contained:
 
 ```text
 8100 rows with weather information
@@ -686,17 +716,21 @@ and:
 0 duplicate Province × hour keys
 ```
 
-The installed-capacity fact contains:
+The installed-capacity fact contained:
 
 ```text
 19 rows
 0 duplicate Autonomous Community × month keys
 ```
 
-Real integrated Gold records have been queried successfully through Trino.
+Real integrated Gold records were queried successfully through Trino.
 
-The analytical datasets required by the visualization layer are therefore
-available.
+These counts are retained as evidence from that specific validated historical
+execution and must not be interpreted as permanent table sizes.
+
+Subsequent Airflow validation also confirmed that the final historical
+Bronze → Silver → Gold workflow can rebuild and extend the analytical model
+without creating duplicate natural keys.
 
 ---
 
@@ -724,11 +758,14 @@ Final visualization validation
 = PENDING
 ```
 
-Therefore, this document describes the validated analytical contract and the
-intended visualization design.
+Therefore, this document defines the validated analytical contract and the
+proposed visualization design.
 
-It must not be interpreted as evidence that the final dashboards have already
-been implemented.
+It must not be interpreted as evidence that the final Superset datasets,
+charts or dashboards have already been implemented.
+
+The next implementation stage is to configure Superset against Trino and build
+the final visualization layer from the validated Gold products.
 
 ---
 

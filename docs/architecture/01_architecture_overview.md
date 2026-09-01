@@ -13,9 +13,8 @@ The platform integrates information from:
 - REE / ESIOS;
 - CNIG / IGN geographical reference data.
 
-The solution supports historical data acquisition and is designed to support
-subsequent incremental updates through an orchestration layer based on Apache
-Airflow.
+The solution supports historical data acquisition and recurrent Bronze
+ingestion through an orchestration layer based on Apache Airflow.
 
 The platform is deployed locally using Docker Compose and relies entirely on
 Open Source technologies.
@@ -98,6 +97,9 @@ visualization responsibilities.
 Bronze preserves source acquisitions in MinIO with minimal modification and
 technical ingestion metadata.
 
+For analytical time-series datasets, the physical temporal hierarchy is
+governed by source observation time rather than by ingestion time.
+
 ### Silver
 
 Silver is generated with Apache Spark and persisted as Apache Iceberg tables.
@@ -141,6 +143,9 @@ current_observations
 The station catalogue is also used as the point catalogue for Open-Meteo
 acquisition.
 
+AEMET current observations remain a recent/current source and are deliberately
+excluded from arbitrary historical reconstruction.
+
 ### Open-Meteo
 
 Open-Meteo provides reproducible meteorological information for historical and
@@ -156,6 +161,19 @@ weather_15min
 Historical hourly and 15-minute data are obtained using the corresponding
 historical Open-Meteo services.
 
+Historical Open-Meteo objects are validated against their expected daily
+temporal axis:
+
+```text
+hourly
+→ 24 timestamps per complete UTC day
+
+15-minute
+→ 96 timestamps per complete UTC day
+```
+
+Object existence alone is not considered sufficient evidence of completeness.
+
 ### REE / ESIOS
 
 REE / ESIOS provides the electricity-system information used by the analytical
@@ -167,6 +185,14 @@ The current configured scope consists of:
 11 hourly electricity-generation indicators
 9 monthly installed-capacity indicators
 ```
+
+A structurally valid ESIOS response with:
+
+```text
+values = []
+```
+
+is handled as valid `NO_DATA` and does not generate synthetic observations.
 
 ### CNIG / IGN
 
@@ -270,10 +296,46 @@ Its role is to coordinate:
 - execution dependencies;
 - retries and execution monitoring.
 
-Existing ingestion DAGs have been validated previously.
+The current runtime contains exactly four DAGs:
 
-The end-to-end historical orchestration workflow is currently being completed
-and validated against the final Lakehouse implementation.
+```text
+historical_reload
+hourly_ingestion
+monthly_ingestion
+open_meteo_15min
+```
+
+Their validated roles are:
+
+```text
+historical_reload
+→ historical Bronze → Silver → Gold
+
+hourly_ingestion
+→ recurrent hourly Bronze ingestion
+
+monthly_ingestion
+→ recurrent monthly Bronze ingestion
+
+open_meteo_15min
+→ manual historical Open-Meteo 15-minute Bronze utility
+```
+
+The complete historical Bronze → Silver → Gold path has been executed
+successfully under Airflow control.
+
+The validated historical persistence policies are:
+
+```text
+PRESERVE
+RANGE OVERWRITE
+FULL DELETE
+```
+
+FULL DELETE has priority over RANGE OVERWRITE.
+
+AEMET current observations are deliberately excluded from historical
+reconstruction.
 
 ### Trino
 
@@ -292,6 +354,9 @@ Apache Superset is the Business Intelligence and visualization component.
 
 It consumes curated Gold datasets through Trino.
 
+The service is deployed in the local platform. Final dashboard implementation
+remains a separate visualization stage.
+
 ### Docker Compose
 
 Docker Compose deploys and manages the local platform services as a
@@ -303,27 +368,60 @@ reproducible environment.
 
 ### 5.1 Bronze
 
-Bronze persists raw acquisitions in MinIO.
+Bronze persists raw source acquisitions in MinIO.
 
-The general structure is:
+For analytical time-series datasets, the physical temporal hierarchy is
+governed by source observation time rather than by ingestion time.
+
+The validated canonical paths include:
 
 ```text
-bronze/
-└── <source>/
-    └── <dataset>/
-        └── year=YYYY/
-            └── month=MM/
-                └── day=DD/
-                    └── <object>
+Open-Meteo hourly
+bronze/open_meteo/weather_hourly/
+year=YYYY/month=MM/day=DD/
+station_id=<station_id>.json
+
+Open-Meteo 15-minute
+bronze/open_meteo/weather_15min/
+year=YYYY/month=MM/day=DD/
+station_id=<station_id>.json
+
+ESIOS hourly
+bronze/esios/<dataset>/
+year=YYYY/month=MM/day=DD/
+data.json
+
+ESIOS monthly
+bronze/esios/<dataset>/
+year=YYYY/month=MM/
+data.json
+
+AEMET stations
+bronze/aemet/stations/stations.json
+
+AEMET current observations
+bronze/aemet/current_observations/
+year=YYYY/month=MM/day=DD/
+observations.json
+
+CNIG provinces
+bronze/cnig/provinces/provinces.csv
+
+CNIG municipalities
+bronze/cnig/municipalities/municipalities.csv
 ```
 
-Bronze preserves source payloads and ingestion metadata.
+`ingestion_timestamp` remains audit metadata and does not determine the
+physical business partition date.
+
+Bronze preserves source payloads and technical ingestion metadata.
 
 ---
 
 ### 5.2 Silver
 
-The current physical Silver implementation contains 9 Apache Iceberg tables.
+The current physical Silver implementation contains exactly 9 Apache Iceberg
+tables.
 
 #### AEMET
 
@@ -357,11 +455,15 @@ silver_esios_installed_capacity_monthly
 Silver preserves source granularity while applying the normalization required
 for downstream analysis.
 
+Time-series Silver tables are governed by normalized observation time or
+observation month, depending on their analytical grain.
+
 ---
 
 ### 5.3 Gold
 
-The current physical Gold implementation contains 4 Apache Iceberg tables:
+The current physical Gold implementation contains exactly 4 Apache Iceberg
+tables:
 
 ```text
 gold_fact_province_hourly
@@ -450,6 +552,19 @@ CNIG / IGN ───────┘
 Apache Airflow is the orchestration layer responsible for coordinating the
 execution of these stages.
 
+The validated historical workflow is:
+
+```text
+historical_reload
+→ persistence policy
+→ Bronze ingestion
+→ Silver
+→ Gold
+```
+
+while the recurrent `hourly_ingestion` and `monthly_ingestion` DAGs persist
+newly available source data in Bronze only.
+
 ---
 
 ## 7. Processing and Query Separation
@@ -517,31 +632,20 @@ processing cluster.
 
 ## 8. Validated End-to-End Implementation
 
-The current Lakehouse processing chain has been validated with real source
-data.
+The Lakehouse processing chain has been validated with real source data.
 
-The validated path is:
-
-```text
-External APIs
-     ↓
-Bronze / MinIO
-     ↓
-Silver / Spark / Iceberg
-     ↓
-Gold / Spark / Iceberg
-     ↓
-Trino
-```
-
-A complete historical execution for:
+An independent historical execution for:
 
 ```text
 2026-01-10 → 2026-01-15
 ```
 
 successfully supplied the Lakehouse with real Open-Meteo and ESIOS historical
-data together with current master/reference datasets.
+data together with master/reference datasets.
+
+That independent validation predates the final `historical_reload` policy and
+included AEMET current observations. The final historical Airflow workflow
+deliberately excludes AEMET current observations.
 
 The resulting Silver implementation contained exactly:
 
@@ -591,6 +695,47 @@ duplicate Autonomous Community × month keys = 0
 This demonstrates that the core Lakehouse data-processing architecture is
 operational from real source ingestion through Trino SQL access.
 
+The complete historical:
+
+```text
+Bronze
+→ Silver
+→ Gold
+```
+
+path has also been executed successfully under Airflow control.
+
+The three persistence behaviours were validated with real data:
+
+```text
+PRESERVE
+→ existing active Silver/Gold files preserved
+→ missing coverage added
+→ duplicate natural keys = 0
+
+RANGE OVERWRITE
+→ requested interval rebuilt
+→ outside-range active files preserved
+→ masters preserved
+→ duplicate natural keys = 0
+
+FULL DELETE
+→ active Bronze reset
+→ 9 Silver tables rebuilt
+→ 4 Gold tables rebuilt
+→ masters rebuilt
+→ previous-run physical Silver/Gold objects = 0
+```
+
+After the final orchestration and persistence changes, the regression suites
+passed:
+
+```text
+tests/ingestion = 84 passed
+tests/silver    = 85 passed
+tests/gold      = 72 passed
+```
+
 ---
 
 ## 9. Architectural Decisions
@@ -601,11 +746,24 @@ The current architecture is based on the following validated decisions:
 - Docker Compose provides the reproducible local infrastructure.
 - Python implements API ingestion.
 - Bronze preserves raw source acquisitions in MinIO.
+- Analytical Bronze time-series paths are governed by observation time rather
+  than ingestion time.
+- `ingestion_timestamp` remains audit metadata.
 - Apache Spark / PySpark performs distributed Lakehouse processing.
 - Apache Iceberg provides the structured Silver and Gold table format.
 - MinIO provides S3-compatible object storage.
 - PostgreSQL supports platform metadata and the Iceberg JDBC catalog.
 - Apache Airflow provides workflow orchestration.
+- `historical_reload` is the validated Airflow-controlled historical
+  Bronze → Silver → Gold workflow.
+- `hourly_ingestion` and `monthly_ingestion` are recurrent Bronze-ingestion
+  workflows.
+- `open_meteo_15min` is a manual historical Bronze utility.
+- Historical persistence supports validated PRESERVE, RANGE OVERWRITE and FULL
+  DELETE behaviours.
+- FULL DELETE has priority over RANGE OVERWRITE.
+- AEMET current observations are deliberately excluded from historical
+  reconstruction.
 - Trino provides the interactive analytical SQL layer.
 - Apache Superset provides the visualization layer through Trino.
 - Spark processing and interactive SQL querying are intentionally separated.
@@ -621,3 +779,7 @@ The current architecture is based on the following validated decisions:
   outer strategy after uniqueness validation.
 - Source observations are not synthetically created to fill temporal or
   geographical gaps.
+- A structurally valid ESIOS response with `values=[]` is handled as valid
+  `NO_DATA` without creating synthetic observations.
+- A complete clean-volume reconstruction from empty persistent Docker volumes
+  is not yet part of the validated evidence.

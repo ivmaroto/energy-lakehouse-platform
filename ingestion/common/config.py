@@ -26,6 +26,17 @@ ESIOS_API_KEY = os.getenv(
     "ESIOS_API_KEY"
 )
 
+OPEN_METEO_API_KEY = os.getenv(
+    "OPEN_METEO_API_KEY"
+)
+
+OPEN_METEO_API_PARAMS = (
+    {
+        "apikey": OPEN_METEO_API_KEY,
+    }
+    if OPEN_METEO_API_KEY
+    else {}
+)
 
 # ============================================================================
 # MinIO configuration
@@ -67,20 +78,36 @@ AEMET_BASE_URL = (
     "opendata/api"
 )
 
-OPEN_METEO_BASE_URL = (
-    "https://api.open-meteo.com/"
-    "v1/forecast"
-)
+if OPEN_METEO_API_KEY:
+    OPEN_METEO_BASE_URL = (
+        "https://customer-api.open-meteo.com/"
+        "v1/forecast"
+    )
 
-OPEN_METEO_ARCHIVE_URL = (
-    "https://archive-api.open-meteo.com/"
-    "v1/archive"
-)
+    OPEN_METEO_ARCHIVE_URL = (
+        "https://customer-archive-api.open-meteo.com/"
+        "v1/archive"
+    )
 
-OPEN_METEO_HISTORICAL_FORECAST_URL = (
-    "https://historical-forecast-api."
-    "open-meteo.com/v1/forecast"
-)
+    OPEN_METEO_HISTORICAL_FORECAST_URL = (
+        "https://customer-historical-forecast-api."
+        "open-meteo.com/v1/forecast"
+    )
+else:
+    OPEN_METEO_BASE_URL = (
+        "https://api.open-meteo.com/"
+        "v1/forecast"
+    )
+
+    OPEN_METEO_ARCHIVE_URL = (
+        "https://archive-api.open-meteo.com/"
+        "v1/archive"
+    )
+
+    OPEN_METEO_HISTORICAL_FORECAST_URL = (
+        "https://historical-forecast-api."
+        "open-meteo.com/v1/forecast"
+    )
 
 ESIOS_BASE_URL = (
     "https://api.esios.ree.es"
@@ -174,6 +201,6 @@ OPEN_METEO_MAX_RETRIES = int(
 OPEN_METEO_BATCH_DELAY_SECONDS = float(
     os.getenv(
         "OPEN_METEO_BATCH_DELAY_SECONDS",
-        "12",
+        "1",
     )
 )

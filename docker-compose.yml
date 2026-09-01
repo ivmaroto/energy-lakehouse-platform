@@ -226,6 +226,7 @@ services:
 
       AEMET_API_KEY: ${AEMET_API_KEY}
       ESIOS_API_KEY: ${ESIOS_API_KEY}
+      OPEN_METEO_API_KEY: ${OPEN_METEO_API_KEY:-}
 
       MINIO_ENDPOINT: minio:9000
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
@@ -270,8 +271,14 @@ services:
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow
 
+      AIRFLOW_CONN_SPARK_DEFAULT: "spark://spark%3A%2F%2Fspark-master:7077"
+
       AEMET_API_KEY: ${AEMET_API_KEY}
       ESIOS_API_KEY: ${ESIOS_API_KEY}
+      OPEN_METEO_API_KEY: ${OPEN_METEO_API_KEY:-}
+
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
 
       MINIO_ENDPOINT: minio:9000
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
@@ -279,17 +286,28 @@ services:
       MINIO_BUCKET: ${MINIO_BUCKET:-energy-lakehouse}
       MINIO_SECURE: "false"
 
+      AWS_REGION: us-east-1
+
+      SPARK_CONF_DIR: /tmp/spark-conf
       PYTHONPATH: /opt/airflow
 
-    command: scheduler
+    command:
+      - bash
+      - -c
+      - |
+        mkdir -p /tmp/spark-conf &&
+        python -c "import os,pathlib; src=pathlib.Path('/opt/spark/conf/spark-defaults.conf.template'); dst=pathlib.Path('/tmp/spark-conf/spark-defaults.conf'); dst.write_text(os.path.expandvars(src.read_text()))" &&
+        exec airflow scheduler
 
     volumes:
       - ./airflow/dags:/opt/airflow/dags
       - ./airflow/logs:/opt/airflow/logs
       - ./airflow/plugins:/opt/airflow/plugins
       - ./spark/jobs:/opt/spark/jobs
+      - ./spark/conf:/opt/spark/conf:ro
       - ./ingestion:/opt/airflow/ingestion
       - ./config:/opt/airflow/config:ro
+      - ./config:/opt/config:ro
 
     networks:
       - lakehouse-network
@@ -297,6 +315,8 @@ services:
     depends_on:
       airflow-init:
         condition: service_completed_successfully
+      spark-master:
+        condition: service_started
 
 
   superset-init:

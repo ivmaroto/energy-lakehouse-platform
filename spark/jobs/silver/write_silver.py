@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 
 from pyspark.sql import DataFrame, SparkSession
 
@@ -42,6 +43,14 @@ VALID_MODES = {
     MODE_GEOGRAPHY_FIX,
     MODE_ESIOS_GEOGRAPHY_FIX,
 }
+
+
+# ============================================================================
+# Write policies
+# ============================================================================
+
+WRITE_POLICY_UPSERT = "upsert"
+WRITE_POLICY_INSERT_ONLY = "insert-only"
 
 
 # ============================================================================
@@ -188,17 +197,25 @@ def merge_into_table(
     view_name: str,
 ) -> None:
     """
-    Idempotent Iceberg upsert.
+    Persist one Silver DataFrame through an Iceberg MERGE.
+
+    Default policy:
+        upsert
+            Existing natural key -> update the persisted Silver row.
+            New natural key      -> insert it.
+
+    Historical reload policy:
+        insert-only
+            Existing natural key -> preserve the persisted Silver row.
+            New natural key      -> insert it.
+
+    The historical DAG selects insert-only through
+    LAKEHOUSE_WRITE_POLICY=insert-only. Other workflows keep the
+    previous upsert behavior by default.
 
     The source DataFrame is materialized before MERGE so that expressions
     derived from source-file metadata, such as input_file_name(), do not
     remain as non-deterministic expressions in the MERGE logical plan.
-
-    Existing natural key:
-        update the Silver row with the current normalized source row.
-
-    New natural key:
-        insert it.
     """
 
     validate_target_table(
@@ -238,8 +255,31 @@ def merge_into_table(
         for column in natural_key
     )
 
-    spark.sql(
-        f"""
+    write_policy = (
+        os.getenv(
+            "LAKEHOUSE_WRITE_POLICY",
+            WRITE_POLICY_UPSERT,
+        )
+        .strip()
+        .lower()
+    )
+
+    print(
+        f"WRITE_POLICY = {write_policy}"
+    )
+
+    if write_policy == WRITE_POLICY_INSERT_ONLY:
+        merge_sql = f"""
+        MERGE INTO {table_name} AS target
+        USING {view_name} AS source
+        ON {merge_condition}
+
+        WHEN NOT MATCHED THEN
+            INSERT *
+        """
+
+    elif write_policy == WRITE_POLICY_UPSERT:
+        merge_sql = f"""
         MERGE INTO {table_name} AS target
         USING {view_name} AS source
         ON {merge_condition}
@@ -250,6 +290,15 @@ def merge_into_table(
         WHEN NOT MATCHED THEN
             INSERT *
         """
+
+    else:
+        raise ValueError(
+            "Unsupported LAKEHOUSE_WRITE_POLICY: "
+            f"{write_policy}"
+        )
+
+    spark.sql(
+        merge_sql
     )
 
     target_count = (
@@ -544,7 +593,6 @@ def main() -> None:
     print("=" * 80)
 
     spark.stop()
-
 
 
 if __name__ == "__main__":

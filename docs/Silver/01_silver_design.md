@@ -515,11 +515,26 @@ Partitioning:
 day(observation_timestamp)
 ```
 
-Current validated row count:
+Historical evidence from the earlier E2E execution:
 
 ```text
-9786
+2026-01-10 → 2026-01-15
 ```
+
+contained:
+
+```text
+9786 rows
+```
+
+in this table.
+
+This row count belongs to that specific execution and is not a permanent table
+cardinality.
+
+That execution predates the final `historical_reload` policy. In the final
+orchestration design, AEMET `current_observations` is excluded from arbitrary
+historical reconstruction.
 
 ---
 
@@ -586,7 +601,7 @@ Partitioning:
 day(observation_timestamp)
 ```
 
-Current validated historical E2E count:
+Validated row count for the historical E2E execution described below:
 
 ```text
 133344 rows
@@ -605,6 +620,8 @@ over:
 ```text
 2026-01-10 → 2026-01-15
 ```
+
+This is execution-specific evidence and not a permanent table cardinality.
 
 ---
 
@@ -651,7 +668,7 @@ Partitioning:
 day(observation_timestamp)
 ```
 
-Current validated historical E2E count:
+Validated row count for the historical E2E execution described below:
 
 ```text
 533376 rows
@@ -670,6 +687,8 @@ over:
 ```text
 2026-01-10 → 2026-01-15
 ```
+
+This is execution-specific evidence and not a permanent table cardinality.
 
 ---
 
@@ -914,11 +933,14 @@ Partitioning:
 day(observation_timestamp)
 ```
 
-Current validated E2E row count:
+Historical E2E evidence from the validated execution contained:
 
 ```text
-38443
+38443 rows
 ```
+
+This is an execution-specific row count and must not be interpreted as a
+permanent table cardinality.
 
 ---
 
@@ -952,12 +974,6 @@ Installed capacity represents:
 power
 ```
 
-and remains expressed in:
-
-```text
-MW
-```
-
 The validated analytical geography is:
 
 ```text
@@ -972,11 +988,14 @@ Partitioning:
 month(observation_timestamp)
 ```
 
-Current validated E2E row count:
+Historical E2E evidence from the validated execution contained:
 
 ```text
-123
+123 rows
 ```
+
+This is an execution-specific row count and must not be interpreted as a
+permanent table cardinality.
 
 ---
 
@@ -994,24 +1013,29 @@ and:
 MWh
 ```
 
-Installed capacity represents power:
+They represent different physical quantities:
 
 ```text
 MW
+→ power
 ```
-
-Hourly generation represents energy in the final analytical model:
 
 ```text
 MWh
+→ energy
 ```
 
-The fact that average power over exactly one hour can be numerically equal to
-the energy produced during that hour does not make the two physical quantities
-equivalent.
+For an interval of exactly one hour, a power value expressed in MW can be
+numerically equal to the corresponding energy in MWh for that interval, but the
+physical quantity and unit remain conceptually different.
 
-Silver therefore preserves source magnitude semantics so that Gold can apply
-the correct analytical interpretation.
+Silver preserves the validated ESIOS source magnitude, time and value semantics.
+
+The implementation must not infer a unit solely from temporal granularity.
+
+Installed capacity remains a power-capacity measurement, while hourly generation
+retains the energy semantics validated for the corresponding source indicator
+metadata.
 
 ---
 
@@ -1032,24 +1056,20 @@ Open-Meteo
 → 15-minute data
 ```
 
-Silver does not perform:
+Silver does not apply the meteorological source hierarchy.
+
+The approved downstream rule belongs to Gold:
 
 ```text
-AEMET preferred source
-Open-Meteo fallback
+AEMET
+→ principal / preferred meteorological source
+
+Open-Meteo
+→ enrichment / fallback source
 ```
 
-That rule belongs to Gold.
-
-Gold subsequently applies metric-specific fallback for:
-
-```text
-temperature
-humidity
-precipitation
-```
-
-where AEMET is preferred when a valid observation exists.
+Silver keeps both providers independently normalized so that Gold can apply the
+validated source-selection logic without destroying source traceability.
 
 ---
 
@@ -1129,6 +1149,23 @@ Bronze can contain overlapping observations from repeated acquisitions.
 
 Silver produces the canonical observation set.
 
+For the final historical orchestration path:
+
+```text
+historical_reload
+```
+
+the validated write policy is:
+
+```text
+LAKEHOUSE_WRITE_POLICY=insert-only
+```
+
+Under PRESERVE, only missing natural keys are inserted.
+
+Other workflows keep their default upsert behaviour unless explicitly configured
+otherwise.
+
 Conceptually:
 
 ```text
@@ -1186,6 +1223,14 @@ A complete real-data execution was performed for the historical interval:
 ```text
 2026-01-10 → 2026-01-15
 ```
+
+This execution is retained as historical evidence.
+
+It predates the final `historical_reload` policy because it included AEMET
+`current_observations`, which the final historical workflow now excludes.
+
+The row counts below therefore describe that concrete execution and must not be
+interpreted as permanent table cardinalities.
 
 The final Silver namespace contained exactly:
 
@@ -1316,7 +1361,7 @@ The final Silver layer supports two principal downstream analytical products.
 
 ### Province × hour
 
-Inputs include:
+Depending on the execution context, normalized inputs available to Gold include:
 
 ```text
 AEMET current observations
@@ -1326,7 +1371,11 @@ ESIOS hourly generation
 CNIG geography
 ```
 
-Gold integrates these sources into:
+AEMET `current_observations` is available for recent/current processing but is
+excluded from the final arbitrary historical `historical_reload` reconstruction
+workflow.
+
+Gold integrates the applicable sources into:
 
 ```text
 gold_fact_province_hourly

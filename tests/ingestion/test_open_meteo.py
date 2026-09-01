@@ -123,6 +123,11 @@ def test_ingest_historical_persists_weather_hourly():
         data,
         source="open_meteo",
         dataset="weather_hourly",
+        object_name=(
+            "bronze/open_meteo/weather_hourly/"
+            "year=2026/month=08/day=01/"
+            "station_id=TEST.json"
+        ),
         ingestion_mode="historical",
         requested_start_date="2026-08-01",
         requested_end_date="2026-08-01",
@@ -132,6 +137,7 @@ def test_ingest_historical_persists_weather_hourly():
             "province": "Test Province",
             "latitude": 43.0,
             "longitude": -2.5,
+            "observation_date": "2026-08-01",
         },
     )
 
@@ -266,11 +272,20 @@ def test_ingest_minutely_15_persists_exact_window():
     )
 
     start_datetime = datetime(
-        2026, 8, 13, 10, 0,
+        2026,
+        8,
+        13,
+        10,
+        0,
         tzinfo=timezone.utc,
     )
+
     end_datetime = datetime(
-        2026, 8, 13, 10, 15,
+        2026,
+        8,
+        13,
+        10,
+        15,
         tzinfo=timezone.utc,
     )
 
@@ -279,7 +294,10 @@ def test_ingest_minutely_15_persists_exact_window():
         longitude=-2.5,
         start_datetime=start_datetime,
         end_datetime=end_datetime,
-        minutely_15_variables=["temperature_2m"],
+        minutely_15_variables=[
+            "temperature_2m"
+        ],
+        location_id="TEST",
     )
 
     client.get_minutely_15_weather.assert_called_once_with(
@@ -287,7 +305,9 @@ def test_ingest_minutely_15_persists_exact_window():
         longitude=-2.5,
         start_datetime=start_datetime,
         end_datetime=end_datetime,
-        minutely_15_variables=["temperature_2m"],
+        minutely_15_variables=[
+            "temperature_2m"
+        ],
         timezone="UTC",
     )
 
@@ -295,6 +315,11 @@ def test_ingest_minutely_15_persists_exact_window():
         data,
         source="open_meteo",
         dataset="weather_15min",
+        object_name=(
+            "bronze/open_meteo/weather_15min/"
+            "year=2026/month=08/day=13/"
+            "station_id=TEST.json"
+        ),
         ingestion_mode="incremental",
         requested_start_date=(
             "2026-08-13T10:00:00+00:00"
@@ -303,14 +328,18 @@ def test_ingest_minutely_15_persists_exact_window():
             "2026-08-13T10:15:00+00:00"
         ),
         extra_metadata={
-            "location_id": None,
+            "location_id": "TEST",
+            "station_id": "TEST",
             "station_name": None,
             "province": None,
             "latitude": 43.0,
             "longitude": -2.5,
+            "observation_date": (
+                "2026-08-13"
+            ),
         },
     )
 
-    assert result == (
+    assert result == [
         "bronze/open_meteo/weather_15min/test.json"
-    )
+    ]

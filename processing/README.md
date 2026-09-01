@@ -1,4 +1,4 @@
-# Architecture Overview
+# Processing Layer
 
 ## 1. Project Objective
 
@@ -13,9 +13,8 @@ The platform integrates information from:
 - REE / ESIOS;
 - CNIG / IGN geographical reference data.
 
-The solution supports historical data acquisition and is designed to support
-subsequent incremental updates through an orchestration layer based on Apache
-Airflow.
+The solution supports historical data acquisition and subsequent incremental
+updates through an orchestration layer based on Apache Airflow.
 
 The platform is deployed locally using Docker Compose and relies entirely on
 Open Source technologies.
@@ -24,7 +23,8 @@ Python is used for source ingestion, Apache Spark and PySpark perform
 distributed Lakehouse transformations, MinIO provides S3-compatible object
 storage, Apache Iceberg manages the structured Silver and Gold tables,
 PostgreSQL provides service and catalog metadata, Trino exposes the analytical
-tables through SQL, and Apache Superset provides the visualization layer.
+tables through SQL, and Apache Superset provides the visualization
+infrastructure.
 
 The principal analytical objective is to study relationships between
 meteorological conditions and electricity generation at:
@@ -98,6 +98,10 @@ visualization responsibilities.
 Bronze preserves source acquisitions in MinIO with minimal modification and
 technical ingestion metadata.
 
+Temporal Bronze datasets are physically organized by observation time.
+
+`ingestion_timestamp` is retained only as technical audit metadata.
+
 ### Silver
 
 Silver is generated with Apache Spark and persisted as Apache Iceberg tables.
@@ -123,6 +127,9 @@ This separates interactive analytical querying from Spark processing workloads.
 
 Apache Superset connects to Trino rather than querying Spark directly.
 
+Superset infrastructure is available, while the final datasets, charts,
+dashboards and visualization validation remain separate pending activities.
+
 ---
 
 ## 3. Data Sources
@@ -138,8 +145,20 @@ stations
 current_observations
 ```
 
+The validated station catalogue contains:
+
+```text
+926 locations
+```
+
 The station catalogue is also used as the point catalogue for Open-Meteo
 acquisition.
+
+AEMET current observations provide recent/current meteorological data and are
+not used for arbitrary historical reconstruction.
+
+The final `historical_reload` workflow excludes AEMET
+`current_observations`.
 
 ### Open-Meteo
 
@@ -153,20 +172,62 @@ weather_hourly
 weather_15min
 ```
 
-Historical hourly and 15-minute data are obtained using the corresponding
-historical Open-Meteo services.
+Historical acquisition uses the validated AEMET catalogue of:
+
+```text
+926 locations
+```
+
+A complete UTC day requires:
+
+```text
+weather_hourly
+→ 24 timestamps
+
+weather_15min
+→ 96 timestamps
+```
+
+The existence of a Bronze object alone is not considered proof of temporal
+completeness.
 
 ### REE / ESIOS
 
 REE / ESIOS provides the electricity-system information used by the analytical
 model.
 
-The current configured scope consists of:
+The final configured scope consists of:
 
 ```text
 11 hourly electricity-generation indicators
 9 monthly installed-capacity indicators
 ```
+
+The final scope excludes:
+
+```text
+ESIOS 5-minute datasets
+electricity demand
+electricity market prices
+national 5-minute Gold facts
+national 15-minute Gold facts
+```
+
+An ESIOS response containing:
+
+```text
+values = []
+```
+
+is a valid:
+
+```text
+NO_DATA
+```
+
+response.
+
+Missing observations are not fabricated and are not converted to zero.
 
 ### CNIG / IGN
 
@@ -180,7 +241,18 @@ provinces
 municipalities
 ```
 
-The Silver layer also derives the corresponding autonomous-community master.
+The Silver layer derives the corresponding autonomous-community master.
+
+The final Gold geographical structure is:
+
+```text
+PROVINCE = 52
+AUTONOMOUS_COMMUNITY = 19
+COUNTRY = 1
+PENINSULA = 1
+
+TOTAL = 73
+```
 
 ---
 
@@ -249,7 +321,7 @@ It stores:
 
 PostgreSQL provides relational metadata storage required by platform services.
 
-Its current responsibilities include:
+Its validated responsibilities include:
 
 - Apache Airflow metadata;
 - Apache Iceberg JDBC catalog metadata;
@@ -261,19 +333,65 @@ PostgreSQL does not contain the main analytical datasets.
 
 Apache Airflow provides the workflow-orchestration layer.
 
-Its role is to coordinate:
+The final Airflow model contains exactly four DAGs:
 
-- source ingestion;
-- Bronze availability;
-- Silver processing;
-- Gold processing;
-- execution dependencies;
-- retries and execution monitoring.
+```text
+historical_reload
+hourly_ingestion
+monthly_ingestion
+open_meteo_15min
+```
 
-Existing ingestion DAGs have been validated previously.
+Their validated roles are:
 
-The end-to-end historical orchestration workflow is currently being completed
-and validated against the final Lakehouse implementation.
+```text
+historical_reload
+= historical E2E Bronze → Silver → Gold
+
+hourly_ingestion
+= incremental hourly Bronze ingestion
+
+monthly_ingestion
+= incremental monthly Bronze ingestion
+
+open_meteo_15min
+= manual/historical Open-Meteo 15-minute Bronze utility
+```
+
+The hourly and monthly incremental DAGs perform Bronze ingestion only.
+
+They do not automatically execute Silver or Gold.
+
+The `open_meteo_15min` DAG is not scheduled as a recurrent 15-minute
+production pipeline.
+
+The final `historical_reload` workflow has been executed successfully end to
+end.
+
+Its exact parameters are:
+
+```text
+fecha_inicio
+fecha_fin
+sobreescribir_datos
+eliminar_historial_completo
+```
+
+The validated historical policies are:
+
+```text
+PRESERVE
+RANGE OVERWRITE
+FULL DELETE
+```
+
+`FULL DELETE` has priority over `RANGE OVERWRITE`.
+
+Historical Silver/Gold processing uses:
+
+```text
+LAKEHOUSE_WRITE_POLICY=insert-only
+```
 
 ### Trino
 
@@ -292,6 +410,11 @@ Apache Superset is the Business Intelligence and visualization component.
 
 It consumes curated Gold datasets through Trino.
 
+Its infrastructure is available.
+
+Final Superset datasets, charts, dashboards and visualization validation remain
+pending and are not considered complete in this document.
+
 ### Docker Compose
 
 Docker Compose deploys and manages the local platform services as a
@@ -305,16 +428,31 @@ reproducible environment.
 
 Bronze persists raw acquisitions in MinIO.
 
-The general structure is:
+Temporal Bronze datasets are physically organized by observation time rather
+than by ingestion timestamp.
+
+Canonical temporal paths include:
 
 ```text
-bronze/
-└── <source>/
-    └── <dataset>/
-        └── year=YYYY/
-            └── month=MM/
-                └── day=DD/
-                    └── <object>
+bronze/open_meteo/weather_hourly/year=YYYY/month=MM/day=DD/station_id=<id>.json
+
+bronze/open_meteo/weather_15min/year=YYYY/month=MM/day=DD/station_id=<id>.json
+
+bronze/esios/<dataset>/year=YYYY/month=MM/day=DD/data.json
+
+bronze/esios/<dataset>/year=YYYY/month=MM/data.json
+
+bronze/aemet/current_observations/year=YYYY/month=MM/day=DD/observations.json
+```
+
+Master datasets use stable canonical paths:
+
+```text
+bronze/aemet/stations/stations.json
+
+bronze/cnig/provinces/provinces.csv
+
+bronze/cnig/municipalities/municipalities.csv
 ```
 
 Bronze preserves source payloads and ingestion metadata.
@@ -323,7 +461,11 @@ Bronze preserves source payloads and ingestion metadata.
 
 ### 5.2 Silver
 
-The current physical Silver implementation contains 9 Apache Iceberg tables.
+The current physical Silver implementation contains exactly:
+
+```text
+9 Apache Iceberg tables
+```
 
 #### AEMET
 
@@ -357,11 +499,21 @@ silver_esios_installed_capacity_monthly
 Silver preserves source granularity while applying the normalization required
 for downstream analysis.
 
+The latest validated complete Silver regression suite finished with:
+
+```text
+85 passed
+```
+
 ---
 
 ### 5.3 Gold
 
-The current physical Gold implementation contains 4 Apache Iceberg tables:
+The current physical Gold implementation contains exactly:
+
+```text
+4 Apache Iceberg tables
+```
 
 ```text
 gold_fact_province_hourly
@@ -389,9 +541,46 @@ province_code + gold_timestamp
 Meteorological and energy blocks are integrated after validating uniqueness on
 both sides.
 
+The final integration rule is:
+
+```text
+Meteorology Province × hour
+FULL OUTER JOIN
+Energy Province × hour
+```
+
+using:
+
+```text
+(province_code, gold_timestamp)
+```
+
 A full outer integration is used so that valid observations from either domain
 are retained when the corresponding observation from the other domain is not
 available.
+
+Missing source information remains null:
+
+```text
+NULL != 0
+```
+
+The validated ESIOS temporal rule is:
+
+```text
+gold_timestamp =
+observation_timestamp + 1 hour
+```
+
+configured through:
+
+```text
+esios_time_gap_hours = 1
+```
+
+The +1 hour boundary can produce 47 rows belonging to the following day.
+
+This is expected behaviour and not an error.
 
 #### `gold_fact_installed_capacity_monthly`
 
@@ -412,6 +601,35 @@ gold_dim_time
 ```
 
 provide reusable geographical and temporal analytical dimensions.
+
+The final structural validation of `gold_dim_geography` established:
+
+```text
+PROVINCE = 52
+AUTONOMOUS_COMMUNITY = 19
+COUNTRY = 1
+PENINSULA = 1
+
+TOTAL = 73
+```
+
+The validated Peninsular scope excludes:
+
+```text
+07  Illes Balears
+35  Las Palmas
+38  Santa Cruz de Tenerife
+51  Ceuta
+52  Melilla
+```
+
+There is no dedicated physical Peninsular Gold fact table.
+
+The latest validated complete Gold regression suite finished with:
+
+```text
+72 passed
+```
 
 ---
 
@@ -448,7 +666,7 @@ CNIG / IGN ───────┘
 ```
 
 Apache Airflow is the orchestration layer responsible for coordinating the
-execution of these stages.
+historical E2E workflow and the final incremental Bronze-ingestion workflows.
 
 ---
 
@@ -517,8 +735,7 @@ processing cluster.
 
 ## 8. Validated End-to-End Implementation
 
-The current Lakehouse processing chain has been validated with real source
-data.
+The Lakehouse processing chain has been validated with real source data.
 
 The validated path is:
 
@@ -534,14 +751,19 @@ Gold / Spark / Iceberg
 Trino
 ```
 
-A complete historical execution for:
+An earlier complete historical execution for:
 
 ```text
 2026-01-10 → 2026-01-15
 ```
 
 successfully supplied the Lakehouse with real Open-Meteo and ESIOS historical
-data together with current master/reference datasets.
+data together with reference data.
+
+This execution is retained as historical evidence.
+
+It predates the final `historical_reload` policy because it included AEMET
+`current_observations`, which the final historical workflow now excludes.
 
 The resulting Silver implementation contained exactly:
 
@@ -549,14 +771,17 @@ The resulting Silver implementation contained exactly:
 9 tables
 ```
 
-and included:
+and that concrete historical execution included:
 
 ```text
 silver_open_meteo_hourly = 133344 rows
-silver_open_meteo_15min  = 533376 rows
+silver_open_meteo_15min = 533376 rows
 silver_esios_energy_hourly = 38443 rows
 silver_esios_installed_capacity_monthly = 123 rows
 ```
+
+These row counts are execution-specific historical evidence and are not
+permanent table cardinalities.
 
 The final Gold implementation contained exactly:
 
@@ -564,7 +789,7 @@ The final Gold implementation contained exactly:
 4 tables
 ```
 
-with validated results including:
+The earlier E2E execution produced:
 
 ```text
 gold_fact_province_hourly = 8147 rows
@@ -573,7 +798,23 @@ gold_dim_geography = 71 rows
 gold_dim_time = 158 rows
 ```
 
-For the principal Gold fact:
+These are also execution-specific historical counts.
+
+They must not be interpreted as permanent Gold cardinalities.
+
+The final structural validation of `gold_dim_geography` was performed later and
+established:
+
+```text
+52 provinces
+19 autonomous communities
+1 country
+1 peninsula
+
+TOTAL = 73
+```
+
+For the principal Gold fact, the earlier historical execution produced:
 
 ```text
 rows with meteorological information = 8100
@@ -588,8 +829,11 @@ The installed-capacity fact was also validated with:
 duplicate Autonomous Community × month keys = 0
 ```
 
-This demonstrates that the core Lakehouse data-processing architecture is
-operational from real source ingestion through Trino SQL access.
+The final `historical_reload` Airflow workflow was subsequently executed
+successfully end to end.
+
+This demonstrates that the core Lakehouse architecture is operational from real
+source ingestion through Spark/Iceberg processing and Trino SQL access.
 
 ---
 
@@ -601,13 +845,15 @@ The current architecture is based on the following validated decisions:
 - Docker Compose provides the reproducible local infrastructure.
 - Python implements API ingestion.
 - Bronze preserves raw source acquisitions in MinIO.
+- Temporal Bronze datasets are physically organized by observation time.
+- `ingestion_timestamp` is audit metadata only.
 - Apache Spark / PySpark performs distributed Lakehouse processing.
 - Apache Iceberg provides the structured Silver and Gold table format.
 - MinIO provides S3-compatible object storage.
 - PostgreSQL supports platform metadata and the Iceberg JDBC catalog.
 - Apache Airflow provides workflow orchestration.
 - Trino provides the interactive analytical SQL layer.
-- Apache Superset provides the visualization layer through Trino.
+- Apache Superset provides the visualization infrastructure through Trino.
 - Spark processing and interactive SQL querying are intentionally separated.
 - CNIG / IGN is the canonical territorial reference.
 - Province is the principal integration level for the hourly analytical fact.
@@ -615,9 +861,26 @@ The current architecture is based on the following validated decisions:
 - Geographical detail is never artificially manufactured when the source does
   not support it.
 - The principal integrated analytical grain is `Province × hour`.
-- The physical Silver model contains 9 Iceberg tables.
-- The physical Gold model contains 4 Iceberg tables.
+- The physical Silver model contains exactly 9 Iceberg tables.
+- The physical Gold model contains exactly 4 Iceberg tables.
 - Meteorological and energy Province × hour blocks are integrated using a full
   outer strategy after uniqueness validation.
+- Missing source observations are not converted to zero.
+- ESIOS `values = []` is a valid `NO_DATA` response.
+- The final ESIOS Gold temporal rule is
+  `gold_timestamp = observation_timestamp + 1 hour`.
+- The validated Peninsular scope excludes province codes `07`, `35`, `38`,
+  `51` and `52`.
+- There is no dedicated physical Peninsular Gold fact table.
+- The final Airflow model contains exactly four DAGs.
+- `hourly_ingestion` and `monthly_ingestion` perform Bronze ingestion only.
+- `open_meteo_15min` is a manual/historical Bronze utility rather than an
+  automatically scheduled 15-minute production pipeline.
+- `historical_reload` implements the final historical E2E
+  Bronze → Silver → Gold flow.
+- Historical reload supports `PRESERVE`, `RANGE OVERWRITE` and `FULL DELETE`.
+- `FULL DELETE` takes priority over `RANGE OVERWRITE`.
+- Historical Silver/Gold processing uses
+  `LAKEHOUSE_WRITE_POLICY=insert-only`.
 - Source observations are not synthetically created to fill temporal or
   geographical gaps.

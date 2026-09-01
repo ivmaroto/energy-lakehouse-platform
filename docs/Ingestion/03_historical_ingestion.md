@@ -78,14 +78,23 @@ Historical ingestion does not perform:
 
 ## 3. Historical Execution Interval
 
-Historical time-series acquisition uses:
+The final historical Airflow workflow exposes the following required temporal
+parameters:
+
+```text
+fecha_inicio
+fecha_fin
+```
+
+Internally, source-specific ingestion functions use equivalent date objects
+such as:
 
 ```text
 start_date
 end_date
 ```
 
-The interval is inclusive according to the source-specific implementation.
+The requested interval is validated before source acquisition.
 
 A historical execution does not imply that every dataset in the platform is
 historical.
@@ -111,7 +120,8 @@ CNIG / IGN
 → master/reference data
 ```
 
-Therefore, AEMET current observations must not be reinterpreted as observations
+AEMET current observations are deliberately excluded from the final
+`historical_reload` workflow and are not reinterpreted as observations
 belonging to the requested historical period.
 
 ---
@@ -121,10 +131,13 @@ belonging to the requested historical period.
 The historical flow follows:
 
 ```text
-start_date + end_date
+fecha_inicio + fecha_fin
           │
           ▼
  Validate requested interval
+          │
+          ▼
+ Apply persistence policy
           │
           ▼
  Source-specific preparation
@@ -145,6 +158,9 @@ start_date + end_date
 Large historical requests may require multiple API calls.
 
 The exact subdivision strategy depends on the provider.
+
+The final Airflow-controlled historical workflow additionally coordinates the
+subsequent Silver and Gold stages after Bronze ingestion has completed.
 
 ---
 
@@ -170,6 +186,20 @@ The currently validated catalogue contains:
 It provides the meteorological location catalogue subsequently used by
 Open-Meteo.
 
+Within `historical_reload`, the station master is handled as an ensure-style
+reference dataset:
+
+```text
+master exists
+→ preserve it
+
+master missing
+→ ingest it
+```
+
+This means that PRESERVE and RANGE OVERWRITE keep the existing master unchanged,
+while FULL DELETE rebuilds it after the active Bronze layer has been removed.
+
 ### Current observations
 
 AEMET current observations represent recent/current meteorological
@@ -178,22 +208,8 @@ measurements.
 They cannot be used as a generic mechanism for reconstructing an arbitrary
 historical interval.
 
-Therefore, when a complete historical platform execution includes:
-
-```text
-AEMET current_observations
-```
-
-those observations retain their actual recent timestamps.
-
-They are not assigned to:
-
-```text
-start_date
-end_date
-```
-
-of the historical Open-Meteo and ESIOS request.
+Therefore, AEMET current observations are deliberately excluded from the final
+`historical_reload` DAG.
 
 Historical meteorological reconstruction is supplied by Open-Meteo.
 
@@ -340,14 +356,23 @@ Operational controls include:
 - detection of already completed locations;
 - resumable processing.
 
-Bronze-state inspection is implemented in:
+Historical Open-Meteo data is persisted in canonical daily objects per station.
+
+The resume/completeness logic does not consider a day complete merely because
+its object exists.
+
+For the validated granularities:
 
 ```text
-ingestion/open_meteo/bronze_state.py
+hourly
+→ expected daily axis = 24 timestamps
+
+15-minute
+→ expected daily axis = 96 timestamps
 ```
 
-This prevents a large historical execution from needing to restart every
-location after an interruption.
+An incomplete canonical daily object is therefore eligible for reconstruction
+instead of being silently skipped.
 
 ---
 
@@ -356,9 +381,31 @@ location after an interruption.
 The existence of a Bronze object is not sufficient to consider a historical
 location complete.
 
-Its temporal coverage must correspond to the requested interval.
+Its temporal coverage must correspond to the expected observation axis.
 
-For the validated interval:
+At daily canonical-object level:
+
+### Hourly
+
+```text
+24 / 24 expected timestamps
+→ complete
+
+fewer than 24
+→ incomplete
+```
+
+### 15-minute
+
+```text
+96 / 96 expected timestamps
+→ complete
+
+fewer than 96
+→ incomplete
+```
+
+For the independently validated interval:
 
 ```text
 2026-01-10 → 2026-01-15
@@ -522,38 +569,35 @@ contains data for every arbitrary recent interval.
 
 ## 16. ESIOS Empty Responses
 
-The current ESIOS ingestion logic validates:
+The current ESIOS ingestion logic validates the indicator response before
+Bronze persistence.
 
-```text
-indicator.values
-```
-
-before successful Bronze persistence.
-
-If:
+A valid ESIOS response with:
 
 ```text
 indicator.values = []
 ```
 
-the ingestion attempt raises an error instead of treating an empty source
-response as a successful dataset.
+is handled as a valid:
 
-This prevents:
+```text
+NO_DATA
+```
+
+result.
+
+In that case, the ingestion method returns no persisted observations instead
+of raising an error or fabricating records.
+
+This distinction prevents:
 
 ```text
 HTTP 200
 ```
 
-from being incorrectly interpreted as:
-
-```text
-valid observations available
-```
-
-The handling of legitimate recent-source publication delays belongs to the
-orchestration strategy and must not be inferred from historical ingestion
-behaviour.
+from being incorrectly interpreted as proof that observations exist, while
+also allowing a legitimate empty source response to be represented without
+turning it into a false ingestion failure.
 
 ---
 
@@ -669,29 +713,52 @@ bronze/
 └── cnig/
 ```
 
-with dataset and ingestion-date subdivisions beneath each source.
+Time-series facts are physically governed by their source observation period,
+not by the ingestion timestamp.
 
-Conceptually:
-
-```text
-bronze/
-└── <source>/
-    └── <dataset>/
-        └── year=YYYY/
-            └── month=MM/
-                └── day=DD/
-                    └── <object>
-```
-
-The physical:
+The validated canonical paths include:
 
 ```text
-year/month/day
+Open-Meteo hourly
+bronze/open_meteo/weather_hourly/
+year=YYYY/month=MM/day=DD/
+station_id=<station_id>.json
+
+Open-Meteo 15-minute
+bronze/open_meteo/weather_15min/
+year=YYYY/month=MM/day=DD/
+station_id=<station_id>.json
+
+ESIOS hourly
+bronze/esios/<dataset>/
+year=YYYY/month=MM/day=DD/
+data.json
+
+ESIOS monthly
+bronze/esios/<dataset>/
+year=YYYY/month=MM/
+data.json
+
+AEMET stations
+bronze/aemet/stations/stations.json
+
+AEMET current observations
+bronze/aemet/current_observations/
+year=YYYY/month=MM/day=DD/
+observations.json
+
+CNIG provinces
+bronze/cnig/provinces/provinces.csv
+
+CNIG municipalities
+bronze/cnig/municipalities/municipalities.csv
 ```
 
-hierarchy represents the ingestion date.
+The physical temporal hierarchy therefore represents the observation date or
+observation month for analytical facts.
 
-The requested source period remains recorded in Bronze metadata.
+`ingestion_timestamp` remains audit metadata and is not used as the physical
+business partition date.
 
 ---
 
@@ -728,32 +795,66 @@ request that produced it.
 ## 22. Reprocessing
 
 Persisted Bronze data allows Silver and Gold to be recalculated without
-necessarily repeating the external API acquisition.
+necessarily repeating every external API acquisition.
 
-The architecture supports:
+The final historical orchestration supports three validated persistence
+behaviours.
+
+### PRESERVE
 
 ```text
-External source
-      │
-      ▼
-Bronze
-      │
-      ├──► Silver transformation version A
-      │
-      └──► Silver transformation version B
+sobreescribir_datos = false
+eliminar_historial_completo = false
 ```
 
-This separation is one of the reasons Bronze acquisition and Lakehouse
-transformation remain independent.
+Existing Bronze data, masters and existing Silver/Gold natural keys are
+preserved.
 
-A new transformation implementation therefore does not automatically require a
-new API download when appropriate Bronze source data is already available.
+Missing historical coverage is added.
+
+The historical Silver and Gold write tasks use:
+
+```text
+LAKEHOUSE_WRITE_POLICY=insert-only
+```
+
+so existing natural keys are not physically rewritten during PRESERVE.
+
+### RANGE OVERWRITE
+
+```text
+sobreescribir_datos = true
+eliminar_historial_completo = false
+```
+
+Only the requested historical interval is removed and rebuilt.
+
+Data outside the requested range is preserved.
+
+Existing AEMET/CNIG masters are also preserved.
+
+### FULL DELETE
+
+```text
+eliminar_historial_completo = true
+```
+
+Full deletion has priority over range overwrite.
+
+The active Bronze layer is deleted, the current Silver and Gold tables are
+dropped/purged, residual physical objects under the active Silver/Gold warehouse
+prefixes are removed, masters are rebuilt, and only the requested interval is
+loaded again.
+
+These behaviours preserve the architectural separation between acquisition,
+Bronze persistence and downstream Lakehouse processing while supporting
+controlled reconstruction when required.
 
 ---
 
 ## 23. Real Historical Bronze Validation
 
-The final historical technical validation used the real interval:
+An independent historical technical validation used the real interval:
 
 ```text
 2026-01-10 → 2026-01-15
@@ -793,8 +894,14 @@ AEMET current observations
 = 1 file
 ```
 
+That independent validation predates the final `historical_reload` orchestration
+policy and included an AEMET current-observations acquisition.
+
 The AEMET current-observations object retained its real recent/current
 timestamps and was not converted into January historical observations.
+
+The final Airflow `historical_reload` DAG deliberately excludes AEMET current
+observations.
 
 ---
 
@@ -842,11 +949,14 @@ silver_esios_installed_capacity_monthly
 This confirms that the historical Bronze acquisition produced valid input for
 the implemented Silver layer.
 
+These counts belong to the independent historical validation described above
+and should not be interpreted as the final one-day FULL DELETE validation.
+
 ---
 
 ## 25. Downstream Gold Validation
 
-The same execution was processed through Gold.
+The same independent execution was processed through Gold.
 
 The final Gold namespace contained exactly:
 
@@ -936,6 +1046,9 @@ Real APIs
 
 is technically validated.
 
+The final historical Airflow workflow has also been validated independently as
+an orchestrated Bronze → Silver → Gold execution.
+
 ---
 
 ## 27. Airflow Historical Orchestration
@@ -946,9 +1059,12 @@ The project contains the historical orchestration DAG:
 airflow/dags/historical_reload.py
 ```
 
-Its purpose is to coordinate:
+Its validated purpose is to coordinate:
 
 ```text
+Persistence policy
+      │
+      ▼
 Bronze ingestion
       │
       ▼
@@ -958,9 +1074,33 @@ Silver processing
 Gold processing
 ```
 
-The DAG implementation and task structure have been created.
+The DAG exposes exactly four runtime parameters:
 
-However, the final complete Airflow-triggered historical:
+```text
+fecha_inicio
+fecha_fin
+sobreescribir_datos
+eliminar_historial_completo
+```
+
+The validated persistence policies are:
+
+```text
+PRESERVE
+sobreescribir_datos = false
+eliminar_historial_completo = false
+
+RANGE OVERWRITE
+sobreescribir_datos = true
+eliminar_historial_completo = false
+
+FULL DELETE
+eliminar_historial_completo = true
+```
+
+FULL DELETE has priority over RANGE OVERWRITE.
+
+The complete Airflow-triggered:
 
 ```text
 Bronze
@@ -968,11 +1108,19 @@ Bronze
 → Gold
 ```
 
-runtime execution has not yet been accepted as fully validated.
+historical runtime has been validated with real data.
 
-The successful historical E2E execution described in this document validates
-the underlying ingestion and processing components independently from that final
-Airflow runtime proof.
+The validation demonstrated:
+
+- PRESERVE keeps existing active Silver/Gold files unchanged and adds missing
+  coverage without duplicate natural keys;
+- RANGE OVERWRITE rebuilds only the requested interval while preserving data
+  outside the range and preserving existing masters;
+- FULL DELETE removes active Bronze, Silver, Gold and previous-run physical
+  warehouse data before rebuilding the requested interval and masters;
+- AEMET current observations remain outside the historical workflow.
+
+Final DAG discovery also reported no import errors.
 
 ---
 
@@ -1005,6 +1153,9 @@ ESIOS historical monthly acquisition
 ESIOS configured historical indicators
 = VALIDATED
 
+ESIOS valid empty response handling
+= VALIDATED AS NO_DATA
+
 CNIG master acquisition
 = VALIDATED
 
@@ -1013,6 +1164,9 @@ AEMET station master acquisition
 
 AEMET current-observation semantics
 = VALIDATED AS CURRENT/RECENT SOURCE
+
+AEMET current exclusion from historical_reload
+= VALIDATED
 
 Historical Bronze persistence in MinIO
 = VALIDATED
@@ -1026,9 +1180,30 @@ Historical Silver → Gold
 Historical Gold → Trino
 = VALIDATED
 
-Complete Airflow-triggered E2E historical runtime
-= PENDING FINAL ORCHESTRATION VALIDATION
+Airflow-triggered E2E historical runtime
+= VALIDATED
+
+PRESERVE persistence policy
+= VALIDATED
+
+RANGE OVERWRITE persistence policy
+= VALIDATED
+
+FULL DELETE persistence policy
+= VALIDATED
+
+Previous-run physical Silver/Gold objects after FULL DELETE
+= 0
 ```
 
-The historical ingestion implementation itself is therefore operational for the
-current project scope.
+After the final historical-orchestration and persistence changes, the complete
+automated test suites passed:
+
+```text
+tests/ingestion = 84 passed
+tests/silver    = 85 passed
+tests/gold      = 72 passed
+```
+
+The historical ingestion and historical Airflow orchestration implementation
+are therefore operational and validated for the current project scope.

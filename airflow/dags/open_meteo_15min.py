@@ -47,7 +47,7 @@ with DAG(
         "15-minute Open-Meteo ingestion for "
         "the complete AEMET station master."
     ),
-    schedule="*/15 * * * *",
+    schedule=None,
     start_date=days_ago(1),
     catchup=False,
     max_active_runs=1,
